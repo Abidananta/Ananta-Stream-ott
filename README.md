@@ -5,7 +5,9 @@ Keeps the channel rail open during buffering, so the user can move and confirm a
 Avoids changing channels while the rail is hidden. Enter opens the rail; Enter on a focused channel starts it.
 Uses only one active native video controller at a time to reduce Android TV decoder exhaustion and force-closes.
 Commits the selected channel only after the stream initializes successfully; stream initialization timeout reduced to 20 seconds.
-Retains local EPG caching and the two-hour refresh policy from the previous version.
+Loads the three configured XMLTV feeds sequentially and keeps the on-device EPG cache with a two-hour freshness window.
+Parses XMLTV on a background isolate and caps per-feed programme parsing and description size to reduce memory spikes on low-RAM TV boxes.
+Protects channel switching from stale requests completing after a newer remote selection.
 Only `.github/workflows/build-apk.yml` is included. `build-apk-fixed.yml` is intentionally absent.
 Build
 Upload the contents of this folder to the repository root, replacing existing files. In GitHub Actions, run the `build-apk.yml` workflow and download the generated APK artifact.
