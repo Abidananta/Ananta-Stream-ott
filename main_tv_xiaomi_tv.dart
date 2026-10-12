@@ -92,7 +92,9 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
     if (id.isEmpty) continue;
     final start = _epgParseTime(_epgAttribute(attrs, 'start'));
     final stop = _epgParseTime(_epgAttribute(attrs, 'stop'));
-    if (start == null || stop == null || !stop.isAfter(now) || start.isAfter(now.add(const Duration(hours: 12)))) continue;
+    if (start == null || stop == null ||
+        !stop.isAfter(now.subtract(const Duration(days: 3))) ||
+        start.isAfter(now.add(const Duration(days: 3)))) continue;
     final title = _epgTagText(body, 'title');
     if (title.isEmpty) continue;
     programmes.add(<String, dynamic>{
@@ -207,6 +209,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   Map<String, List<EpgProgram>> _epgById = {};
   Map<String, List<EpgProgram>> _epgByName = {};
   Map<String, List<EpgProgram>> _epgByChannelUrl = {};
+  // Precomputed guide windows prevent expensive XMLTV filtering on every TV key press.
+  Map<String, List<EpgProgram>> _epgScheduleByChannelUrl = {};
   String _epgStatus = 'Loading programme guide…';
   Timer? _epgClock;
   Timer? _epgRefreshTimer;
@@ -218,7 +222,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     super.initState();
     _loadFavorites();
     _loadPlaylist();
-    _loadEpg();
+    _initializeEpg();
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -232,10 +236,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     final channels = _visibleChannels;
     if (channels.isEmpty) return;
     final safeIndex = index.clamp(0, channels.length - 1).toInt();
-    setState(() {
-      _tvFocusedChannelIndex = safeIndex;
-      _tvSidebarVisible = true;
-    });
+    if (_tvFocusedChannelIndex != safeIndex || !_tvSidebarVisible || _tvShowingCategories) {
+      setState(() {
+        _tvFocusedChannelIndex = safeIndex;
+        _tvSidebarVisible = true;
+        _tvShowingCategories = false;
+      });
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || !_tvChannelScrollController.hasClients) return;
       // Scroll first so ListView builds the destination row before requesting
@@ -260,6 +267,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   void _focusTvPlayer() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_tvPlayerFocusNode.canRequestFocus) return;
+      // Clear stale TextField/list focus after a channel is selected. On some
+      // Xiaomi remotes the next CENTER key otherwise remains with the old row.
+      FocusManager.instance.primaryFocus?.unfocus();
       _tvPlayerFocusNode.requestFocus();
     });
   }
@@ -307,15 +317,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
 
   void _showTvChannels({int? index}) {
     final channels = _visibleChannels;
+    final targetIndex = channels.isEmpty
+        ? 0
+        : (index ?? _tvFocusedChannelIndex).clamp(0, channels.length - 1).toInt();
+    // Reveal the rail in this frame. Avoid an animation or waiting for a
+    // scrolling animation before the user sees the channel list.
     setState(() {
       _tvShowingCategories = false;
       _tvSidebarVisible = true;
-      if (index != null && channels.isNotEmpty) {
-        _tvFocusedChannelIndex = index.clamp(0, channels.length - 1).toInt();
-      }
+      _tvFocusedChannelIndex = targetIndex;
     });
     FocusManager.instance.primaryFocus?.unfocus();
-    _focusTvChannel(_tvFocusedChannelIndex);
+    if (channels.isNotEmpty) _focusTvChannel(targetIndex);
   }
 
   KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
@@ -327,6 +340,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     final channels = _visibleChannels;
     final categories = _categories;
     final editingSearch = primaryContext?.widget is EditableText;
+
+    // CENTER/ENTER is the primary Xiaomi Mi Box action: while watching, show
+    // the channel rail immediately even if an old descendant still owns focus.
+    final isCenter = key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter ||
+        key == LogicalKeyboardKey.gameButtonA;
+    // Many Xiaomi remotes emit KeyRepeatEvent while CENTER is held. Without
+    // this guard the first event opens the rail and the repeat immediately
+    // selects/reloads a channel, which looks like the app has frozen.
+    if (event is KeyRepeatEvent && isCenter) return KeyEventResult.handled;
+    if (isCenter && !_tvSidebarVisible && !editingSearch) {
+      final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
+      _showTvChannels(index: current >= 0 ? current : _tvFocusedChannelIndex);
+      return KeyEventResult.handled;
+    }
 
     // Search remains usable with the TV keyboard. D-pad UP opens categories;
     // DOWN moves into results, avoiding a focus trap inside the text field.
@@ -456,6 +485,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
+      // Do not restart a stream when CENTER is held and Android sends repeats.
+      if (event is KeyRepeatEvent) return KeyEventResult.handled;
       if (index >= 0 && index < channels.length) _playChannel(channels[index]);
       return KeyEventResult.handled;
     }
@@ -478,19 +509,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
             child: _buildPlayer(fullscreen: true),
           ),
         ),
-        AnimatedPositioned(
-          duration: const Duration(milliseconds: 120),
-          curve: Curves.easeOut,
+        Positioned(
           top: 0,
           bottom: 0,
           left: _tvSidebarVisible ? 0 : -330,
           width: 310,
           child: IgnorePointer(
             ignoring: !_tvSidebarVisible,
-            child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 100),
-              opacity: _tvSidebarVisible ? 1 : 0,
-              child: ClipRect(
+            child: ClipRect(
                 // A translucent panel is cheaper to render than a live blur
                 // on lower-powered TV boxes while keeping video visible.
                 child: Container(
@@ -660,7 +686,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                     ),
                 ),
               ),
-            ),
+          ),
+        ),
+        Positioned(
+          top: 0,
+          bottom: 0,
+          left: _tvSidebarVisible ? 310 : -360,
+          width: 350,
+          // Guide is an overlay beside the rail; it never resizes the video.
+          child: IgnorePointer(
+            ignoring: !_tvSidebarVisible || _tvShowingCategories,
+            child: (_tvSidebarVisible && !_tvShowingCategories)
+                ? Builder(builder: (context) {
+                    final preview = _tvEpgPreviewChannel(channels);
+                    return preview == null ? const SizedBox.shrink() : _buildTvEpgPanel(preview);
+                  })
+                : const SizedBox.shrink(),
           ),
         ),
       ],
@@ -678,7 +719,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
       child: Focus(
         focusNode: focusNode,
-        autofocus: focusedByIndex,
+        autofocus: false,
         onFocusChange: (hasFocus) {
           if (hasFocus && mounted && _tvFocusedChannelIndex != index) {
             setState(() => _tvFocusedChannelIndex = index);
@@ -865,6 +906,86 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     return name.replaceAll(RegExp(r'[^a-z0-9]+'), '');
   }
 
+  Future<void> _initializeEpg() async {
+    await _loadCachedEpg();
+    if (mounted) await _loadEpg();
+  }
+
+  Map<String, dynamic> _epgMapToJson(Map<String, List<EpgProgram>> source) => {
+    for (final entry in source.entries)
+      entry.key: entry.value.map((program) => <String, dynamic>{
+        'title': program.title,
+        'description': program.description,
+        'start': program.start.millisecondsSinceEpoch,
+        'stop': program.stop.millisecondsSinceEpoch,
+      }).toList(),
+  };
+
+  Map<String, List<EpgProgram>> _epgMapFromJson(dynamic raw) {
+    final result = <String, List<EpgProgram>>{};
+    if (raw is! Map) return result;
+    final cutoff = DateTime.now().toUtc().subtract(const Duration(days: 3));
+    final horizon = DateTime.now().toUtc().add(const Duration(days: 3));
+    for (final entry in raw.entries) {
+      if (entry.value is! List) continue;
+      final list = <EpgProgram>[];
+      for (final item in entry.value as List) {
+        if (item is! Map) continue;
+        try {
+          final start = DateTime.fromMillisecondsSinceEpoch(item['start'] as int, isUtc: true);
+          final stop = DateTime.fromMillisecondsSinceEpoch(item['stop'] as int, isUtc: true);
+          if (!stop.isAfter(cutoff) || start.isAfter(horizon)) continue;
+          list.add(EpgProgram(
+            title: item['title']?.toString() ?? '',
+            description: item['description']?.toString() ?? '',
+            start: start,
+            stop: stop,
+          ));
+        } catch (_) {}
+      }
+      list.sort((a, b) => a.start.compareTo(b.start));
+      if (list.isNotEmpty) result[entry.key.toString()] = list;
+    }
+    return result;
+  }
+
+  Future<void> _loadCachedEpg() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getString('ananta_epg_3day_cache_v1');
+      if (cached == null || cached.isEmpty) return;
+      final decoded = jsonDecode(cached);
+      if (decoded is! Map) return;
+      final byId = _epgMapFromJson(decoded['byId']);
+      final byName = _epgMapFromJson(decoded['byName']);
+      if (!mounted || (byId.isEmpty && byName.isEmpty)) return;
+      setState(() {
+        _epgById = byId;
+        _epgByName = byName;
+        _epgStatus = 'Using saved programme guide';
+        _rebuildEpgChannelIndex();
+      });
+    } catch (error) {
+      debugPrint('Cached EPG could not be loaded: $error');
+    }
+  }
+
+  Future<void> _saveCachedEpg(
+    Map<String, List<EpgProgram>> byId,
+    Map<String, List<EpgProgram>> byName,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('ananta_epg_3day_cache_v1', jsonEncode({
+        'savedAt': DateTime.now().millisecondsSinceEpoch,
+        'byId': _epgMapToJson(byId),
+        'byName': _epgMapToJson(byName),
+      }));
+    } catch (error) {
+      debugPrint('Cached EPG could not be saved: $error');
+    }
+  }
+
   Future<void> _loadEpg() async {
     final candidatesById = <String, List<EpgProgram>>{};
     final namesById = <String, List<String>>{};
@@ -925,12 +1046,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       list.sort((a, b) => a.start.compareTo(b.start));
     }
     if (!mounted) return;
+    if (byId.isNotEmpty || byName.isNotEmpty) {
+      await _saveCachedEpg(byId, byName);
+    }
+    if (!mounted) return;
     setState(() {
       if (byId.isNotEmpty || byName.isNotEmpty) {
         _epgById = byId;
         _epgByName = byName;
         _epgStatus = 'Guide loaded from $successfulSources source(s)';
-      } else {
+      } else if (_epgById.isEmpty && _epgByName.isEmpty) {
         _epgStatus = 'Programme guide unavailable';
       }
       _rebuildEpgChannelIndex();
@@ -977,13 +1102,116 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   void _rebuildEpgChannelIndex() {
-    _epgByChannelUrl = <String, List<EpgProgram>>{
-      for (final channel in _channels) channel.url: _resolveEpgCandidates(channel),
-    };
+    final now = DateTime.now().toUtc();
+    final start = now.subtract(const Duration(days: 3));
+    final end = now.add(const Duration(days: 3));
+    final byUrl = <String, List<EpgProgram>>{};
+    final schedules = <String, List<EpgProgram>>{};
+    for (final channel in _channels) {
+      final source = _resolveEpgCandidates(channel);
+      byUrl[channel.url] = source;
+      schedules[channel.url] = source
+          .where((p) => p.stop.isAfter(start) && p.start.isBefore(end))
+          .toList(growable: false);
+    }
+    _epgByChannelUrl = byUrl;
+    _epgScheduleByChannelUrl = schedules;
   }
 
   EpgProgram? _epgForChannel(Channel channel) =>
-      _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
+      _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? const <EpgProgram>[]);
+
+  List<EpgProgram> _epgScheduleForChannel(Channel channel) =>
+      _epgScheduleByChannelUrl[channel.url] ?? const <EpgProgram>[];
+
+  Channel? _tvEpgPreviewChannel(List<Channel> channels) {
+    if (_tvShowingCategories) return _selectedChannel;
+    if (channels.isEmpty) return _selectedChannel;
+    final index = _tvFocusedChannelIndex.clamp(0, channels.length - 1).toInt();
+    return channels[index];
+  }
+
+  String _formatEpgTime(DateTime value) {
+    final local = value.toLocal();
+    final hour = local.hour % 12 == 0 ? 12 : local.hour % 12;
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$hour:$minute ${local.hour >= 12 ? 'PM' : 'AM'}';
+  }
+
+  Widget _buildTvEpgPanel(Channel channel) {
+    final schedule = _epgScheduleForChannel(channel);
+    final now = DateTime.now().toUtc();
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xE6101020),
+        border: Border(right: BorderSide(color: Colors.white.withOpacity(0.10))),
+      ),
+      child: SafeArea(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 12, 10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('3-DAY TV GUIDE', style: TextStyle(fontSize: 11, letterSpacing: 1.3, color: Color(0xFFC9BEFF), fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(channel.name.trim(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              Text(channel.group, style: const TextStyle(fontSize: 11, color: Colors.white60)),
+            ]),
+          ),
+          const Divider(height: 1, color: Colors.white12),
+          Expanded(
+            child: schedule.isEmpty
+              ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_epgStatus == 'Loading programme guide…' ? 'Loading guide…' : 'No 3-day guide available for this channel', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white60, fontSize: 12))))
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
+                  itemCount: schedule.length,
+                  itemBuilder: (context, index) {
+                    final program = schedule[index];
+                    final current = program.isAiringAt(now);
+                    final previous = index == 0 ? null : schedule[index - 1];
+                    final newDay = previous == null || previous.start.toLocal().year != program.start.toLocal().year || previous.start.toLocal().month != program.start.toLocal().month || previous.start.toLocal().day != program.start.toLocal().day;
+                    final localStart = program.start.toLocal();
+                    final dayLabel = '${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][localStart.weekday - 1]}, ${localStart.day.toString().padLeft(2, '0')}/${localStart.month.toString().padLeft(2, '0')}';
+                    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      if (newDay) Padding(padding: const EdgeInsets.fromLTRB(4, 8, 4, 5), child: Text(dayLabel, style: const TextStyle(color: Color(0xFFC9BEFF), fontSize: 11, fontWeight: FontWeight.bold))),
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.all(9),
+                        decoration: BoxDecoration(
+                          color: current ? accentColor.withOpacity(0.22) : Colors.white.withOpacity(0.045),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: current ? accentColor.withOpacity(0.75) : Colors.white.withOpacity(0.07)),
+                        ),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Row(children: [
+                            Text(_formatEpgTime(program.start), style: const TextStyle(fontSize: 10, color: Colors.white60, fontWeight: FontWeight.w600)),
+                            const Spacer(),
+                            if (current) const Text('NOW', style: TextStyle(fontSize: 9, color: Color(0xFFD6CCFF), fontWeight: FontWeight.bold, letterSpacing: 1)),
+                          ]),
+                          const SizedBox(height: 4),
+                          Text(program.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, fontWeight: current ? FontWeight.bold : FontWeight.w500)),
+                          if (program.description.isNotEmpty) ...[
+                            const SizedBox(height: 3),
+                            Text(program.description, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white60, height: 1.2)),
+                          ],
+                          if (current) ...[
+                            const SizedBox(height: 7),
+                            ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(
+                              value: program.stop.isAfter(program.start) ? (now.difference(program.start).inMilliseconds / program.stop.difference(program.start).inMilliseconds).clamp(0.0, 1.0).toDouble() : 0.0,
+                              minHeight: 3,
+                              backgroundColor: Colors.white12,
+                              valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
+                            )),
+                          ],
+                        ]),
+                      ),
+                    ]);
+                  },
+                ),
+          ),
+        ]),
+      ),
+    );
+  }
 
   String _epgLabel(Channel channel) {
     final program = _epgForChannel(channel);
@@ -1494,6 +1722,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                                 Text(_selectedChannel!.name.trim(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                                 const SizedBox(height: 3),
                                 Text(_epgLabel(_selectedChannel!), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFFD2C8FF), fontWeight: FontWeight.w600)),
+                                if (_epgForChannel(_selectedChannel!) != null && _epgForChannel(_selectedChannel!)!.isAiringAt(DateTime.now().toUtc())) ...[
+                                  const SizedBox(height: 5),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: LinearProgressIndicator(
+                                      value: (() { final p = _epgForChannel(_selectedChannel!)!; final n = DateTime.now().toUtc(); return p.stop.isAfter(p.start) ? (n.difference(p.start).inMilliseconds / p.stop.difference(p.start).inMilliseconds).clamp(0.0, 1.0).toDouble() : 0.0; })(),
+                                      minHeight: 3,
+                                      backgroundColor: Colors.white12,
+                                      valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
+                                    ),
+                                  ),
+                                ],
                                 const SizedBox(height: 3),
                                 Text(_selectedChannel!.group, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white60)),
                                 if ((_epgForChannel(_selectedChannel!)?.description ?? '').isNotEmpty)
