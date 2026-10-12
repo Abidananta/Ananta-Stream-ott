@@ -89,6 +89,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   bool _tvSidebarVisible = true;
   int _tvFocusedChannelIndex = 0;
   final ScrollController _tvChannelScrollController = ScrollController();
+  final FocusNode _tvPlayerFocusNode = FocusNode(debugLabel: 'tv-player');
   final Map<String, FocusNode> _tvChannelFocusNodes = {};
   int _playlistRequestId = 0;
   int _playRequestId = 0;
@@ -100,9 +101,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _loadPlaylist();
   }
 
-  // Xiaomi Mi Box / Android TV remote handling. Channel focus is managed
-  // explicitly because some TV remotes do not trigger Flutter's default
-  // ListTile traversal consistently.
+  // Xiaomi Mi Box / Android TV remote handling. Focus and index are managed
+  // explicitly, and KeyRepeatEvent is supported so held D-pad directions browse
+  // long channel lists smoothly rather than moving only one row per press.
   void _focusTvChannel(int index, {bool requestFocus = true}) {
     final channels = _visibleChannels;
     if (channels.isEmpty) return;
@@ -113,11 +114,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_tvChannelScrollController.hasClients) return;
-      final target = (safeIndex * 76.0).clamp(
+      // Each list row uses a fixed extent so remote navigation can scroll
+      // predictably even when the playlist contains hundreds of channels.
+      final target = (safeIndex * 80.0).clamp(
         0.0,
         _tvChannelScrollController.position.maxScrollExtent,
       ).toDouble();
-      _tvChannelScrollController.jumpTo(target);
+      _tvChannelScrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOutCubic,
+      );
       if (requestFocus) {
         final node = _tvChannelFocusNodes[channels[safeIndex].url];
         if (node != null && node.canRequestFocus) node.requestFocus();
@@ -125,19 +132,41 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     });
   }
 
-  KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    final primaryContext = FocusManager.instance.primaryFocus?.context;
-    if (primaryContext?.widget is EditableText) return KeyEventResult.ignored;
+  void _focusTvPlayer() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_tvPlayerFocusNode.canRequestFocus) return;
+      _tvPlayerFocusNode.requestFocus();
+    });
+  }
 
+  KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
+    // Xiaomi remotes generate KeyRepeatEvent while a direction is held.
+    // Handle repeats as well as initial key-down, otherwise browsing appears
+    // to freeze after one channel when users hold UP/DOWN.
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
     final channels = _visibleChannels;
+    final editingSearch = primaryContext?.widget is EditableText;
+
+    // Let the text field own normal typing/Enter, but allow UP/DOWN to leave
+    // the search field and resume channel browsing on TV remotes.
+    if (editingSearch &&
+        key != LogicalKeyboardKey.arrowUp &&
+        key != LogicalKeyboardKey.arrowDown) {
+      return KeyEventResult.ignored;
+    }
+
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
-      if (!_tvSidebarVisible) {
+      if (channels.isEmpty) return KeyEventResult.handled;
+      final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+      if (!_tvSidebarVisible || editingSearch) {
         final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
-        _focusTvChannel(current >= 0 ? current : _tvFocusedChannelIndex);
-      } else if (channels.isNotEmpty) {
-        final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+        final base = current >= 0 ? current : _tvFocusedChannelIndex;
+        _focusTvChannel((base + delta).clamp(0, channels.length - 1).toInt());
+      } else {
         _focusTvChannel((_tvFocusedChannelIndex + delta).clamp(0, channels.length - 1).toInt());
       }
       return KeyEventResult.handled;
@@ -162,6 +191,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _changeChannel(key == LogicalKeyboardKey.arrowLeft ? -1 : 1);
       }
       if (mounted) setState(() => _tvSidebarVisible = false);
+      _focusTvPlayer();
       _showPlayerControls();
       return KeyEventResult.handled;
     }
@@ -176,7 +206,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   KeyEventResult _handleChannelTileKey(FocusNode node, KeyEvent event, int index) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
       final channels = _visibleChannels;
@@ -202,18 +234,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        Positioned.fill(child: _buildPlayer(fullscreen: true)),
-        if (_selectedChannel == null && !_connecting)
-          const IgnorePointer(
-            child: Align(
-              alignment: Alignment.bottomLeft,
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('Press UP or DOWN to browse channels',
-                  style: TextStyle(color: Colors.white70, fontSize: 16)),
-              ),
-            ),
+        Positioned.fill(
+          child: Focus(
+            focusNode: _tvPlayerFocusNode,
+            onKeyEvent: _handleRemoteKey,
+            child: _buildPlayer(fullscreen: true),
           ),
+        ),
         AnimatedPositioned(
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
@@ -258,7 +285,19 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                             padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
                             child: TextField(
                               controller: _searchController,
-                              onChanged: (value) => setState(() => _searchQuery = value),
+                              textInputAction: TextInputAction.search,
+                              onSubmitted: (_) {
+                                FocusScope.of(context).unfocus();
+                                if (_visibleChannels.isNotEmpty) {
+                                  _focusTvChannel(0);
+                                }
+                              },
+                              onChanged: (value) {
+                                setState(() {
+                                  _searchQuery = value;
+                                  _tvFocusedChannelIndex = 0;
+                                });
+                              },
                               style: const TextStyle(fontSize: 14),
                               decoration: InputDecoration(
                                 hintText: 'Search channels',
@@ -267,7 +306,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                                   tooltip: 'Clear search',
                                   onPressed: () {
                                     _searchController.clear();
-                                    setState(() => _searchQuery = '');
+                                    setState(() {
+                                      _searchQuery = '';
+                                      _tvFocusedChannelIndex = 0;
+                                    });
                                   },
                                   icon: const Icon(Icons.clear, size: 18),
                                 ),
@@ -317,14 +359,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                                     controller: _tvChannelScrollController,
                                     padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
                                     itemCount: channels.length,
+                                    itemExtent: 80,
                                     itemBuilder: (context, index) => _buildTvChannelTile(channels[index], index),
                                   ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 6, 14, 12),
-                            child: Text('UP/DOWN browse • OK play • LEFT/RIGHT change channel',
-                              maxLines: 2, overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: Colors.white54, fontSize: 10)),
                           ),
                         ],
                       ),
@@ -372,10 +409,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               ),
             ),
             child: ListTile(
-              autofocus: selected ||
-                  (_selectedChannel == null &&
-                   _visibleChannels.isNotEmpty &&
-                   channel.url == _visibleChannels.first.url),
               focusColor: accentColor.withOpacity(0.22),
               hoverColor: accentColor.withOpacity(0.16),
               dense: false,
@@ -639,6 +672,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (_connecting) return;
     final requestId = ++_playRequestId;
     final oldPlayer = _player;
+    final oldChannel = _selectedChannel;
     _controlsTimer?.cancel();
     final controller = VideoPlayerController.networkUrl(
       Uri.parse(channel.url),
@@ -649,7 +683,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       },
     );
     setState(() {
-      _player = controller;
+      // Keep the currently playing controller visible while the next stream
+      // initializes. This avoids a black screen on every channel change.
       _selectedChannel = channel;
       _playerError = null;
       _connecting = true;
@@ -657,8 +692,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _tvSidebarVisible = false;
       _status = 'Connecting to ${channel.name}...';
     });
+    _focusTvPlayer();
     try {
-      await oldPlayer?.dispose();
       await controller.initialize().timeout(
         const Duration(seconds: 35),
       );
@@ -671,33 +706,53 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           controller.value.errorDescription ?? 'Player error',
         );
       }
+
+      // Switch only after the new stream is ready. Pause the old stream at
+      // the handoff, then replace/dispose it once the new player starts.
+      await oldPlayer?.pause();
       await controller.play();
-      // Keep the display awake for the duration of live playback.
-      await WakelockPlus.enable();
-      if (!mounted || requestId != _playRequestId) return;
+      if (!mounted || requestId != _playRequestId) {
+        await controller.dispose();
+        return;
+      }
       setState(() {
+        _player = controller;
         _status = 'Playing ${channel.name}';
         _connecting = false;
       });
+      await oldPlayer?.dispose();
+      await WakelockPlus.enable();
       _scheduleControlsHide();
     } on TimeoutException {
       await controller.dispose();
       if (!mounted || requestId != _playRequestId) return;
-      await WakelockPlus.disable();
+      if (oldPlayer != null && oldPlayer.value.isInitialized && !oldPlayer.value.isPlaying) {
+        try { await oldPlayer.play(); } catch (_) {}
+      }
+      if (oldPlayer == null || !oldPlayer.value.isPlaying) {
+        await WakelockPlus.disable();
+      }
       setState(() {
-        _player = null;
-        _playerError = 'Connection timed out. Please retry.';
+        _player = oldPlayer;
+        _selectedChannel = oldChannel;
+        _playerError = oldPlayer == null ? 'Connection timed out. Please retry.' : null;
         _status = 'Connection timed out';
         _connecting = false;
       });
     } catch (e) {
       debugPrint('Playback error for ${channel.url}: $e');
-      await WakelockPlus.disable();
       await controller.dispose();
       if (!mounted || requestId != _playRequestId) return;
+      if (oldPlayer != null && oldPlayer.value.isInitialized && !oldPlayer.value.isPlaying) {
+        try { await oldPlayer.play(); } catch (_) {}
+      }
+      if (oldPlayer == null || !oldPlayer.value.isPlaying) {
+        await WakelockPlus.disable();
+      }
       setState(() {
-        _player = null;
-        _playerError = e.toString();
+        _player = oldPlayer;
+        _selectedChannel = oldChannel;
+        _playerError = oldPlayer == null ? e.toString() : null;
         _status = 'Playback failed';
         _connecting = false;
       });
@@ -1130,6 +1185,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _playRequestId++;
     _searchController.dispose();
     _tvChannelScrollController.dispose();
+    _tvPlayerFocusNode.dispose();
     for (final node in _tvChannelFocusNodes.values) { node.dispose(); }
     _tvChannelFocusNodes.clear();
     _player?.dispose();
