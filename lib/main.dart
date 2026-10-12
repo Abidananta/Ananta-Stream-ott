@@ -329,6 +329,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
+    final isConfirmKey = key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter ||
+        key == LogicalKeyboardKey.gameButtonA;
+    // Some TV remotes emit confirm-key repeat events when the button is held.
+    // Do not repeatedly rebuild the sidebar or issue duplicate playback requests.
+    if (isConfirmKey && event is KeyRepeatEvent) return KeyEventResult.handled;
     final channels = _visibleChannels;
     final categories = _categories;
     final editingSearch = primaryContext?.widget is EditableText;
@@ -891,8 +898,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   Future<void> _initializeEpg() async {
-    await _loadCachedEpg();
-    if (mounted) await _loadEpg();
+    // Load the on-device guide first. If it is younger than two hours, do not
+    // hit EPG servers again during startup; the periodic timer handles refresh.
+    final cacheIsFresh = await _loadCachedEpg();
+    if (mounted && !cacheIsFresh) unawaited(_loadEpg());
   }
 
   Map<String, dynamic> _epgMapToJson(Map<String, List<EpgProgram>> source) => {
@@ -933,24 +942,33 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     return result;
   }
 
-  Future<void> _loadCachedEpg() async {
+  Future<bool> _loadCachedEpg() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final cached = prefs.getString('ananta_epg_3day_cache_v1');
-      if (cached == null || cached.isEmpty) return;
+      if (cached == null || cached.isEmpty) return false;
       final decoded = jsonDecode(cached);
-      if (decoded is! Map) return;
+      if (decoded is! Map) return false;
+      final savedAtRaw = decoded['savedAt'];
+      final savedAt = savedAtRaw is int ? savedAtRaw : 0;
+      final age = DateTime.now().millisecondsSinceEpoch - savedAt;
+      final cacheIsFresh = savedAt > 0 && age >= 0 &&
+          age < const Duration(hours: 2).inMilliseconds;
       final byId = _epgMapFromJson(decoded['byId']);
       final byName = _epgMapFromJson(decoded['byName']);
-      if (!mounted || (byId.isEmpty && byName.isEmpty)) return;
+      if (!mounted || (byId.isEmpty && byName.isEmpty)) return false;
       setState(() {
         _epgById = byId;
         _epgByName = byName;
-        _epgStatus = 'Using saved programme guide';
+        _epgStatus = cacheIsFresh
+            ? 'Using saved programme guide'
+            : 'Using saved guide; refresh pending';
         _rebuildEpgChannelIndex();
       });
+      return cacheIsFresh;
     } catch (error) {
       debugPrint('Cached EPG could not be loaded: $error');
+      return false;
     }
   }
 
