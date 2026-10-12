@@ -87,9 +87,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   bool _controlsVisible = true;
   bool _fullscreen = false;
   bool _tvSidebarVisible = true;
+  bool _tvShowingCategories = false;
   int _tvFocusedChannelIndex = 0;
+  int _tvFocusedCategoryIndex = 0;
   final ScrollController _tvChannelScrollController = ScrollController();
   final FocusNode _tvPlayerFocusNode = FocusNode(debugLabel: 'tv-player');
+  final FocusNode _tvSearchFocusNode = FocusNode(debugLabel: 'tv-channel-search');
   final Map<String, FocusNode> _tvChannelFocusNodes = {};
   int _playlistRequestId = 0;
   int _playRequestId = 0;
@@ -112,23 +115,24 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _tvFocusedChannelIndex = safeIndex;
       _tvSidebarVisible = true;
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || !_tvChannelScrollController.hasClients) return;
-      // Each list row uses a fixed extent so remote navigation can scroll
-      // predictably even when the playlist contains hundreds of channels.
+      // Scroll first so ListView builds the destination row before requesting
+      // its FocusNode. Requesting focus before this point fails for off-screen
+      // rows and makes UP/DOWN appear to stop working on Android TV.
       final target = (safeIndex * 80.0).clamp(
         0.0,
         _tvChannelScrollController.position.maxScrollExtent,
       ).toDouble();
-      _tvChannelScrollController.animateTo(
+      await _tvChannelScrollController.animateTo(
         target,
-        duration: const Duration(milliseconds: 120),
+        duration: const Duration(milliseconds: 100),
         curve: Curves.easeOutCubic,
       );
-      if (requestFocus) {
-        final node = _tvChannelFocusNodes[channels[safeIndex].url];
-        if (node != null && node.canRequestFocus) node.requestFocus();
-      }
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || !requestFocus) return;
+      final node = _tvChannelFocusNodes[channels[safeIndex].url];
+      if (node != null && node.canRequestFocus) node.requestFocus();
     });
   }
 
@@ -139,46 +143,99 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     });
   }
 
+  void _focusTvCategory(int index) {
+    final categories = _categories;
+    if (categories.isEmpty) return;
+    setState(() {
+      _tvSidebarVisible = true;
+      _tvShowingCategories = true;
+      _tvFocusedCategoryIndex = index.clamp(0, categories.length - 1).toInt();
+    });
+    FocusManager.instance.primaryFocus?.unfocus();
+    _focusTvPlayer();
+  }
+
+  void _showTvChannels({int? index}) {
+    final channels = _visibleChannels;
+    setState(() {
+      _tvShowingCategories = false;
+      _tvSidebarVisible = true;
+      if (index != null && channels.isNotEmpty) {
+        _tvFocusedChannelIndex = index.clamp(0, channels.length - 1).toInt();
+      }
+    });
+    FocusManager.instance.primaryFocus?.unfocus();
+    _focusTvChannel(_tvFocusedChannelIndex);
+  }
+
   KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
-    // Xiaomi remotes generate KeyRepeatEvent while a direction is held.
-    // Handle repeats as well as initial key-down, otherwise browsing appears
-    // to freeze after one channel when users hold UP/DOWN.
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
     final channels = _visibleChannels;
+    final categories = _categories;
     final editingSearch = primaryContext?.widget is EditableText;
 
-    // Let the text field own normal typing/Enter, but allow UP/DOWN to leave
-    // the search field and resume channel browsing on TV remotes.
-    if (editingSearch &&
-        key != LogicalKeyboardKey.arrowUp &&
-        key != LogicalKeyboardKey.arrowDown) {
-      return KeyEventResult.ignored;
+    // Search remains usable with the TV keyboard. D-pad UP opens categories;
+    // DOWN moves into results, avoiding a focus trap inside the text field.
+    if (editingSearch) {
+      if (key == LogicalKeyboardKey.arrowDown) {
+        FocusManager.instance.primaryFocus?.unfocus();
+        _showTvChannels(index: 0);
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowUp) {
+        _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
+        return KeyEventResult.handled;
+      }
+      if (key != LogicalKeyboardKey.escape && key != LogicalKeyboardKey.browserBack) {
+        return KeyEventResult.ignored;
+      }
     }
 
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
-      if (channels.isEmpty) return KeyEventResult.handled;
       final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
-      if (!_tvSidebarVisible || editingSearch) {
+      if (_tvShowingCategories) {
+        if (categories.isNotEmpty) {
+          setState(() => _tvFocusedCategoryIndex = (_tvFocusedCategoryIndex + delta).clamp(0, categories.length - 1).toInt());
+        }
+        return KeyEventResult.handled;
+      }
+      if (channels.isEmpty) return KeyEventResult.handled;
+      if (!_tvSidebarVisible) {
         final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
-        final base = current >= 0 ? current : _tvFocusedChannelIndex;
-        _focusTvChannel((base + delta).clamp(0, channels.length - 1).toInt());
+        _focusTvChannel((current >= 0 ? current : _tvFocusedChannelIndex));
+        return KeyEventResult.handled;
+      }
+      final currentFocus = FocusManager.instance.primaryFocus;
+      if (currentFocus == _tvSearchFocusNode) {
+        FocusManager.instance.primaryFocus?.unfocus();
+        _showTvChannels(index: 0);
       } else {
         _focusTvChannel((_tvFocusedChannelIndex + delta).clamp(0, channels.length - 1).toInt());
       }
       return KeyEventResult.handled;
     }
 
-    if (key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.gameButtonA) {
+    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
       if (!_tvSidebarVisible) {
         final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
-        _focusTvChannel(current >= 0 ? current : _tvFocusedChannelIndex);
+        _showTvChannels(index: current >= 0 ? current : _tvFocusedChannelIndex);
+      } else if (_tvShowingCategories) {
+        if (categories.isNotEmpty) {
+          final category = categories[_tvFocusedCategoryIndex.clamp(0, categories.length - 1)];
+          setState(() {
+            _selectedCategory = category;
+            _tvShowingCategories = false;
+            _tvFocusedChannelIndex = 0;
+          });
+          _searchController.clear();
+          _searchQuery = '';
+          _showTvChannels(index: 0);
+        }
       } else if (channels.isNotEmpty) {
         final index = _tvFocusedChannelIndex.clamp(0, channels.length - 1).toInt();
         _playChannel(channels[index]);
@@ -186,19 +243,44 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return KeyEventResult.handled;
     }
 
-    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-      if (channels.isNotEmpty) {
-        _changeChannel(key == LogicalKeyboardKey.arrowLeft ? -1 : 1);
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      if (_tvSidebarVisible && !_tvShowingCategories) {
+        _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
+      } else if (_tvShowingCategories) {
+        _showTvChannels(index: _tvFocusedChannelIndex);
+      } else {
+        if (channels.isNotEmpty) _changeChannel(-1);
+        setState(() => _tvSidebarVisible = false);
+        _focusTvPlayer();
+        _showPlayerControls();
       }
-      if (mounted) setState(() => _tvSidebarVisible = false);
-      _focusTvPlayer();
-      _showPlayerControls();
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.arrowRight) {
+      if (_tvShowingCategories) {
+        _showTvChannels(index: _tvFocusedChannelIndex);
+      } else if (_tvSidebarVisible) {
+        if (channels.isNotEmpty) _changeChannel(1);
+        setState(() => _tvSidebarVisible = false);
+        _focusTvPlayer();
+        _showPlayerControls();
+      } else {
+        if (channels.isNotEmpty) _changeChannel(1);
+        _showPlayerControls();
+      }
       return KeyEventResult.handled;
     }
 
     if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.browserBack) {
+      if (_tvShowingCategories) {
+        _showTvChannels(index: _tvFocusedChannelIndex);
+        return KeyEventResult.handled;
+      }
       if (_tvSidebarVisible) {
         setState(() => _tvSidebarVisible = false);
+        FocusManager.instance.primaryFocus?.unfocus();
+        _focusTvPlayer();
         return KeyEventResult.handled;
       }
     }
@@ -206,19 +288,20 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   KeyEventResult _handleChannelTileKey(FocusNode node, KeyEvent event, int index) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
+    final channels = _visibleChannels;
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
-      final channels = _visibleChannels;
       final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+      if (key == LogicalKeyboardKey.arrowUp && index == 0) {
+        _tvSearchFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
       _focusTvChannel((index + delta).clamp(0, channels.length - 1).toInt());
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
-      final channels = _visibleChannels;
       if (index >= 0 && index < channels.length) _playChannel(channels[index]);
       return KeyEventResult.handled;
     }
@@ -284,18 +367,21 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                           Padding(
                             padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
                             child: TextField(
+                              focusNode: _tvSearchFocusNode,
                               controller: _searchController,
                               textInputAction: TextInputAction.search,
                               onSubmitted: (_) {
                                 FocusScope.of(context).unfocus();
                                 if (_visibleChannels.isNotEmpty) {
-                                  _focusTvChannel(0);
+                                  FocusManager.instance.primaryFocus?.unfocus();
+                                  _showTvChannels(index: 0);
                                 }
                               },
                               onChanged: (value) {
                                 setState(() {
                                   _searchQuery = value;
                                   _tvFocusedChannelIndex = 0;
+                                  _tvShowingCategories = false;
                                 });
                               },
                               style: const TextStyle(fontSize: 14),
@@ -335,13 +421,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                             child: Row(
                               children: [
-                                const Expanded(child: Text('CHANNELS', style: TextStyle(
+                                Expanded(child: Text(_tvShowingCategories ? 'CATEGORIES' : 'CHANNELS', style: const TextStyle(
                                   color: Colors.white70, fontSize: 11,
                                   fontWeight: FontWeight.bold, letterSpacing: 1.2,
                                 ))),
-                                Text('${channels.length}', style: const TextStyle(
+                                Text(_tvShowingCategories ? '${_categories.length}' : '${channels.length}', style: const TextStyle(
                                   color: Colors.white54, fontSize: 11,
                                 )),
+                                IconButton(
+                                  tooltip: _tvShowingCategories ? 'Show channels' : 'Browse categories',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () {
+                                    if (_tvShowingCategories) { _showTvChannels(index: _tvFocusedChannelIndex); }
+                                    else { _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, _categories.length - 1).toInt()); }
+                                  },
+                                  icon: Icon(_tvShowingCategories ? Icons.live_tv : Icons.category_outlined, color: accentColor, size: 19),
+                                ),
                                 IconButton(
                                   tooltip: _showFavoritesOnly ? 'Show all channels' : 'Show favorites',
                                   visualDensity: VisualDensity.compact,
@@ -353,15 +448,57 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                             ),
                           ),
                           Expanded(
-                            child: channels.isEmpty
-                                ? const Center(child: Text('No channels found', style: TextStyle(color: Colors.white60)))
-                                : ListView.builder(
-                                    controller: _tvChannelScrollController,
+                            child: _tvShowingCategories
+                                ? ListView.builder(
                                     padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-                                    itemCount: channels.length,
-                                    itemExtent: 80,
-                                    itemBuilder: (context, index) => _buildTvChannelTile(channels[index], index),
-                                  ),
+                                    itemCount: _categories.length,
+                                    itemExtent: 58,
+                                    itemBuilder: (context, index) {
+                                      final category = _categories[index];
+                                      final focused = index == _tvFocusedCategoryIndex;
+                                      final selected = category == _selectedCategory;
+                                      final count = category == 'All'
+                                          ? _channels.length
+                                          : _channels.where((c) => c.group == category).length;
+                                      return Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
+                                        child: AnimatedContainer(
+                                          duration: const Duration(milliseconds: 100),
+                                          decoration: BoxDecoration(
+                                            color: focused ? accentColor.withOpacity(0.34) : Colors.white.withOpacity(0.045),
+                                            borderRadius: BorderRadius.circular(12),
+                                            border: Border.all(color: focused ? accentColor : (selected ? accentColor.withOpacity(0.55) : Colors.white.withOpacity(0.08)), width: focused ? 2 : 1),
+                                          ),
+                                          child: ListTile(
+                                            dense: true,
+                                            leading: Icon(category == 'All' ? Icons.apps_rounded : Icons.folder_outlined, color: selected ? accentColor : Colors.white70, size: 20),
+                                            title: Text(category, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.normal)),
+                                            trailing: Text('$count', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                                            onTap: () {
+                                              setState(() {
+                                                _selectedCategory = category;
+                                                _tvFocusedCategoryIndex = index;
+                                                _tvShowingCategories = false;
+                                                _tvFocusedChannelIndex = 0;
+                                              });
+                                              _searchController.clear();
+                                              _searchQuery = '';
+                                              _showTvChannels(index: 0);
+                                            },
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  )
+                                : channels.isEmpty
+                                    ? const Center(child: Text('No channels found', style: TextStyle(color: Colors.white60)))
+                                    : ListView.builder(
+                                        controller: _tvChannelScrollController,
+                                        padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                                        itemCount: channels.length,
+                                        itemExtent: 80,
+                                        itemBuilder: (context, index) => _buildTvChannelTile(channels[index], index),
+                                      ),
                           ),
                         ],
                       ),
@@ -1015,6 +1152,53 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                     ),
                   ),
                 ),
+              if (tvMode && _selectedChannel != null)
+                Positioned(
+                  bottom: initialized ? 56 : 12,
+                  left: 18,
+                  right: 18,
+                  child: IgnorePointer(
+                    child: _glass(
+                      radius: 14,
+                      color: const Color(0xB5101020),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 42,
+                            height: 42,
+                            decoration: BoxDecoration(
+                              color: accentColor.withOpacity(0.18),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: accentColor.withOpacity(0.45)),
+                            ),
+                            child: _selectedChannel!.logo.isNotEmpty
+                                ? ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.network(_selectedChannel!.logo, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
+                                : const Icon(Icons.live_tv, color: accentColor, size: 23),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(_selectedChannel!.name.trim(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                                const SizedBox(height: 3),
+                                Text(_selectedChannel!.group, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.18), borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.redAccent.withOpacity(0.55))),
+                            child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.circle, color: Colors.redAccent, size: 7), SizedBox(width: 6), Text('LIVE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.1))]),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               if (initialized)
                 Positioned(
                   bottom: 8,
@@ -1186,6 +1370,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _searchController.dispose();
     _tvChannelScrollController.dispose();
     _tvPlayerFocusNode.dispose();
+    _tvSearchFocusNode.dispose();
     for (final node in _tvChannelFocusNodes.values) { node.dispose(); }
     _tvChannelFocusNodes.clear();
     _player?.dispose();
