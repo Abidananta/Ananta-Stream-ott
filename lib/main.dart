@@ -764,12 +764,21 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       await _setFullscreen(false);
       return false;
     }
+
     final media = MediaQuery.maybeOf(context);
-    final tvMode = media != null && media.size.width >= 850 && media.size.width > media.size.height;
-    if (tvMode) {
-      setState(() => _tvSidebarVisible = !_tvSidebarVisible);
+    final tvMode = media != null &&
+        media.size.width >= 850 &&
+        media.size.width > media.size.height;
+
+    if (tvMode && _tvSidebarVisible) {
+      // First BACK closes the channel rail. A subsequent BACK is allowed to
+      // leave the app instead of reopening/toggling the rail forever.
+      setState(() => _tvSidebarVisible = false);
+      FocusManager.instance.primaryFocus?.unfocus();
       return false;
     }
+
+    // Let Android handle BACK when the TV sidebar is already hidden.
     return true;
   }
 
@@ -1065,41 +1074,19 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     final favorite = _favorites.contains(channel.url);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Focus(
-        focusNode: focusNode,
-        autofocus: focusedByIndex,
-        onFocusChange: (hasFocus) {
-          if (hasFocus && mounted && _tvFocusedChannelIndex != index) {
-            setState(() => _tvFocusedChannelIndex = index);
-          }
-        },
-        onKeyEvent: (node, event) => _handleChannelTileKey(node, event, index),
-        child: Builder(builder: (context) {
-          final focused = Focus.of(context).hasFocus || focusedByIndex;
-          return _glass(
+      child: _glass(
         radius: 15,
         padding: EdgeInsets.zero,
-        color: focused ? const Color(0xFF514477) : (selected ? const Color(0xFF373052) : glassColor),
+        color: selected ? const Color(0xFF373052) : glassColor,
         child: ListTile(
-          focusColor: accentColor.withOpacity(0.22),
-          hoverColor: accentColor.withOpacity(0.16),
           dense: true,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 2,
-          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           leading: CircleAvatar(
             radius: 21,
             backgroundColor: accentColor.withOpacity(0.17),
-            backgroundImage: channel.logo.isNotEmpty
-                ? NetworkImage(channel.logo)
-                : null,
+            backgroundImage: channel.logo.isNotEmpty ? NetworkImage(channel.logo) : null,
             child: channel.logo.isEmpty
-                ? const Icon(
-                    Icons.live_tv,
-                    color: accentColor,
-                    size: 21,
-                  )
+                ? const Icon(Icons.live_tv, color: accentColor, size: 21)
                 : null,
           ),
           title: Text(
@@ -1108,18 +1095,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontSize: 13,
-              fontWeight:
-                  selected ? FontWeight.bold : FontWeight.w500,
+              fontWeight: selected ? FontWeight.bold : FontWeight.w500,
             ),
           ),
           subtitle: Text(
             channel.group,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Colors.white54,
-              fontSize: 11,
-            ),
+            style: const TextStyle(color: Colors.white54, fontSize: 11),
           ),
           trailing: IconButton(
             visualDensity: VisualDensity.compact,
@@ -1133,8 +1116,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           ),
           onTap: () => _playChannel(channel),
         ),
-          );
-        }),
       ),
     );
   }
