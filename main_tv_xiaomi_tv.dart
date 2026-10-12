@@ -84,14 +84,8 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
   }
   final now = DateTime.now().toUtc();
   final programmes = <Map<String, dynamic>>[];
-  // Bound XMLTV parsing on low-memory Android TV boxes. Three days normally
-  // needs far fewer than 120 entries per channel; caps protect against huge feeds.
-  const maxProgramsPerFeed = 40000;
-  const maxProgramsPerChannel = 120;
-  final programCounts = <String, int>{};
   final programmePattern = RegExp(r'<programme\b([^>]*)>(.*?)</programme\s*>', caseSensitive: false, dotAll: true);
   for (final match in programmePattern.allMatches(xml)) {
-    if (programmes.length >= maxProgramsPerFeed) break;
     final attrs = match.group(1) ?? '';
     final body = match.group(2) ?? '';
     final id = _epgAttribute(attrs, 'channel').trim();
@@ -101,19 +95,15 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
     if (start == null || stop == null ||
         !stop.isAfter(now.subtract(const Duration(days: 3))) ||
         start.isAfter(now.add(const Duration(days: 3)))) continue;
-    final count = programCounts[id] ?? 0;
-    if (count >= maxProgramsPerChannel) continue;
     final title = _epgTagText(body, 'title');
     if (title.isEmpty) continue;
-    final description = _epgTagText(body, 'desc');
     programmes.add(<String, dynamic>{
       'id': id,
       'title': title,
-      'description': description.substring(0, description.length.clamp(0, 180).toInt()),
+      'description': _epgTagText(body, 'desc'),
       'start': start.millisecondsSinceEpoch,
       'stop': stop.millisecondsSinceEpoch,
     });
-    programCounts[id] = count + 1;
   }
   return <String, dynamic>{'namesById': namesById, 'programmes': programmes};
 }
@@ -322,16 +312,33 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   void _showTvChannels({int? index}) {
+    if (!mounted) return;
     final channels = _visibleChannels;
+    final safeIndex = channels.isEmpty
+        ? 0
+        : (index ?? _tvFocusedChannelIndex).clamp(0, channels.length - 1).toInt();
+    // One state update only: the old implementation called _focusTvChannel,
+    // which performed a second setState and another scroll/focus pass on every
+    // Enter press. On low-memory TV boxes that made the live video stutter.
     setState(() {
       _tvShowingCategories = false;
       _tvSidebarVisible = true;
-      if (index != null && channels.isNotEmpty) {
-        _tvFocusedChannelIndex = index.clamp(0, channels.length - 1).toInt();
-      }
+      _tvEpgVisible = false;
+      _tvFocusedChannelIndex = safeIndex;
     });
     FocusManager.instance.primaryFocus?.unfocus();
-    _focusTvChannel(_tvFocusedChannelIndex);
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || !_tvChannelScrollController.hasClients || channels.isEmpty) return;
+      final maxExtent = _tvChannelScrollController.position.maxScrollExtent;
+      final target = (safeIndex * 96.0).clamp(0.0, maxExtent).toDouble();
+      if ((_tvChannelScrollController.offset - target).abs() > 1) {
+        _tvChannelScrollController.jumpTo(target);
+      }
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      final focus = _tvChannelFocusNodes[channels[safeIndex].url];
+      if (focus != null && focus.canRequestFocus) focus.requestFocus();
+    });
   }
 
   KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
@@ -382,8 +389,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       }
       if (channels.isEmpty) return KeyEventResult.handled;
       if (!_tvSidebarVisible) {
-        final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
-        _focusTvChannel((current >= 0 ? current : _tvFocusedChannelIndex));
+        // The hidden rail is deliberately inert. Only Enter/Select may open it;
+        // directional keys must never zap or reveal channels unexpectedly.
         return KeyEventResult.handled;
       }
       final currentFocus = FocusManager.instance.primaryFocus;
@@ -427,9 +434,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       } else if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
       } else {
-        // Do not change channels while the rail is hidden. Enter opens the
-        // rail; a channel can only be committed after explicit selection there.
-        _showPlayerControls();
+        // Hidden sidebar: ignore Left. Do not alter channel or player controls.
       }
       return KeyEventResult.handled;
     }
@@ -442,8 +447,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         // change the playing channel, so guide browsing cannot interrupt video.
         setState(() => _tvEpgVisible = !_tvEpgVisible);
       } else {
-        // Horizontal keys on the hidden player never trigger an accidental zap.
-        _showPlayerControls();
+        // Hidden sidebar: ignore Right as well; Enter is the only opener.
       }
       return KeyEventResult.handled;
     }
@@ -494,10 +498,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       fit: StackFit.expand,
       children: [
         Positioned.fill(
-          child: Focus(
-            focusNode: _tvPlayerFocusNode,
-            onKeyEvent: _handleRemoteKey,
-            child: _buildPlayer(fullscreen: true),
+          child: RepaintBoundary(
+            child: Focus(
+              focusNode: _tvPlayerFocusNode,
+              onKeyEvent: _handleRemoteKey,
+              child: _buildPlayer(fullscreen: true),
+            ),
           ),
         ),
         AnimatedPositioned(
@@ -512,7 +518,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
             child: AnimatedOpacity(
               duration: const Duration(milliseconds: 100),
               opacity: _tvSidebarVisible ? 1 : 0,
-              child: ClipRect(
+              child: RepaintBoundary(
+                child: ClipRect(
                 // A translucent panel is cheaper to render than a live blur
                 // on lower-powered TV boxes while keeping video visible.
                 child: Container(
@@ -681,6 +688,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                       ),
                     ),
                 ),
+              ),
               ),
             ),
           ),
@@ -908,10 +916,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   Future<void> _initializeEpg() async {
-    // Load the on-device guide first. If it is younger than two hours, do not
-    // hit EPG servers again during startup; the periodic timer handles refresh.
+    // Always show the on-device guide first. Only fetch on startup when the
+    // cache is absent/expired; a cache younger than two hours is never fetched
+    // again just because the app was reopened.
     final cacheIsFresh = await _loadCachedEpg();
-    if (mounted && !cacheIsFresh) unawaited(_loadEpg());
+    if (!mounted) return;
+    if (!cacheIsFresh) unawaited(_loadEpg());
   }
 
   Map<String, dynamic> _epgMapToJson(Map<String, List<EpgProgram>> source) => {
@@ -927,8 +937,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   Map<String, List<EpgProgram>> _epgMapFromJson(dynamic raw) {
     final result = <String, List<EpgProgram>>{};
     if (raw is! Map) return result;
-    final cutoff = DateTime.now().toUtc().subtract(const Duration(days: 3));
-    final horizon = DateTime.now().toUtc().add(const Duration(days: 3));
+    // Keep a rolling three-day guide on device: programmes that have ended
+    // are discarded, while the current and next three days remain available.
+    final now = DateTime.now().toUtc();
+    final cutoff = now.subtract(const Duration(hours: 6));
+    final horizon = now.add(const Duration(days: 3));
     for (final entry in raw.entries) {
       if (entry.value is! List) continue;
       final list = <EpgProgram>[];
@@ -1051,8 +1064,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     final byId = <String, List<EpgProgram>>{};
     final byName = <String, List<EpgProgram>>{};
     final seenProgramsByName = <String, Set<String>>{};
+    final epgNow = DateTime.now().toUtc();
+    final keepAfter = epgNow.subtract(const Duration(hours: 6));
+    final keepUntil = epgNow.add(const Duration(days: 3));
     for (final entry in candidatesById.entries) {
-      final programs = entry.value..sort((a, b) => a.start.compareTo(b.start));
+      final programs = entry.value
+        .where((p) => p.stop.isAfter(keepAfter) && p.start.isBefore(keepUntil))
+        .toList()
+        ..sort((a, b) => a.start.compareTo(b.start));
       if (programs.isNotEmpty) byId[entry.key] = programs;
       for (final name in namesById[entry.key] ?? const <String>[]) {
         final normalized = _normalizeEpgName(name);
@@ -1389,9 +1408,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (previousPending != null) {
       try { await previousPending.dispose(); } catch (_) {}
     }
-    // A newer remote selection can arrive while native dispose() is awaiting.
-    // Never let a stale request tear down the latest channel's player.
-    if (!mounted || requestId != _playRequestId) return;
     // Release the previous native decoder before creating another one. TV
     // boxes often have very limited hardware decoder slots; retaining two
     // ExoPlayer instances is a common cause of decoder errors and force-closes.
