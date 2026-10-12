@@ -1,0 +1,67 @@
+name: Build Ananta OTT APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android project scaffolding
+        run: flutter create --platforms=android --org com.ananta --project-name ott build_app
+
+      - name: Copy app source and configure Android TV
+        run: |
+          cp lib/main.dart build_app/lib/main.dart
+          cp pubspec.yaml build_app/pubspec.yaml
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          p = Path('build_app/android/app/src/main/AndroidManifest.xml')
+          text = p.read_text()
+          text = text.replace('android:label="ott"', 'android:label="Ananta OTT"')
+          text = text.replace('<application', '<uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n    <application', 1)
+          text = text.replace('<application', '<uses-permission android:name="android.permission.INTERNET" />\n    <application', 1)
+          text = text.replace('android:usesCleartextTraffic="false"', 'android:usesCleartextTraffic="true"')
+          if 'android:usesCleartextTraffic=' not in text:
+              text = text.replace('<application', '<application android:usesCleartextTraffic="true"', 1)
+          marker = '''<intent-filter>\n                <action android:name="android.intent.action.MAIN" />\n                <category android:name="android.intent.category.LAUNCHER" />\n            </intent-filter>'''
+          tv = marker + '''\n            <intent-filter>\n                <action android:name="android.intent.action.MAIN" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />\n            </intent-filter>'''
+          if 'android.intent.category.LEANBACK_LAUNCHER' not in text:
+              text = text.replace(marker, tv)
+          p.write_text(text)
+          PY
+
+      - name: Resolve dependencies and build release APK
+        working-directory: build_app
+        run: |
+          flutter pub get
+          flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ananta-ott-android-tv-apk
+          path: build_app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
