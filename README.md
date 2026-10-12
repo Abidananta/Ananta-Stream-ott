@@ -1,18 +1,15 @@
-Ananta OTT - Android TV Category & Search Fix
-This package updates the Flutter source for the Ananta OTT Android TV layout.
-TV remote behavior
-Press Enter/Select while the player is visible to open the channel sidebar at the currently selected channel.
-Use Up/Down to move the highlighted channel. Holding the direction should continue through the list.
-Press Left while the channel list is open to show channel categories.
-Use Up/Down to browse categories, then Enter/Select to apply a category.
-Press Right in categories to return to channels.
-From the first channel, press Up to focus search. Type using the TV keyboard, then press Enter/Search; press Down to return to results.
-Press Enter/Select on a highlighted channel to play it.
-The player remains full screen behind the transparent sidebar.
-A transparent channel information bar appears above the progress bar.
-Build using GitHub Actions
-Create/open a GitHub repository.
-Upload the contents of this folder to the repository root, preserving `.github/workflows/build-apk.yml`.
-Open Actions and run Build Ananta OTT APK.
-Download the `ananta-ott-android-tv-apk` artifact after a successful run.
-This source has not been compiled or tested on physical Xiaomi TV hardware in this environment. Verify the Actions build and remote behavior before distribution.
+Ananta OTT — Xiaomi TV remote navigation update
+This source package updates the existing Ananta OTT Flutter app for Android TV / Xiaomi Mi Box.
+Remote behavior
+The TV player starts unobstructed with the channel rail hidden.
+Enter / Select opens the channel sidebar and focuses the currently playing channel (or first available channel).
+Up / Down moves through channels. D-pad repeats use immediate list scrolling rather than queuing an animation per key repeat.
+Left while the channel list is open opens the category list.
+Up / Down browses categories; Enter applies the focused category; Right returns to channels.
+Enter on a channel starts it and hides the sidebar.
+UI
+The video remains full-screen behind the translucent sidebar.
+The transparent channel/programme information card and progress bar use matching left/right margins and a fixed gap, so they align visually without overlapping.
+Cloud build
+Upload the contents of this folder to the root of a GitHub repository, preserving `.github/workflows/build-apk.yml`. Run Actions → Build Ananta OTT APK and download the `ananta-ott-android-tv-apk` artifact if the workflow succeeds.
+The source has not been compiled or tested on physical Xiaomi TV hardware in this environment. Please verify the workflow result and remote behavior on the device.
