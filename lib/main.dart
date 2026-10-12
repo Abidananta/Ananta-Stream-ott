@@ -185,6 +185,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
   VideoPlayerController? _player;
+  VideoPlayerController? _pendingPlayer;
   Channel? _selectedChannel;
   Timer? _controlsTimer;
   String _selectedCategory = 'All';
@@ -416,9 +417,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       } else if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
       } else {
-        if (channels.isNotEmpty) _changeChannel(-1);
-        setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; });
-        _focusTvPlayer();
+        // Do not change channels while the rail is hidden. Enter opens the
+        // rail; a channel can only be committed after explicit selection there.
         _showPlayerControls();
       }
       return KeyEventResult.handled;
@@ -432,7 +432,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         // change the playing channel, so guide browsing cannot interrupt video.
         setState(() => _tvEpgVisible = !_tvEpgVisible);
       } else {
-        if (channels.isNotEmpty) _changeChannel(1);
+        // Horizontal keys on the hidden player never trigger an accidental zap.
         _showPlayerControls();
       }
       return KeyEventResult.handled;
@@ -1352,10 +1352,41 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   // PLAYBACK
   // --------------------------------------------------
   Future<void> _playChannel(Channel channel) async {
-    if (_connecting) return;
+    if (!mounted) return;
+    // Every selection supersedes the previous pending request. Do not block
+    // channel changes while a stream is buffering, and keep the current player
+    // alive until a replacement stream is actually ready.
+    if (_selectedChannel?.url == channel.url && _player?.value.isInitialized == true) {
+      // Choosing the currently playing channel cancels any other stream that
+      // is still buffering instead of leaving a stale request running.
+      ++_playRequestId;
+      final pending = _pendingPlayer;
+      _pendingPlayer = null;
+      if (pending != null) { try { await pending.dispose(); } catch (_) {} }
+      if (!mounted) return;
+      setState(() {
+        _connecting = false;
+        _tvSidebarVisible = false;
+        _tvEpgVisible = false;
+      });
+      _focusTvPlayer();
+      return;
+    }
     final requestId = ++_playRequestId;
     final oldPlayer = _player;
-    final oldChannel = _selectedChannel;
+    final previousPending = _pendingPlayer;
+    _pendingPlayer = null;
+    if (previousPending != null) {
+      try { await previousPending.dispose(); } catch (_) {}
+    }
+    // Release the previous native decoder before creating another one. TV
+    // boxes often have very limited hardware decoder slots; retaining two
+    // ExoPlayer instances is a common cause of decoder errors and force-closes.
+    if (oldPlayer != null) {
+      if (mounted) setState(() { _player = null; });
+      try { await oldPlayer.dispose(); } catch (_) {}
+    }
+    if (!mounted || requestId != _playRequestId) return;
     _controlsTimer?.cancel();
     final controller = VideoPlayerController.networkUrl(
       Uri.parse(channel.url),
@@ -1365,23 +1396,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         'Connection': 'keep-alive',
       },
     );
+    _pendingPlayer = controller;
     setState(() {
-      // Keep the currently playing controller visible while the next stream
-      // initializes. This avoids a black screen on every channel change.
-      _selectedChannel = channel;
+      // Keep the sidebar open during buffering so another channel can be
+      // selected immediately. Only one native video controller is kept alive
+      // to reduce decoder exhaustion on low-memory Android TV boxes.
       _playerError = null;
       _connecting = true;
       _controlsVisible = true;
-      _tvSidebarVisible = false;
-      _status = 'Connecting to ${channel.name}...';
+      _status = 'Buffering ${channel.name}...';
     });
-    _focusTvPlayer();
     try {
-      // Avoid two active network streams while the next channel initializes.
-      await oldPlayer?.pause();
-      await controller.initialize().timeout(
-        const Duration(seconds: 35),
-      );
+      await controller.initialize().timeout(const Duration(seconds: 20));
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
@@ -1392,55 +1418,48 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         );
       }
 
-      // Switch only after the new stream is ready. Pause the old stream at
-      // the handoff, then replace/dispose it once the new player starts.
+      // Commit the channel only after its stream initializes successfully.
       await controller.play();
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
       }
+      _pendingPlayer = null;
       setState(() {
         _player = controller;
+        _selectedChannel = channel;
         _status = 'Playing ${channel.name}';
         _connecting = false;
+        _tvSidebarVisible = false;
+        _tvEpgVisible = false;
       });
-      await oldPlayer?.dispose();
+      _focusTvPlayer();
+      if (oldPlayer != null && oldPlayer != controller) {
+        try { await oldPlayer.dispose(); } catch (_) {}
+      }
       await WakelockPlus.enable();
       _scheduleControlsHide();
     } on TimeoutException {
-      await controller.dispose();
+      try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
-      if (oldPlayer != null && oldPlayer.value.isInitialized && !oldPlayer.value.isPlaying) {
-        try { await oldPlayer.play(); } catch (_) {}
-      }
-      if (oldPlayer == null || !oldPlayer.value.isPlaying) {
-        await WakelockPlus.disable();
-      }
+      _pendingPlayer = null;
       setState(() {
-        _player = oldPlayer;
-        _selectedChannel = oldChannel;
-        _playerError = oldPlayer == null ? 'Connection timed out. Please retry.' : null;
-        _status = 'Connection timed out';
+        _playerError = 'Stream timed out. Choose another channel.';
+        _status = 'Stream timed out';
         _connecting = false;
       });
     } catch (e) {
       debugPrint('Playback error for ${channel.url}: $e');
-      await controller.dispose();
+      try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
-      if (oldPlayer != null && oldPlayer.value.isInitialized && !oldPlayer.value.isPlaying) {
-        try { await oldPlayer.play(); } catch (_) {}
-      }
-      if (oldPlayer == null || !oldPlayer.value.isPlaying) {
-        await WakelockPlus.disable();
-      }
+      _pendingPlayer = null;
       setState(() {
-        _player = oldPlayer;
-        _selectedChannel = oldChannel;
-        _playerError = oldPlayer == null ? e.toString() : null;
+        _playerError = 'Unable to play this stream. Try another channel.';
         _status = 'Playback failed';
         _connecting = false;
       });
     }
+
   }
 
   Future<void> _togglePlayback() async {
@@ -1464,7 +1483,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
 
   Future<void> _changeChannel(int direction) async {
     final list = _visibleChannels;
-    if (list.isEmpty || _connecting) return;
+    if (list.isEmpty) return;
     final currentIndex = list.indexWhere(
       (channel) => channel.url == _selectedChannel?.url,
     );
@@ -1933,6 +1952,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _epgRefreshTimer?.cancel();
     _playlistRequestId++;
     _playRequestId++;
+    final pendingPlayer = _pendingPlayer;
+    _pendingPlayer = null;
+    if (pendingPlayer != null) { pendingPlayer.dispose(); }
     _searchController.dispose();
     _tvChannelScrollController.dispose();
     _tvCategoryScrollController.dispose();
