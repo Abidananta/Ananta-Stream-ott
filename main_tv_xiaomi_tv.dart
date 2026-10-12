@@ -84,8 +84,14 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
   }
   final now = DateTime.now().toUtc();
   final programmes = <Map<String, dynamic>>[];
+  // Bound XMLTV parsing on low-memory Android TV boxes. Three days normally
+  // needs far fewer than 120 entries per channel; caps protect against huge feeds.
+  const maxProgramsPerFeed = 40000;
+  const maxProgramsPerChannel = 120;
+  final programCounts = <String, int>{};
   final programmePattern = RegExp(r'<programme\b([^>]*)>(.*?)</programme\s*>', caseSensitive: false, dotAll: true);
   for (final match in programmePattern.allMatches(xml)) {
+    if (programmes.length >= maxProgramsPerFeed) break;
     final attrs = match.group(1) ?? '';
     final body = match.group(2) ?? '';
     final id = _epgAttribute(attrs, 'channel').trim();
@@ -95,15 +101,19 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
     if (start == null || stop == null ||
         !stop.isAfter(now.subtract(const Duration(days: 3))) ||
         start.isAfter(now.add(const Duration(days: 3)))) continue;
+    final count = programCounts[id] ?? 0;
+    if (count >= maxProgramsPerChannel) continue;
     final title = _epgTagText(body, 'title');
     if (title.isEmpty) continue;
+    final description = _epgTagText(body, 'desc');
     programmes.add(<String, dynamic>{
       'id': id,
       'title': title,
-      'description': _epgTagText(body, 'desc'),
+      'description': description.substring(0, description.length.clamp(0, 180).toInt()),
       'start': start.millisecondsSinceEpoch,
       'stop': stop.millisecondsSinceEpoch,
     });
+    programCounts[id] = count + 1;
   }
   return <String, dynamic>{'namesById': namesById, 'programmes': programmes};
 }
@@ -417,9 +427,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       } else if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
       } else {
-        if (channels.isNotEmpty) _changeChannel(-1);
-        setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; });
-        _focusTvPlayer();
+        // Do not change channels while the rail is hidden. Enter opens the
+        // rail; a channel can only be committed after explicit selection there.
         _showPlayerControls();
       }
       return KeyEventResult.handled;
@@ -433,7 +442,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         // change the playing channel, so guide browsing cannot interrupt video.
         setState(() => _tvEpgVisible = !_tvEpgVisible);
       } else {
-        if (channels.isNotEmpty) _changeChannel(1);
+        // Horizontal keys on the hidden player never trigger an accidental zap.
         _showPlayerControls();
       }
       return KeyEventResult.handled;
@@ -1380,6 +1389,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (previousPending != null) {
       try { await previousPending.dispose(); } catch (_) {}
     }
+    // A newer remote selection can arrive while native dispose() is awaiting.
+    // Never let a stale request tear down the latest channel's player.
+    if (!mounted || requestId != _playRequestId) return;
     // Release the previous native decoder before creating another one. TV
     // boxes often have very limited hardware decoder slots; retaining two
     // ExoPlayer instances is a common cause of decoder errors and force-closes.
@@ -1445,7 +1457,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = oldPlayer == null ? 'Stream timed out. Choose another channel.' : null;
+        _playerError = 'Stream timed out. Choose another channel.';
         _status = 'Stream timed out';
         _connecting = false;
       });
@@ -1455,7 +1467,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = oldPlayer == null ? 'Unable to play this stream. Try another channel.' : null;
+        _playerError = 'Unable to play this stream. Try another channel.';
         _status = 'Playback failed';
         _connecting = false;
       });
