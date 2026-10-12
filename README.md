@@ -1,10 +1,11 @@
-Ananta OTT — 3-day EPG cache and TV guide
-This package uses the supplied TSEPG, Jio EPG and general XMLTV feeds. EPG entries from three days in the past through three days in the future are retained in SharedPreferences. Cached guide data is loaded immediately at startup, then refreshed from the online sources; successful refreshes replace the saved cache.
-When the channel sidebar is open, the selected/focused channel's 3-day schedule appears in a panel to its right. The programme currently airing shows a small EPG progress bar in the player information card and guide panel. A custom launcher icon and Android TV banner are configured by the GitHub Actions workflow, which also adds the LEANBACK_LAUNCHER category.
-Build without local Flutter
-Upload the contents of this folder to the root of a GitHub repository (preserve `.github/workflows/build-apk.yml`).
-Run Actions → Build Ananta OTT APK.
-Download the `ananta-ott-android-tv-apk` artifact if the workflow succeeds.
-Note about catch-up playback
-The 3-day guide includes past programme entries. Actual playback of past programmes requires a catch-up URL/template from the stream provider; the supplied XMLTV URLs only describe programme schedules and do not themselves provide replay streams.
-The source has not been compiled or tested on physical Xiaomi TV hardware in this environment. Review GitHub Actions logs if the workflow fails.
+Ananta OTT — stability and EPG guide toggle update
+This package contains the Flutter source and GitHub Actions cloud build workflow.
+Changes:
+EPG refresh interval set to every 2 hours.
+Prevents overlapping EPG downloads/parses when a refresh is already running.
+Keeps the saved EPG cache available while refreshes happen.
+Channel sidebar opens without showing the 3-day guide by default.
+Press Right on the Xiaomi/Android TV remote while the channel list is open to show/hide the 3-day EPG panel.
+Press Left while the channel list is open to enter category browsing; Right in category browsing returns to channels.
+EPG panel is hidden when the sidebar closes.
+Build from GitHub Actions: run `Build Ananta OTT APK` and download the artifact only after a successful run. This source has not been compiled or tested on physical TV hardware in this environment.
