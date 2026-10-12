@@ -86,6 +86,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   bool _showFavoritesOnly = false;
   bool _controlsVisible = true;
   bool _fullscreen = false;
+  bool _tvSidebarVisible = true;
   int _playlistRequestId = 0;
   int _playRequestId = 0;
 
@@ -94,6 +95,240 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     super.initState();
     _loadFavorites();
     _loadPlaylist();
+  }
+
+  // Xiaomi Mi Box / Android TV remote handling.
+  // Left/Right zap channels and close the sidebar; Up/Down reopen it when hidden.
+  // When the sidebar is visible, Up/Down are left to the focused channel list.
+  KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+    final primaryContext = FocusManager.instance.primaryFocus?.context;
+    if (primaryContext?.widget is EditableText) return KeyEventResult.ignored;
+
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+      if (_visibleChannels.isNotEmpty) {
+        _changeChannel(key == LogicalKeyboardKey.arrowLeft ? -1 : 1);
+      }
+      if (mounted) {
+        setState(() => _tvSidebarVisible = false);
+      }
+      _showPlayerControls();
+      return KeyEventResult.handled;
+    }
+
+    if ((key == LogicalKeyboardKey.arrowUp ||
+         key == LogicalKeyboardKey.arrowDown ||
+         key == LogicalKeyboardKey.select ||
+         key == LogicalKeyboardKey.enter) && !_tvSidebarVisible) {
+      setState(() => _tvSidebarVisible = true);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  // Android TV keeps the video edge-to-edge. The channel rail is an overlay,
+  // so showing it never shrinks the player; selecting/zapping hides it immediately.
+  Widget _buildTvLayout(List<Channel> channels) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Positioned.fill(child: _buildPlayer(fullscreen: true)),
+        if (_selectedChannel == null && !_connecting)
+          const IgnorePointer(
+            child: Align(
+              alignment: Alignment.bottomLeft,
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('Press UP or DOWN to browse channels',
+                  style: TextStyle(color: Colors.white70, fontSize: 16)),
+              ),
+            ),
+          ),
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+          top: 0,
+          bottom: 0,
+          left: _tvSidebarVisible ? 0 : -330,
+          width: 310,
+          child: IgnorePointer(
+            ignoring: !_tvSidebarVisible,
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 100),
+              opacity: _tvSidebarVisible ? 1 : 0,
+              child: ClipRect(
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xB5101020),
+                      border: Border(
+                        right: BorderSide(color: Colors.white.withOpacity(0.12)),
+                      ),
+                    ),
+                    child: SafeArea(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Padding(
+                            padding: EdgeInsets.fromLTRB(18, 12, 12, 8),
+                            child: Row(
+                              children: [
+                                Icon(Icons.blur_on, color: accentColor, size: 26),
+                                SizedBox(width: 8),
+                                Expanded(child: Text('ANANTA OTT', style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1.0,
+                                  fontSize: 16,
+                                ))),
+                              ],
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                            child: TextField(
+                              controller: _searchController,
+                              onChanged: (value) => setState(() => _searchQuery = value),
+                              style: const TextStyle(fontSize: 14),
+                              decoration: InputDecoration(
+                                hintText: 'Search channels',
+                                prefixIcon: const Icon(Icons.search, size: 20),
+                                suffixIcon: _searchQuery.isEmpty ? null : IconButton(
+                                  tooltip: 'Clear search',
+                                  onPressed: () {
+                                    _searchController.clear();
+                                    setState(() => _searchQuery = '');
+                                  },
+                                  icon: const Icon(Icons.clear, size: 18),
+                                ),
+                                filled: true,
+                                fillColor: Colors.white.withOpacity(0.07),
+                                contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.white.withOpacity(0.10)),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.white.withOpacity(0.10)),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: accentColor, width: 1.5),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              children: [
+                                const Expanded(child: Text('CHANNELS', style: TextStyle(
+                                  color: Colors.white70, fontSize: 11,
+                                  fontWeight: FontWeight.bold, letterSpacing: 1.2,
+                                ))),
+                                Text('${channels.length}', style: const TextStyle(
+                                  color: Colors.white54, fontSize: 11,
+                                )),
+                                IconButton(
+                                  tooltip: _showFavoritesOnly ? 'Show all channels' : 'Show favorites',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () => setState(() => _showFavoritesOnly = !_showFavoritesOnly),
+                                  icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border,
+                                    color: _showFavoritesOnly ? Colors.pinkAccent : Colors.white70, size: 19),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            child: channels.isEmpty
+                                ? const Center(child: Text('No channels found', style: TextStyle(color: Colors.white60)))
+                                : ListView.builder(
+                                    padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                                    itemCount: channels.length,
+                                    itemBuilder: (context, index) => _buildTvChannelTile(channels[index]),
+                                  ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 6, 14, 12),
+                            child: Text('UP/DOWN browse • OK play • LEFT/RIGHT change channel',
+                              maxLines: 2, overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTvChannelTile(Channel channel) {
+    final selected = _selectedChannel?.url == channel.url;
+    final favorite = _favorites.contains(channel.url);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
+      child: Focus(
+        onKeyEvent: (node, event) {
+          if (event is KeyDownEvent &&
+              (event.logicalKey == LogicalKeyboardKey.select ||
+               event.logicalKey == LogicalKeyboardKey.enter ||
+               event.logicalKey == LogicalKeyboardKey.numpadEnter ||
+               event.logicalKey == LogicalKeyboardKey.gameButtonA)) {
+            _playChannel(channel);
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: Builder(builder: (context) {
+          final focused = Focus.of(context).hasFocus;
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            decoration: BoxDecoration(
+              color: focused
+                  ? accentColor.withOpacity(0.34)
+                  : selected ? Colors.white.withOpacity(0.13) : Colors.white.withOpacity(0.035),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: focused ? accentColor : (selected ? accentColor.withOpacity(0.6) : Colors.white.withOpacity(0.07)),
+                width: focused ? 2 : 1,
+              ),
+            ),
+            child: ListTile(
+              autofocus: selected ||
+                  (_selectedChannel == null &&
+                   _visibleChannels.isNotEmpty &&
+                   channel.url == _visibleChannels.first.url),
+              focusColor: accentColor.withOpacity(0.22),
+              hoverColor: accentColor.withOpacity(0.16),
+              dense: false,
+              minVerticalPadding: 5,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+              leading: CircleAvatar(
+                radius: 18,
+                backgroundColor: accentColor.withOpacity(0.16),
+                backgroundImage: channel.logo.isNotEmpty ? NetworkImage(channel.logo) : null,
+                child: channel.logo.isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 18) : null,
+              ),
+              title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
+              subtitle: Text(channel.group, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white54, fontSize: 10)),
+              trailing: Icon(favorite ? Icons.favorite : Icons.chevron_right,
+                color: favorite ? Colors.pinkAccent : Colors.white38, size: 18),
+              onTap: () => _playChannel(channel),
+            ),
+          );
+        }),
+      ),
+    );
   }
 
   // --------------------------------------------------
@@ -349,6 +584,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _playerError = null;
       _connecting = true;
       _controlsVisible = true;
+      _tvSidebarVisible = false;
       _status = 'Connecting to ${channel.name}...';
     });
     try {
@@ -458,6 +694,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       await _setFullscreen(false);
       return false;
     }
+    final media = MediaQuery.maybeOf(context);
+    final tvMode = media != null && media.size.width >= 850 && media.size.width > media.size.height;
+    if (tvMode) {
+      setState(() => _tvSidebarVisible = !_tvSidebarVisible);
+      return false;
+    }
     return true;
   }
 
@@ -494,6 +736,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   // PLAYER UI
   // --------------------------------------------------
   Widget _buildPlayer({required bool fullscreen}) {
+    final media = MediaQuery.of(context);
+    final tvMode = media.size.width >= 850 && media.size.width > media.size.height;
     final player = _player;
     final initialized = player?.value.isInitialized == true;
     return GestureDetector(
@@ -559,23 +803,21 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                           style: const TextStyle(fontSize: 12),
                         ),
                       ),
-                      IconButton(
-                        tooltip: 'Fullscreen',
-                        visualDensity: VisualDensity.compact,
-                        constraints: const BoxConstraints(
-                          minWidth: 34,
-                          minHeight: 34,
+                      if (!tvMode)
+                        IconButton(
+                          tooltip: 'Fullscreen',
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints(
+                            minWidth: 34,
+                            minHeight: 34,
+                          ),
+                          padding: EdgeInsets.zero,
+                          onPressed: () => _setFullscreen(!_fullscreen),
+                          icon: Icon(
+                            _fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                            size: 21,
+                          ),
                         ),
-                        padding: EdgeInsets.zero,
-                        onPressed: () =>
-                            _setFullscreen(!_fullscreen),
-                        icon: Icon(
-                          fullscreen
-                              ? Icons.fullscreen_exit
-                              : Icons.fullscreen,
-                          size: 21,
-                        ),
-                      ),
                     ],
                   ),
                 ),
@@ -856,10 +1098,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   @override
   Widget build(BuildContext context) {
     final channels = _visibleChannels;
-    return WillPopScope(
+    final media = MediaQuery.of(context);
+    final useTvLayout = !_fullscreen && media.size.width >= 850 && media.size.width > media.size.height;
+    return Focus(
+      autofocus: true,
+      onKeyEvent: _handleRemoteKey,
+      child: WillPopScope(
       onWillPop: _handleBack,
       child: Scaffold(
-        appBar: _fullscreen
+        appBar: (_fullscreen || useTvLayout)
             ? null
             : AppBar(
                 backgroundColor: backgroundColor,
@@ -913,7 +1160,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               ),
         body: _fullscreen
             ? _buildPlayer(fullscreen: true)
-            : Container(
+            : useTvLayout
+                ? _buildTvLayout(channels)
+                : Container(
                 decoration: const BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
@@ -1040,6 +1289,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                   ],
                 ),
               ),
+      ),
       ),
     );
   }
