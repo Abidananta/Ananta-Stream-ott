@@ -87,6 +87,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   bool _controlsVisible = true;
   bool _fullscreen = false;
   bool _tvSidebarVisible = true;
+  int _tvFocusedChannelIndex = 0;
+  final ScrollController _tvChannelScrollController = ScrollController();
+  final Map<String, FocusNode> _tvChannelFocusNodes = {};
   int _playlistRequestId = 0;
   int _playRequestId = 0;
 
@@ -97,33 +100,98 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _loadPlaylist();
   }
 
-  // Xiaomi Mi Box / Android TV remote handling.
-  // Left/Right zap channels and close the sidebar; Up/Down reopen it when hidden.
-  // When the sidebar is visible, Up/Down are left to the focused channel list.
+  // Xiaomi Mi Box / Android TV remote handling. Channel focus is managed
+  // explicitly because some TV remotes do not trigger Flutter's default
+  // ListTile traversal consistently.
+  void _focusTvChannel(int index, {bool requestFocus = true}) {
+    final channels = _visibleChannels;
+    if (channels.isEmpty) return;
+    final safeIndex = index.clamp(0, channels.length - 1).toInt();
+    setState(() {
+      _tvFocusedChannelIndex = safeIndex;
+      _tvSidebarVisible = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_tvChannelScrollController.hasClients) return;
+      final target = (safeIndex * 76.0).clamp(
+        0.0,
+        _tvChannelScrollController.position.maxScrollExtent,
+      ).toDouble();
+      _tvChannelScrollController.jumpTo(target);
+      if (requestFocus) {
+        final node = _tvChannelFocusNodes[channels[safeIndex].url];
+        if (node != null && node.canRequestFocus) node.requestFocus();
+      }
+    });
+  }
+
   KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
-
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     if (primaryContext?.widget is EditableText) return KeyEventResult.ignored;
 
     final key = event.logicalKey;
+    final channels = _visibleChannels;
+    if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
+      if (!_tvSidebarVisible) {
+        final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
+        _focusTvChannel(current >= 0 ? current : _tvFocusedChannelIndex);
+      } else if (channels.isNotEmpty) {
+        final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+        _focusTvChannel((_tvFocusedChannelIndex + delta).clamp(0, channels.length - 1).toInt());
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter ||
+        key == LogicalKeyboardKey.gameButtonA) {
+      if (!_tvSidebarVisible) {
+        final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
+        _focusTvChannel(current >= 0 ? current : _tvFocusedChannelIndex);
+      } else if (channels.isNotEmpty) {
+        final index = _tvFocusedChannelIndex.clamp(0, channels.length - 1).toInt();
+        _playChannel(channels[index]);
+      }
+      return KeyEventResult.handled;
+    }
+
     if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-      if (_visibleChannels.isNotEmpty) {
+      if (channels.isNotEmpty) {
         _changeChannel(key == LogicalKeyboardKey.arrowLeft ? -1 : 1);
       }
-      if (mounted) {
-        setState(() => _tvSidebarVisible = false);
-      }
+      if (mounted) setState(() => _tvSidebarVisible = false);
       _showPlayerControls();
       return KeyEventResult.handled;
     }
 
-    if ((key == LogicalKeyboardKey.arrowUp ||
-         key == LogicalKeyboardKey.arrowDown ||
-         key == LogicalKeyboardKey.select ||
-         key == LogicalKeyboardKey.enter) && !_tvSidebarVisible) {
-      setState(() => _tvSidebarVisible = true);
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.browserBack) {
+      if (_tvSidebarVisible) {
+        setState(() => _tvSidebarVisible = false);
+        return KeyEventResult.handled;
+      }
+    }
+    return KeyEventResult.ignored;
+  }
+
+  KeyEventResult _handleChannelTileKey(FocusNode node, KeyEvent event, int index) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
+      final channels = _visibleChannels;
+      final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+      _focusTvChannel((index + delta).clamp(0, channels.length - 1).toInt());
       return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
+      final channels = _visibleChannels;
+      if (index >= 0 && index < channels.length) _playChannel(channels[index]);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+      return _handleRemoteKey(node, event);
     }
     return KeyEventResult.ignored;
   }
@@ -246,9 +314,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                             child: channels.isEmpty
                                 ? const Center(child: Text('No channels found', style: TextStyle(color: Colors.white60)))
                                 : ListView.builder(
+                                    controller: _tvChannelScrollController,
                                     padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
                                     itemCount: channels.length,
-                                    itemBuilder: (context, index) => _buildTvChannelTile(channels[index]),
+                                    itemBuilder: (context, index) => _buildTvChannelTile(channels[index], index),
                                   ),
                           ),
                           Padding(
@@ -270,25 +339,26 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     );
   }
 
-  Widget _buildTvChannelTile(Channel channel) {
+  Widget _buildTvChannelTile(Channel channel, int index) {
     final selected = _selectedChannel?.url == channel.url;
     final favorite = _favorites.contains(channel.url);
+    final focusNode = _tvChannelFocusNodes.putIfAbsent(
+      channel.url, () => FocusNode(debugLabel: 'channel-${channel.name}'),
+    );
+    final focusedByIndex = index == _tvFocusedChannelIndex;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
       child: Focus(
-        onKeyEvent: (node, event) {
-          if (event is KeyDownEvent &&
-              (event.logicalKey == LogicalKeyboardKey.select ||
-               event.logicalKey == LogicalKeyboardKey.enter ||
-               event.logicalKey == LogicalKeyboardKey.numpadEnter ||
-               event.logicalKey == LogicalKeyboardKey.gameButtonA)) {
-            _playChannel(channel);
-            return KeyEventResult.handled;
+        focusNode: focusNode,
+        autofocus: focusedByIndex,
+        onFocusChange: (hasFocus) {
+          if (hasFocus && mounted && _tvFocusedChannelIndex != index) {
+            setState(() => _tvFocusedChannelIndex = index);
           }
-          return KeyEventResult.ignored;
         },
+        onKeyEvent: (node, event) => _handleChannelTileKey(node, event, index),
         child: Builder(builder: (context) {
-          final focused = Focus.of(context).hasFocus;
+          final focused = Focus.of(context).hasFocus || focusedByIndex;
           return AnimatedContainer(
             duration: const Duration(milliseconds: 120),
             decoration: BoxDecoration(
@@ -996,19 +1066,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: Focus(
-        onKeyEvent: (node, event) {
-          if (event is KeyDownEvent &&
-              (event.logicalKey == LogicalKeyboardKey.select ||
-               event.logicalKey == LogicalKeyboardKey.enter ||
-               event.logicalKey == LogicalKeyboardKey.numpadEnter ||
-               event.logicalKey == LogicalKeyboardKey.gameButtonA)) {
-            _playChannel(channel);
-            return KeyEventResult.handled;
+        focusNode: focusNode,
+        autofocus: focusedByIndex,
+        onFocusChange: (hasFocus) {
+          if (hasFocus && mounted && _tvFocusedChannelIndex != index) {
+            setState(() => _tvFocusedChannelIndex = index);
           }
-          return KeyEventResult.ignored;
         },
+        onKeyEvent: (node, event) => _handleChannelTileKey(node, event, index),
         child: Builder(builder: (context) {
-          final focused = Focus.of(context).hasFocus;
+          final focused = Focus.of(context).hasFocus || focusedByIndex;
           return _glass(
         radius: 15,
         padding: EdgeInsets.zero,
@@ -1081,6 +1148,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _playlistRequestId++;
     _playRequestId++;
     _searchController.dispose();
+    _tvChannelScrollController.dispose();
+    for (final node in _tvChannelFocusNodes.values) { node.dispose(); }
+    _tvChannelFocusNodes.clear();
     _player?.dispose();
     WakelockPlus.disable();
     SystemChrome.setEnabledSystemUIMode(
