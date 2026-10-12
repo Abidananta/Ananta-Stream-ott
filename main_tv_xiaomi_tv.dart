@@ -199,6 +199,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   // TV starts with an unobstructed full-screen player; Enter opens the rail.
   bool _tvSidebarVisible = false;
   bool _tvShowingCategories = false;
+  bool _tvEpgVisible = false;
+  bool _epgLoading = false;
   int _tvFocusedChannelIndex = 0;
   int _tvFocusedCategoryIndex = 0;
   final ScrollController _tvChannelScrollController = ScrollController();
@@ -224,7 +226,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
-    _epgRefreshTimer = Timer.periodic(const Duration(hours: 6), (_) => _loadEpg());
+    _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
   }
 
   // Xiaomi Mi Box / Android TV remote handling. Focus and index are managed
@@ -237,6 +239,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     setState(() {
       _tvFocusedChannelIndex = safeIndex;
       _tvSidebarVisible = true;
+      _tvEpgVisible = false;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || !_tvChannelScrollController.hasClients) return;
@@ -401,12 +404,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
 
     if (key == LogicalKeyboardKey.arrowLeft) {
       if (_tvSidebarVisible && !_tvShowingCategories) {
+        setState(() => _tvEpgVisible = false);
         _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
       } else if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
       } else {
         if (channels.isNotEmpty) _changeChannel(-1);
-        setState(() => _tvSidebarVisible = false);
+        setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; });
         _focusTvPlayer();
         _showPlayerControls();
       }
@@ -417,10 +421,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
       } else if (_tvSidebarVisible) {
-        if (channels.isNotEmpty) _changeChannel(1);
-        setState(() => _tvSidebarVisible = false);
-        _focusTvPlayer();
-        _showPlayerControls();
+        // Right toggles the 3-day guide beside the channel rail. It does not
+        // change the playing channel, so guide browsing cannot interrupt video.
+        setState(() => _tvEpgVisible = !_tvEpgVisible);
       } else {
         if (channels.isNotEmpty) _changeChannel(1);
         _showPlayerControls();
@@ -434,7 +437,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         return KeyEventResult.handled;
       }
       if (_tvSidebarVisible) {
-        setState(() => _tvSidebarVisible = false);
+        setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; });
         FocusManager.instance.primaryFocus?.unfocus();
         _focusTvPlayer();
         return KeyEventResult.handled;
@@ -670,14 +673,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           curve: Curves.easeOut,
           top: 0,
           bottom: 0,
-          left: _tvSidebarVisible ? 310 : -360,
+          left: (_tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories) ? 310 : -360,
           width: 350,
           // Guide is an overlay beside the rail; it never resizes the video.
           child: IgnorePointer(
-            ignoring: !_tvSidebarVisible || _tvShowingCategories,
+            ignoring: !_tvSidebarVisible || !_tvEpgVisible || _tvShowingCategories,
             child: AnimatedOpacity(
             duration: const Duration(milliseconds: 90),
-            opacity: _tvSidebarVisible && !_tvShowingCategories ? 1 : 0,
+            opacity: _tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories ? 1 : 0,
             child: Builder(builder: (context) {
               final preview = _tvEpgPreviewChannel(channels);
               return preview == null ? const SizedBox.shrink() : _buildTvEpgPanel(preview);
@@ -968,6 +971,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   Future<void> _loadEpg() async {
+    if (_epgLoading) return;
+    _epgLoading = true;
+    try {
     final candidatesById = <String, List<EpgProgram>>{};
     final namesById = <String, List<String>>{};
     var successfulSources = 0;
@@ -1042,6 +1048,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _rebuildEpgChannelIndex();
     });
     debugPrint('EPG loaded: ${byId.length} channel IDs, ${byName.length} names from $successfulSources sources');
+    } finally {
+      _epgLoading = false;
+    }
   }
 
   EpgProgram? _pickCurrentProgram(List<EpgProgram>? programs) {
@@ -1477,7 +1486,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (tvMode && _tvSidebarVisible) {
       // First BACK closes the channel rail. A subsequent BACK is allowed to
       // leave the app instead of reopening/toggling the rail forever.
-      setState(() => _tvSidebarVisible = false);
+      setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; });
       FocusManager.instance.primaryFocus?.unfocus();
       return false;
     }
