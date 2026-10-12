@@ -1,21 +1,18 @@
-Ananta OTT — Xiaomi Android TV update
-This package contains the Flutter source and GitHub Actions workflow for building an Android TV APK in the cloud. It is a source/build package, not a precompiled APK.
+Ananta OTT - Android TV Category & Search Fix
+This package updates the Flutter source for the Ananta OTT Android TV layout.
 TV remote behavior
-Enter/Select while watching: opens the channel sidebar and focuses the currently playing channel.
-Up/Down: browse channel rows; held-button `KeyRepeatEvent`s are handled too.
-Enter/Select in the sidebar: plays the highlighted channel and hides the sidebar.
-Left/Right: switches to previous/next channel and hides the sidebar.
-Back: closes the sidebar when open; with the sidebar hidden, Android handles Back so the app can exit.
-Sidebar and search
-Translucent left overlay; video remains full-screen behind it.
-Search filters channel names and groups as you type.
-Submitting search focuses the first result.
-The instruction text at the bottom of the sidebar has been removed.
-Playback changes
-When changing channels, the current player stays visible while the next stream initializes. The app swaps players after the new stream is ready, reducing black-screen gaps during channel switching. Actual buffering smoothness still depends on the stream source and network.
-Build in GitHub Actions
-Create a GitHub repository.
-Upload the contents of this ZIP to the repository root, preserving `.github/workflows/build-apk.yml`.
-Open Actions → Build Ananta OTT APK and run the workflow, or push to `main`.
-Download the `ananta-ott-android-tv-apk` artifact after the run succeeds.
-The source has not been compiled or tested on a Xiaomi TV Box in this environment. If Actions fails, share the first actual compiler/dependency error from the expanded log (not only the `Finishing:` line).
+Press Enter/Select while the player is visible to open the channel sidebar at the currently selected channel.
+Use Up/Down to move the highlighted channel. Holding the direction should continue through the list.
+Press Left while the channel list is open to show channel categories.
+Use Up/Down to browse categories, then Enter/Select to apply a category.
+Press Right in categories to return to channels.
+From the first channel, press Up to focus search. Type using the TV keyboard, then press Enter/Search; press Down to return to results.
+Press Enter/Select on a highlighted channel to play it.
+The player remains full screen behind the transparent sidebar.
+A transparent channel information bar appears above the progress bar.
+Build using GitHub Actions
+Create/open a GitHub repository.
+Upload the contents of this folder to the repository root, preserving `.github/workflows/build-apk.yml`.
+Open Actions and run Build Ananta OTT APK.
+Download the `ananta-ott-android-tv-apk` artifact after a successful run.
+This source has not been compiled or tested on physical Xiaomi TV hardware in this environment. Verify the Actions build and remote behavior before distribution.
