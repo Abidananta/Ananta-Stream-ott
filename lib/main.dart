@@ -1,5 +1,7 @@
 import 'dart:async';
-import 'dart:ui';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -12,10 +14,97 @@ const String playlistUrl =
     'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/refs/heads/main/channels.m3u';
 const String ptvStreamUrl =
     'http://103.185.24.134:3001/ptv/index.m3u8';
+const List<String> epgSourceUrls = [
+  'https://avkb.short.gy/tsepg.xml.gz',
+  'https://avkb.short.gy/jioepg.xml.gz',
+  'https://avkb.short.gy/epg.xml.gz',
+];
 
 const Color accentColor = Color(0xFF9B87FF);
 const Color backgroundColor = Color(0xFF090914);
 const Color glassColor = Color(0xFF211F35);
+
+String _epgAttribute(String text, String name) {
+  final match = RegExp('\\b${RegExp.escape(name)}\\s*=\\s*["\\x27]([^"\\x27]*)', caseSensitive: false).firstMatch(text);
+  return match?.group(1) ?? '';
+}
+
+String _epgDecodeText(String value) => value
+    .replaceAll('<![CDATA[', '')
+    .replaceAll(']]>', '')
+    .replaceAll(RegExp(r'<[^>]+>'), '')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&#39;', "'")
+    .replaceAll('&amp;', '&')
+    .trim();
+
+String _epgTagText(String block, String tag) {
+  final match = RegExp('<$tag\\b[^>]*>(.*?)</$tag>', caseSensitive: false, dotAll: true).firstMatch(block);
+  return match == null ? '' : _epgDecodeText(match.group(1) ?? '');
+}
+
+DateTime? _epgParseTime(String value) {
+  final match = RegExp(r'^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\s*([+-])(\d{2})(\d{2}))?').firstMatch(value.trim());
+  if (match == null) return null;
+  try {
+    final clockAsUtc = DateTime.utc(
+      int.parse(match.group(1)!), int.parse(match.group(2)!), int.parse(match.group(3)!),
+      int.parse(match.group(4)!), int.parse(match.group(5)!), int.parse(match.group(6)!),
+    );
+    final sign = match.group(7);
+    if (sign == null) return clockAsUtc;
+    final offset = int.parse(match.group(8)!) * 60 + int.parse(match.group(9)!);
+    return clockAsUtc.subtract(Duration(minutes: sign == '+' ? offset : -offset));
+  } catch (_) {
+    return null;
+  }
+}
+
+// Runs in a background isolate so decompression and XMLTV scanning do not
+// block the TV player's frame rendering.
+Map<String, dynamic> _parseEpgPayload(List<int> payload) {
+  var bytes = payload;
+  if (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b) {
+    bytes = gzip.decode(bytes);
+  }
+  final xml = utf8.decode(bytes, allowMalformed: true);
+  final namesById = <String, List<String>>{};
+  final channelPattern = RegExp(r'<channel\b([^>]*)>(.*?)</channel\s*>', caseSensitive: false, dotAll: true);
+  for (final match in channelPattern.allMatches(xml)) {
+    final id = _epgAttribute(match.group(1) ?? '', 'id').trim();
+    if (id.isEmpty) continue;
+    final names = RegExp(r'<display-name\b[^>]*>(.*?)</display-name\s*>', caseSensitive: false, dotAll: true)
+        .allMatches(match.group(2) ?? '')
+        .map((m) => _epgDecodeText(m.group(1) ?? ''))
+        .where((name) => name.isNotEmpty).toSet().toList();
+    if (names.isNotEmpty) namesById[id] = names;
+  }
+  final now = DateTime.now().toUtc();
+  final programmes = <Map<String, dynamic>>[];
+  final programmePattern = RegExp(r'<programme\b([^>]*)>(.*?)</programme\s*>', caseSensitive: false, dotAll: true);
+  for (final match in programmePattern.allMatches(xml)) {
+    final attrs = match.group(1) ?? '';
+    final body = match.group(2) ?? '';
+    final id = _epgAttribute(attrs, 'channel').trim();
+    if (id.isEmpty) continue;
+    final start = _epgParseTime(_epgAttribute(attrs, 'start'));
+    final stop = _epgParseTime(_epgAttribute(attrs, 'stop'));
+    if (start == null || stop == null || !stop.isAfter(now) || start.isAfter(now.add(const Duration(hours: 12)))) continue;
+    final title = _epgTagText(body, 'title');
+    if (title.isEmpty) continue;
+    programmes.add(<String, dynamic>{
+      'id': id,
+      'title': title,
+      'description': _epgTagText(body, 'desc'),
+      'start': start.millisecondsSinceEpoch,
+      'stop': stop.millisecondsSinceEpoch,
+    });
+  }
+  return <String, dynamic>{'namesById': namesById, 'programmes': programmes};
+}
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,12 +116,31 @@ class Channel {
   final String url;
   final String group;
   final String logo;
+  final String tvgId;
+  final String tvgName;
   const Channel({
     required this.name,
     required this.url,
     this.group = 'Live TV',
     this.logo = '',
+    this.tvgId = '',
+    this.tvgName = '',
   });
+}
+
+class EpgProgram {
+  final String title;
+  final String description;
+  final DateTime start;
+  final DateTime stop;
+  const EpgProgram({
+    required this.title,
+    required this.description,
+    required this.start,
+    required this.stop,
+  });
+
+  bool isAiringAt(DateTime time) => !time.isBefore(start) && time.isBefore(stop);
 }
 
 const Channel ptvChannel = Channel(
@@ -86,14 +194,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   bool _showFavoritesOnly = false;
   bool _controlsVisible = true;
   bool _fullscreen = false;
-  bool _tvSidebarVisible = true;
+  // TV starts with an unobstructed full-screen player; Enter opens the rail.
+  bool _tvSidebarVisible = false;
   bool _tvShowingCategories = false;
   int _tvFocusedChannelIndex = 0;
   int _tvFocusedCategoryIndex = 0;
   final ScrollController _tvChannelScrollController = ScrollController();
+  final ScrollController _tvCategoryScrollController = ScrollController();
   final FocusNode _tvPlayerFocusNode = FocusNode(debugLabel: 'tv-player');
   final FocusNode _tvSearchFocusNode = FocusNode(debugLabel: 'tv-channel-search');
   final Map<String, FocusNode> _tvChannelFocusNodes = {};
+  Map<String, List<EpgProgram>> _epgById = {};
+  Map<String, List<EpgProgram>> _epgByName = {};
+  Map<String, List<EpgProgram>> _epgByChannelUrl = {};
+  String _epgStatus = 'Loading programme guide…';
+  Timer? _epgClock;
+  Timer? _epgRefreshTimer;
   int _playlistRequestId = 0;
   int _playRequestId = 0;
 
@@ -102,6 +218,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     super.initState();
     _loadFavorites();
     _loadPlaylist();
+    _loadEpg();
+    _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() {});
+    });
+    _epgRefreshTimer = Timer.periodic(const Duration(hours: 6), (_) => _loadEpg());
   }
 
   // Xiaomi Mi Box / Android TV remote handling. Focus and index are managed
@@ -120,15 +241,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       // Scroll first so ListView builds the destination row before requesting
       // its FocusNode. Requesting focus before this point fails for off-screen
       // rows and makes UP/DOWN appear to stop working on Android TV.
-      final target = (safeIndex * 80.0).clamp(
+      // Use an immediate scroll for D-pad repeat events. Queuing an animation
+      // for every repeated key caused focus to lag behind the remote on Mi Box.
+      final target = (safeIndex * 96.0).clamp(
         0.0,
         _tvChannelScrollController.position.maxScrollExtent,
       ).toDouble();
-      await _tvChannelScrollController.animateTo(
-        target,
-        duration: const Duration(milliseconds: 100),
-        curve: Curves.easeOutCubic,
-      );
+      if ((_tvChannelScrollController.offset - target).abs() > 1) {
+        _tvChannelScrollController.jumpTo(target);
+      }
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || !requestFocus) return;
       final node = _tvChannelFocusNodes[channels[safeIndex].url];
@@ -152,7 +273,36 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _tvFocusedCategoryIndex = index.clamp(0, categories.length - 1).toInt();
     });
     FocusManager.instance.primaryFocus?.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_tvCategoryScrollController.hasClients) return;
+      final target = (_tvFocusedCategoryIndex * 58.0).clamp(
+        0.0, _tvCategoryScrollController.position.maxScrollExtent,
+      ).toDouble();
+      if ((_tvCategoryScrollController.offset - target).abs() > 1) {
+        _tvCategoryScrollController.jumpTo(target);
+      }
+    });
     _focusTvPlayer();
+  }
+
+  void _moveTvCategory(int delta) {
+    final categories = _categories;
+    if (categories.isEmpty) return;
+    setState(() {
+      _tvFocusedCategoryIndex =
+          (_tvFocusedCategoryIndex + delta).clamp(0, categories.length - 1).toInt();
+    });
+    // Keep the currently focused player key handler active while browsing;
+    // do not unfocus/refocus on every repeated D-pad event.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_tvCategoryScrollController.hasClients) return;
+      final target = (_tvFocusedCategoryIndex * 58.0).clamp(
+        0.0, _tvCategoryScrollController.position.maxScrollExtent,
+      ).toDouble();
+      if ((_tvCategoryScrollController.offset - target).abs() > 1) {
+        _tvCategoryScrollController.jumpTo(target);
+      }
+    });
   }
 
   void _showTvChannels({int? index}) {
@@ -181,6 +331,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     // Search remains usable with the TV keyboard. D-pad UP opens categories;
     // DOWN moves into results, avoiding a focus trap inside the text field.
     if (editingSearch) {
+      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
+        FocusManager.instance.primaryFocus?.unfocus();
+        _showTvChannels(index: 0);
+        return KeyEventResult.handled;
+      }
       if (key == LogicalKeyboardKey.arrowDown) {
         FocusManager.instance.primaryFocus?.unfocus();
         _showTvChannels(index: 0);
@@ -198,9 +354,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
       final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
       if (_tvShowingCategories) {
-        if (categories.isNotEmpty) {
-          setState(() => _tvFocusedCategoryIndex = (_tvFocusedCategoryIndex + delta).clamp(0, categories.length - 1).toInt());
-        }
+        _moveTvCategory(delta);
         return KeyEventResult.handled;
       }
       if (channels.isEmpty) return KeyEventResult.handled;
@@ -337,11 +491,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               duration: const Duration(milliseconds: 100),
               opacity: _tvSidebarVisible ? 1 : 0,
               child: ClipRect(
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-                  child: Container(
+                // A translucent panel is cheaper to render than a live blur
+                // on lower-powered TV boxes while keeping video visible.
+                child: Container(
                     decoration: BoxDecoration(
-                      color: const Color(0xB5101020),
+                      color: const Color(0xE6101020),
                       border: Border(
                         right: BorderSide(color: Colors.white.withOpacity(0.12)),
                       ),
@@ -450,6 +604,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                           Expanded(
                             child: _tvShowingCategories
                                 ? ListView.builder(
+                                    controller: _tvCategoryScrollController,
                                     padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
                                     itemCount: _categories.length,
                                     itemExtent: 58,
@@ -496,14 +651,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                                         controller: _tvChannelScrollController,
                                         padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
                                         itemCount: channels.length,
-                                        itemExtent: 80,
+                                        itemExtent: 96,
                                         itemBuilder: (context, index) => _buildTvChannelTile(channels[index], index),
                                       ),
                           ),
                         ],
                       ),
                     ),
-                  ),
                 ),
               ),
             ),
@@ -559,8 +713,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
-              subtitle: Text(channel.group, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white54, fontSize: 10)),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(_epgLabel(channel), maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: _epgForChannel(channel) == null ? Colors.white38 : const Color(0xFFC9BEFF), fontSize: 10, fontWeight: FontWeight.w500)),
+                  const SizedBox(height: 2),
+                  Text(channel.group, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                ],
+              ),
               trailing: Icon(favorite ? Icons.favorite : Icons.chevron_right,
                 color: favorite ? Colors.pinkAccent : Colors.white38, size: 18),
               onTap: () => _playChannel(channel),
@@ -582,19 +745,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-        child: Container(
-          padding: padding,
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.78),
-            borderRadius: BorderRadius.circular(radius),
-            border: Border.all(
-              color: Colors.white.withOpacity(0.10),
-            ),
-          ),
-          child: child,
+      // Keep the glass appearance with alpha compositing instead of a costly
+      // per-card blur; this is significantly lighter on Mi Box hardware.
+      child: Container(
+        padding: padding,
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.82),
+          borderRadius: BorderRadius.circular(radius),
+          border: Border.all(color: Colors.white.withOpacity(0.10)),
         ),
+        child: child,
       ),
     );
   }
@@ -655,6 +815,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     String? name;
     String group = 'Live TV';
     String logo = '';
+    String tvgId = '';
+    String tvgName = '';
     for (final rawLine in lines) {
       final line = rawLine.trim();
       if (line.isEmpty) continue;
@@ -665,6 +827,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
             : 'Unknown channel';
         group = _attribute(line, 'group-title');
         logo = _attribute(line, 'tvg-logo');
+        tvgId = _attribute(line, 'tvg-id');
+        tvgName = _attribute(line, 'tvg-name');
         if (group.isEmpty) group = 'Live TV';
       } else if (!line.startsWith('#') && name != null) {
         final uri = Uri.tryParse(line);
@@ -677,15 +841,157 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               url: line,
               group: group,
               logo: logo,
+              tvgId: tvgId,
+              tvgName: tvgName,
             ),
           );
         }
         name = null;
         group = 'Live TV';
         logo = '';
+        tvgId = '';
+        tvgName = '';
       }
     }
     return result;
+  }
+
+  // --------------------------------------------------
+  // EPG / XMLTV
+  // --------------------------------------------------
+  String _normalizeEpgName(String value) {
+    var name = value.toLowerCase().trim();
+    name = name.replaceAll(RegExp(r'\b(hd|fhd|uhd|4k|sd|hevc|h265|live|tv)\b', caseSensitive: false), ' ');
+    return name.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+  }
+
+  Future<void> _loadEpg() async {
+    final candidatesById = <String, List<EpgProgram>>{};
+    final namesById = <String, List<String>>{};
+    var successfulSources = 0;
+    for (final source in epgSourceUrls) {
+      try {
+        final response = await http.get(Uri.parse(source), headers: const {
+          'User-Agent': 'AnantaOTT/1.0',
+          'Accept': '*/*',
+        }).timeout(const Duration(seconds: 45));
+        if (response.statusCode != 200) continue;
+        final parsed = await compute(_parseEpgPayload, response.bodyBytes);
+        final sourceNames = (parsed['namesById'] as Map).map<String, List<String>>(
+          (key, value) => MapEntry(key.toString(), (value as List).map((item) => item.toString()).toList()),
+        );
+        for (final entry in sourceNames.entries) {
+          final existing = namesById.putIfAbsent(entry.key, () => <String>[]);
+          for (final name in entry.value) {
+            if (!existing.contains(name)) existing.add(name);
+          }
+        }
+        final sourcePrograms = parsed['programmes'] as List;
+        for (final raw in sourcePrograms) {
+          final item = raw as Map;
+          final id = item['id'].toString();
+          final program = EpgProgram(
+            title: item['title'].toString(),
+            description: item['description'].toString(),
+            start: DateTime.fromMillisecondsSinceEpoch(item['start'] as int, isUtc: true),
+            stop: DateTime.fromMillisecondsSinceEpoch(item['stop'] as int, isUtc: true),
+          );
+          final list = candidatesById.putIfAbsent(id, () => <EpgProgram>[]);
+          if (!list.any((existing) => existing.title == program.title && existing.start == program.start)) {
+            list.add(program);
+          }
+        }
+        successfulSources++;
+      } catch (error) {
+        debugPrint('EPG source failed ($source): $error');
+      }
+    }
+
+    final byId = <String, List<EpgProgram>>{};
+    final byName = <String, List<EpgProgram>>{};
+    for (final entry in candidatesById.entries) {
+      final programs = entry.value..sort((a, b) => a.start.compareTo(b.start));
+      if (programs.isNotEmpty) byId[entry.key] = programs;
+      for (final name in namesById[entry.key] ?? const <String>[]) {
+        final normalized = _normalizeEpgName(name);
+        if (normalized.isEmpty || programs.isEmpty) continue;
+        final list = byName.putIfAbsent(normalized, () => <EpgProgram>[]);
+        for (final program in programs) {
+          if (!list.any((existing) => existing.title == program.title && existing.start == program.start)) list.add(program);
+        }
+      }
+    }
+    for (final list in byName.values) {
+      list.sort((a, b) => a.start.compareTo(b.start));
+    }
+    if (!mounted) return;
+    setState(() {
+      if (byId.isNotEmpty || byName.isNotEmpty) {
+        _epgById = byId;
+        _epgByName = byName;
+        _epgStatus = 'Guide loaded from $successfulSources source(s)';
+      } else {
+        _epgStatus = 'Programme guide unavailable';
+      }
+      _rebuildEpgChannelIndex();
+    });
+    debugPrint('EPG loaded: ${byId.length} channel IDs, ${byName.length} names from $successfulSources sources');
+  }
+
+  EpgProgram? _pickCurrentProgram(List<EpgProgram>? programs) {
+    if (programs == null || programs.isEmpty) return null;
+    final now = DateTime.now().toUtc();
+    for (final program in programs) {
+      if (program.isAiringAt(now)) return program;
+    }
+    for (final program in programs) {
+      if (program.start.isAfter(now)) return program;
+    }
+    return null;
+  }
+
+  List<EpgProgram> _resolveEpgCandidates(Channel channel) {
+    final id = channel.tvgId.trim();
+    if (id.isNotEmpty) {
+      final direct = _epgById[id];
+      if (direct != null && direct.isNotEmpty) return direct;
+      final normalizedId = _normalizeEpgName(id);
+      for (final entry in _epgById.entries) {
+        if (_normalizeEpgName(entry.key) == normalizedId) return entry.value;
+      }
+    }
+    final playlistName = _normalizeEpgName(channel.tvgName);
+    if (playlistName.isNotEmpty) {
+      final playlistNameMatch = _epgByName[playlistName];
+      if (playlistNameMatch != null && playlistNameMatch.isNotEmpty) return playlistNameMatch;
+    }
+    final name = _normalizeEpgName(channel.name);
+    final directName = _epgByName[name];
+    if (directName != null && directName.isNotEmpty) return directName;
+    if (name.length >= 5) {
+      for (final entry in _epgByName.entries) {
+        if (entry.key.length >= 5 && (entry.key.contains(name) || name.contains(entry.key))) return entry.value;
+      }
+    }
+    return const <EpgProgram>[];
+  }
+
+  void _rebuildEpgChannelIndex() {
+    _epgByChannelUrl = <String, List<EpgProgram>>{
+      for (final channel in _channels) channel.url: _resolveEpgCandidates(channel),
+    };
+  }
+
+  EpgProgram? _epgForChannel(Channel channel) =>
+      _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
+
+  String _epgLabel(Channel channel) {
+    final program = _epgForChannel(channel);
+    if (program == null) {
+      return _epgStatus == 'Loading programme guide…' ? 'Loading programme info…' : 'Programme info unavailable';
+    }
+    final prefix = program.isAiringAt(DateTime.now().toUtc()) ? 'NOW' : 'UP NEXT';
+    return '$prefix · ${program.title}';
   }
 
   // --------------------------------------------------
@@ -742,6 +1048,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           _selectedCategory = 'All';
         }
         _status = '${updated.length} channels loaded';
+        _rebuildEpgChannelIndex();
       });
     } catch (e) {
       debugPrint('Playlist refresh error: $e');
@@ -831,6 +1138,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     });
     _focusTvPlayer();
     try {
+      // Avoid two active network streams while the next channel initializes.
+      await oldPlayer?.pause();
       await controller.initialize().timeout(
         const Duration(seconds: 35),
       );
@@ -846,7 +1155,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
 
       // Switch only after the new stream is ready. Pause the old stream at
       // the handoff, then replace/dispose it once the new player starts.
-      await oldPlayer?.pause();
       await controller.play();
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
@@ -1048,7 +1356,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               ),
             // All controls disappear together after 2 seconds.
             if (_controlsVisible) ...[
-              Positioned(
+              if (!tvMode)
+                Positioned(
                 top: 8,
                 left: 10,
                 right: 10,
@@ -1154,7 +1463,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                 ),
               if (tvMode && _selectedChannel != null)
                 Positioned(
-                  bottom: initialized ? 56 : 12,
+                  bottom: initialized ? 64 : 12,
                   left: 18,
                   right: 18,
                   child: IgnorePointer(
@@ -1184,7 +1493,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                               children: [
                                 Text(_selectedChannel!.name.trim(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                                 const SizedBox(height: 3),
-                                Text(_selectedChannel!.group, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                                Text(_epgLabel(_selectedChannel!), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFFD2C8FF), fontWeight: FontWeight.w600)),
+                                const SizedBox(height: 3),
+                                Text(_selectedChannel!.group, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white60)),
+                                if ((_epgForChannel(_selectedChannel!)?.description ?? '').isNotEmpty)
+                                  Text(_epgForChannel(_selectedChannel!)!.description, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white70)),
                               ],
                             ),
                           ),
@@ -1201,11 +1514,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                 ),
               if (initialized)
                 Positioned(
-                  bottom: 8,
-                  left: 10,
-                  right: 10,
+                  bottom: 10,
+                  left: 18,
+                  right: 18,
                   child: _glass(
-                    radius: 10,
+                    radius: 12,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 9,
                       vertical: 7,
@@ -1365,10 +1678,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   @override
   void dispose() {
     _controlsTimer?.cancel();
+    _epgClock?.cancel();
+    _epgRefreshTimer?.cancel();
     _playlistRequestId++;
     _playRequestId++;
     _searchController.dispose();
     _tvChannelScrollController.dispose();
+    _tvCategoryScrollController.dispose();
     _tvPlayerFocusNode.dispose();
     _tvSearchFocusNode.dispose();
     for (final node in _tvChannelFocusNodes.values) { node.dispose(); }
