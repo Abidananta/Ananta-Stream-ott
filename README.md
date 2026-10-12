@@ -9,3 +9,5 @@ Press Right on the Xiaomi/Android TV remote while the channel list is open to sh
 Press Left while the channel list is open to enter category browsing; Right in category browsing returns to channels.
 EPG panel is hidden when the sidebar closes.
 Build from GitHub Actions: run `Build Ananta OTT APK` and download the artifact only after a successful run. This source has not been compiled or tested on physical TV hardware in this environment.
+
+Stability update: only `.github/workflows/build-apk.yml` is retained (the duplicate root `build-apk-fixed.yml` has been removed). EPG data is cached on-device and startup reuses a cache younger than two hours instead of immediately downloading the feeds again. Holding Enter on a TV remote no longer repeats the confirm action.
