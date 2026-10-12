@@ -471,6 +471,23 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
     final channels = _visibleChannels;
+
+    // A tile can retain focus after the overlay is hidden. Never allow that
+    // stale tile focus to select/zap a channel while the sidebar is invisible.
+    // Enter's first action in this state is ONLY to reopen the sidebar.
+    if (!_tvSidebarVisible) {
+      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
+        _showTvChannels(index: _tvFocusedChannelIndex);
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown ||
+          key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
       final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
       if (key == LogicalKeyboardKey.arrowUp && index == 0) {
@@ -1562,6 +1579,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       // leave the app instead of reopening/toggling the rail forever.
       setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; });
       FocusManager.instance.primaryFocus?.unfocus();
+      _focusTvPlayer();
       return false;
     }
 
@@ -1781,18 +1799,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                                 Text(_selectedChannel!.name.trim(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                                 const SizedBox(height: 3),
                                 Text(_epgLabel(_selectedChannel!), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFFD2C8FF), fontWeight: FontWeight.w600)),
-                                if (_epgForChannel(_selectedChannel!) != null && _epgForChannel(_selectedChannel!)!.isAiringAt(DateTime.now().toUtc())) ...[
-                                  const SizedBox(height: 5),
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(4),
-                                    child: LinearProgressIndicator(
-                                      value: (() { final p = _epgForChannel(_selectedChannel!)!; final n = DateTime.now().toUtc(); return p.stop.isAfter(p.start) ? (n.difference(p.start).inMilliseconds / p.stop.difference(p.start).inMilliseconds).clamp(0.0, 1.0).toDouble() : 0.0; })(),
-                                      minHeight: 3,
-                                      backgroundColor: Colors.white12,
-                                      valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
-                                    ),
-                                  ),
-                                ],
                                 const SizedBox(height: 3),
                                 Text(_selectedChannel!.group, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white60)),
                                 if ((_epgForChannel(_selectedChannel!)?.description ?? '').isNotEmpty)
