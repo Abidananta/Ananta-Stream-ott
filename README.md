@@ -1,15 +1,12 @@
-Ananta OTT — Xiaomi TV remote navigation update
-This source package updates the existing Ananta OTT Flutter app for Android TV / Xiaomi Mi Box.
-Remote behavior
-The TV player starts unobstructed with the channel rail hidden.
-Enter / Select opens the channel sidebar and focuses the currently playing channel (or first available channel).
-Up / Down moves through channels. D-pad repeats use immediate list scrolling rather than queuing an animation per key repeat.
-Left while the channel list is open opens the category list.
-Up / Down browses categories; Enter applies the focused category; Right returns to channels.
-Enter on a channel starts it and hides the sidebar.
-UI
-The video remains full-screen behind the translucent sidebar.
-The transparent channel/programme information card and progress bar use matching left/right margins and a fixed gap, so they align visually without overlapping.
-Cloud build
-Upload the contents of this folder to the root of a GitHub repository, preserving `.github/workflows/build-apk.yml`. Run Actions → Build Ananta OTT APK and download the `ananta-ott-android-tv-apk` artifact if the workflow succeeds.
-The source has not been compiled or tested on physical Xiaomi TV hardware in this environment. Please verify the workflow result and remote behavior on the device.
+Ananta OTT — 3-day EPG cache and TV guide
+This package uses the supplied TSEPG, Jio EPG and general XMLTV feeds. EPG entries from three days in the past through three days in the future are retained in SharedPreferences. Cached guide data is loaded immediately at startup, then refreshed from the online sources; successful refreshes replace the saved cache.
+When the channel sidebar is open, the selected/focused channel's 3-day schedule appears in a panel to its right. The programme currently airing shows a small EPG progress bar in the player information card and guide panel. A custom launcher icon and Android TV banner are configured by the GitHub Actions workflow, which also adds the LEANBACK_LAUNCHER category.
+Build without local Flutter
+Upload the contents of this folder to the root of a GitHub repository (preserve `.github/workflows/build-apk.yml`).
+Run Actions → Build Ananta OTT APK.
+Download the `ananta-ott-android-tv-apk` artifact if the workflow succeeds.
+Note about catch-up playback
+The 3-day guide includes past programme entries. Actual playback of past programmes requires a catch-up URL/template from the stream provider; the supplied XMLTV URLs only describe programme schedules and do not themselves provide replay streams.
+The source has not been compiled or tested on physical Xiaomi TV hardware in this environment. Review GitHub Actions logs if the workflow fails.
+
+Latest remote fix: CENTER/ENTER repeat events are ignored so a held Xiaomi remote button cannot open the sidebar and immediately trigger a stream reload. Sidebar reveal uses immediate positioning, and EPG schedules are cached per channel to avoid filtering the full guide during remote navigation.
