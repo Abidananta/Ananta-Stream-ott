@@ -1,14 +1,13 @@
-Ananta OTT — Android TV stability update
+Ananta OTT — TV sidebar responsiveness update
 Changes
-Allows choosing a different channel while a stream is buffering. A newer selection supersedes and disposes the previous pending request.
-Keeps the channel rail open during buffering, so the user can move and confirm another channel.
-Avoids changing channels while the rail is hidden. Enter opens the rail; Enter on a focused channel starts it.
-Uses only one active native video controller at a time to reduce Android TV decoder exhaustion and force-closes.
-Commits the selected channel only after the stream initializes successfully; stream initialization timeout reduced to 20 seconds.
-Loads the three configured XMLTV feeds sequentially and keeps the on-device EPG cache with a two-hour freshness window.
-Parses XMLTV on a background isolate and caps per-feed programme parsing and description size to reduce memory spikes on low-RAM TV boxes.
-Protects channel switching from stale requests completing after a newer remote selection.
-Only `.github/workflows/build-apk.yml` is included. `build-apk-fixed.yml` is intentionally absent.
+Opening the channel rail with Enter performs one state update and one scheduled focus/scroll pass, instead of triggering a second state update immediately.
+The live player is wrapped in a RepaintBoundary so channel-rail animations and list focus changes are less likely to repaint the video surface.
+With the rail hidden, Up/Down/Left/Right are intentionally ignored. Enter/Select is the only key that opens the rail; no hidden-rail key changes channel or player controls.
+The rail remains an overlay over the player; it does not resize the video area.
+Keeps the current video_player/ExoPlayer backend and existing EPG cache logic. This is a source-level optimization, not a verified engine replacement.
 Build
-Upload the contents of this folder to the repository root, replacing existing files. In GitHub Actions, run the `build-apk.yml` workflow and download the generated APK artifact.
-Note: Source changes are not a substitute for testing on the target device. If force-closing persists, capture the Android crash log and the GitHub Actions build log to identify the exact native failure.
+Upload the contents of this folder to the GitHub repository root, keeping `.github/workflows/build-apk.yml`. Then run the workflow and test the generated APK on the Android TV device.
+Important
+This source has not been compiled or tested on a physical Xiaomi Mi TV Box. If force-closing continues, capture Android crash/logcat output; the underlying native playback error cannot be confirmed from source alone.
+EPG cache behavior
+The app reads the saved EPG from device storage first. It keeps a rolling three-day guide and reuses a cache younger than two hours without downloading the EPG again on app launch. When the cache is absent or at least two hours old, it refreshes from the configured EPG sources and saves successful results. The periodic refresh runs every two hours while the app remains open.
