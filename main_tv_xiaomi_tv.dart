@@ -188,6 +188,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   VideoPlayerController? _pendingPlayer;
   Channel? _selectedChannel;
   Timer? _controlsTimer;
+  Timer? _channelInfoTimer;
+  Timer? _bufferingTimer;
+  Timer? _autoRetryTimer;
+  bool _channelInfoVisible = false;
+  bool _autoRetryScheduled = false;
+  String? _retryingUrl;
+  int _autoRetryAttempts = 0;
   String _selectedCategory = 'All';
   String _searchQuery = '';
   String _status = 'Ready';
@@ -1172,6 +1179,23 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   EpgProgram? _epgForChannel(Channel channel) =>
       _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
 
+  EpgProgram? _nextEpgForChannel(Channel channel) {
+    final schedule = _epgScheduleForChannel(channel);
+    final now = DateTime.now().toUtc();
+    for (final program in schedule) {
+      if (program.start.isAfter(now)) return program;
+    }
+    return null;
+  }
+
+  double _epgProgress(EpgProgram? program) {
+    if (program == null || !program.stop.isAfter(program.start)) return 0;
+    final now = DateTime.now().toUtc();
+    if (now.isBefore(program.start) || !now.isBefore(program.stop)) return 0;
+    return (now.difference(program.start).inMilliseconds /
+      program.stop.difference(program.start).inMilliseconds).clamp(0.0, 1.0).toDouble();
+  }
+
   List<EpgProgram> _epgScheduleForChannel(Channel channel) {
     final source = _epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel);
     final now = DateTime.now().toUtc();
@@ -1394,15 +1418,82 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
   }
 
+  void _showChannelInfoForTenSeconds() {
+    _channelInfoTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _channelInfoVisible = true);
+    _channelInfoTimer = Timer(const Duration(seconds: 10), () {
+      if (mounted) setState(() => _channelInfoVisible = false);
+    });
+  }
+
+  void _scheduleAutoRetry(Channel channel, int requestId) {
+    if (!mounted || requestId != _playRequestId || _autoRetryScheduled) return;
+    if (_retryingUrl != channel.url) {
+      _retryingUrl = channel.url;
+      _autoRetryAttempts = 0;
+    }
+    if (_autoRetryAttempts >= 5) {
+      setState(() {
+        _connecting = false;
+        _playerError = 'Stream failed after 5 retries. Check the network or choose another channel.';
+        _status = 'Stream unavailable';
+      });
+      return;
+    }
+    _autoRetryAttempts++;
+    _autoRetryScheduled = true;
+    _bufferingTimer?.cancel();
+    _autoRetryTimer?.cancel();
+    setState(() {
+      _connecting = true;
+      _playerError = null;
+      _status = 'Reconnecting ${channel.name} (${_autoRetryAttempts}/5)…';
+    });
+    _autoRetryTimer = Timer(Duration(seconds: _autoRetryAttempts == 1 ? 2 : 3), () {
+      _autoRetryScheduled = false;
+      if (!mounted || requestId != _playRequestId) return;
+      _playChannel(channel, forceRetry: true);
+    });
+  }
+
+  void _watchPlayerHealth(VideoPlayerController controller, Channel channel, int requestId) {
+    controller.addListener(() {
+      if (!mounted || requestId != _playRequestId || _player != controller) return;
+      final value = controller.value;
+      if (value.hasError) {
+        _scheduleAutoRetry(channel, requestId);
+        return;
+      }
+      if (value.isBuffering) {
+        _bufferingTimer ??= Timer(const Duration(seconds: 25), () {
+          _bufferingTimer = null;
+          if (!mounted || requestId != _playRequestId || _player != controller) return;
+          if (controller.value.isBuffering) _scheduleAutoRetry(channel, requestId);
+        });
+      } else {
+        _bufferingTimer?.cancel();
+        _bufferingTimer = null;
+      }
+    });
+  }
+
   // --------------------------------------------------
   // PLAYBACK
   // --------------------------------------------------
-  Future<void> _playChannel(Channel channel) async {
+  Future<void> _playChannel(Channel channel, {bool forceRetry = false}) async {
     if (!mounted) return;
+    if (_retryingUrl != channel.url) {
+      _retryingUrl = channel.url;
+      _autoRetryAttempts = 0;
+      _autoRetryScheduled = false;
+      _autoRetryTimer?.cancel();
+    }
+    _showChannelInfoForTenSeconds();
     // Every selection supersedes the previous pending request. Do not block
     // channel changes while a stream is buffering, and keep the current player
     // alive until a replacement stream is actually ready.
-    if (_selectedChannel?.url == channel.url && _player?.value.isInitialized == true) {
+    if (!forceRetry && _selectedChannel?.url == channel.url && _player?.value.isInitialized == true) {
       // Choosing the currently playing channel cancels any other stream that
       // is still buffering instead of leaving a stale request running.
       ++_playRequestId;
@@ -1471,6 +1562,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         return;
       }
       _pendingPlayer = null;
+      _autoRetryScheduled = false;
+      _bufferingTimer?.cancel();
+      _bufferingTimer = null;
       setState(() {
         _player = controller;
         _selectedChannel = channel;
@@ -1480,6 +1574,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _tvEpgVisible = false;
       });
       _focusTvPlayer();
+      _watchPlayerHealth(controller, channel, requestId);
+      _showChannelInfoForTenSeconds();
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
       }
@@ -1489,21 +1585,27 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
-      setState(() {
-        _playerError = 'Stream timed out. Choose another channel.';
-        _status = 'Stream timed out';
-        _connecting = false;
-      });
+      _scheduleAutoRetry(channel, requestId);
+      if (_autoRetryAttempts >= 5 && mounted) {
+        setState(() {
+          _playerError = 'Stream timed out after 5 retries. Check your connection.';
+          _status = 'Stream timed out';
+          _connecting = false;
+        });
+      }
     } catch (e) {
       debugPrint('Playback error for ${channel.url}: $e');
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
-      setState(() {
-        _playerError = 'Unable to play this stream. Try another channel.';
-        _status = 'Playback failed';
-        _connecting = false;
-      });
+      _scheduleAutoRetry(channel, requestId);
+      if (_autoRetryAttempts >= 5 && mounted) {
+        setState(() {
+          _playerError = 'Stream failed after 5 retries. Try another channel.';
+          _status = 'Playback failed';
+          _connecting = false;
+        });
+      }
     }
 
   }
@@ -1766,9 +1868,20 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                     ),
                   ),
                 ),
-              if (tvMode && _selectedChannel != null)
+              if (_playerError != null)
+                Center(
+                  child: FilledButton.icon(
+                    onPressed: _selectedChannel == null
+                        ? null
+                        : () => _playChannel(_selectedChannel!),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Retry stream'),
+                  ),
+                ),
+            ],
+              if (tvMode && _selectedChannel != null && _channelInfoVisible)
                 Positioned(
-                  bottom: initialized ? 64 : 12,
+                  bottom: 12,
                   left: 18,
                   right: 18,
                   child: IgnorePointer(
@@ -1798,11 +1911,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                               children: [
                                 Text(_selectedChannel!.name.trim(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                                 const SizedBox(height: 3),
-                                Text(_epgLabel(_selectedChannel!), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFFD2C8FF), fontWeight: FontWeight.w600)),
+                                Builder(builder: (context) {
+                                  final nowProgram = _epgForChannel(_selectedChannel!);
+                                  final nextProgram = _nextEpgForChannel(_selectedChannel!);
+                                  final isNow = nowProgram != null && nowProgram.isAiringAt(DateTime.now().toUtc());
+                                  return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                                    Text(isNow ? 'NOW · ${nowProgram.title}' : (nowProgram == null ? 'Now playing · Programme info unavailable' : 'UP NEXT · ${nowProgram.title}'), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFFD2C8FF), fontWeight: FontWeight.w600)),
+                                    if (isNow) ...[
+                                      const SizedBox(height: 4),
+                                      ClipRRect(borderRadius: BorderRadius.circular(3), child: LinearProgressIndicator(value: _epgProgress(nowProgram), minHeight: 3, backgroundColor: Colors.white12, valueColor: const AlwaysStoppedAnimation<Color>(accentColor))),
+                                    ],
+                                    const SizedBox(height: 3),
+                                    Text(nextProgram == null ? 'Next · No programme data' : 'NEXT · ${nextProgram.title} · ${_formatEpgTime(nextProgram.start)}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white70)),
+                                  ]);
+                                }),
                                 const SizedBox(height: 3),
                                 Text(_selectedChannel!.group, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white60)),
-                                if ((_epgForChannel(_selectedChannel!)?.description ?? '').isNotEmpty)
-                                  Text(_epgForChannel(_selectedChannel!)!.description, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white70)),
                               ],
                             ),
                           ),
@@ -1817,71 +1941,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                     ),
                   ),
                 ),
-              if (initialized)
-                Positioned(
-                  bottom: 10,
-                  left: 18,
-                  right: 18,
-                  child: _glass(
-                    radius: 12,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 9,
-                      vertical: 7,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: VideoProgressIndicator(
-                            player!,
-                            allowScrubbing: true,
-                            padding: EdgeInsets.zero,
-                            colors: const VideoProgressColors(
-                              playedColor: accentColor,
-                              bufferedColor: Colors.white38,
-                              backgroundColor: Colors.white24,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        IconButton(
-                          tooltip: 'Favorite',
-                          visualDensity: VisualDensity.compact,
-                          constraints: const BoxConstraints(
-                            minWidth: 30,
-                            minHeight: 30,
-                          ),
-                          padding: EdgeInsets.zero,
-                          onPressed: _selectedChannel == null
-                              ? null
-                              : () => _toggleFavorite(
-                                    _selectedChannel!,
-                                  ),
-                          icon: Icon(
-                            _selectedChannel != null &&
-                                    _favorites.contains(
-                                      _selectedChannel!.url,
-                                    )
-                                ? Icons.favorite
-                                : Icons.favorite_border,
-                            size: 19,
-                            color: Colors.pinkAccent,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              if (_playerError != null)
-                Center(
-                  child: FilledButton.icon(
-                    onPressed: _selectedChannel == null
-                        ? null
-                        : () => _playChannel(_selectedChannel!),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry stream'),
-                  ),
-                ),
-            ],
           ],
         ),
       ),
@@ -1983,6 +2042,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   @override
   void dispose() {
     _controlsTimer?.cancel();
+    _channelInfoTimer?.cancel();
+    _bufferingTimer?.cancel();
+    _autoRetryTimer?.cancel();
     _epgClock?.cancel();
     _epgRefreshTimer?.cancel();
     _playlistRequestId++;
