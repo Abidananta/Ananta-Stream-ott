@@ -209,8 +209,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   Map<String, List<EpgProgram>> _epgById = {};
   Map<String, List<EpgProgram>> _epgByName = {};
   Map<String, List<EpgProgram>> _epgByChannelUrl = {};
-  // Precomputed guide windows prevent expensive XMLTV filtering on every TV key press.
-  Map<String, List<EpgProgram>> _epgScheduleByChannelUrl = {};
   String _epgStatus = 'Loading programme guide…';
   Timer? _epgClock;
   Timer? _epgRefreshTimer;
@@ -236,13 +234,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     final channels = _visibleChannels;
     if (channels.isEmpty) return;
     final safeIndex = index.clamp(0, channels.length - 1).toInt();
-    if (_tvFocusedChannelIndex != safeIndex || !_tvSidebarVisible || _tvShowingCategories) {
-      setState(() {
-        _tvFocusedChannelIndex = safeIndex;
-        _tvSidebarVisible = true;
-        _tvShowingCategories = false;
-      });
-    }
+    setState(() {
+      _tvFocusedChannelIndex = safeIndex;
+      _tvSidebarVisible = true;
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || !_tvChannelScrollController.hasClients) return;
       // Scroll first so ListView builds the destination row before requesting
@@ -267,9 +262,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   void _focusTvPlayer() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_tvPlayerFocusNode.canRequestFocus) return;
-      // Clear stale TextField/list focus after a channel is selected. On some
-      // Xiaomi remotes the next CENTER key otherwise remains with the old row.
-      FocusManager.instance.primaryFocus?.unfocus();
       _tvPlayerFocusNode.requestFocus();
     });
   }
@@ -317,18 +309,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
 
   void _showTvChannels({int? index}) {
     final channels = _visibleChannels;
-    final targetIndex = channels.isEmpty
-        ? 0
-        : (index ?? _tvFocusedChannelIndex).clamp(0, channels.length - 1).toInt();
-    // Reveal the rail in this frame. Avoid an animation or waiting for a
-    // scrolling animation before the user sees the channel list.
     setState(() {
       _tvShowingCategories = false;
       _tvSidebarVisible = true;
-      _tvFocusedChannelIndex = targetIndex;
+      if (index != null && channels.isNotEmpty) {
+        _tvFocusedChannelIndex = index.clamp(0, channels.length - 1).toInt();
+      }
     });
     FocusManager.instance.primaryFocus?.unfocus();
-    if (channels.isNotEmpty) _focusTvChannel(targetIndex);
+    _focusTvChannel(_tvFocusedChannelIndex);
   }
 
   KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
@@ -340,22 +329,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     final channels = _visibleChannels;
     final categories = _categories;
     final editingSearch = primaryContext?.widget is EditableText;
-
-    // CENTER/ENTER is the primary Xiaomi Mi Box action: while watching, show
-    // the channel rail immediately even if an old descendant still owns focus.
-    final isCenter = key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.gameButtonA;
-    // Many Xiaomi remotes emit KeyRepeatEvent while CENTER is held. Without
-    // this guard the first event opens the rail and the repeat immediately
-    // selects/reloads a channel, which looks like the app has frozen.
-    if (event is KeyRepeatEvent && isCenter) return KeyEventResult.handled;
-    if (isCenter && !_tvSidebarVisible && !editingSearch) {
-      final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
-      _showTvChannels(index: current >= 0 ? current : _tvFocusedChannelIndex);
-      return KeyEventResult.handled;
-    }
 
     // Search remains usable with the TV keyboard. D-pad UP opens categories;
     // DOWN moves into results, avoiding a focus trap inside the text field.
@@ -485,8 +458,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
-      // Do not restart a stream when CENTER is held and Android sends repeats.
-      if (event is KeyRepeatEvent) return KeyEventResult.handled;
       if (index >= 0 && index < channels.length) _playChannel(channels[index]);
       return KeyEventResult.handled;
     }
@@ -509,14 +480,19 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
             child: _buildPlayer(fullscreen: true),
           ),
         ),
-        Positioned(
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
           top: 0,
           bottom: 0,
           left: _tvSidebarVisible ? 0 : -330,
           width: 310,
           child: IgnorePointer(
             ignoring: !_tvSidebarVisible,
-            child: ClipRect(
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 100),
+              opacity: _tvSidebarVisible ? 1 : 0,
+              child: ClipRect(
                 // A translucent panel is cheaper to render than a live blur
                 // on lower-powered TV boxes while keeping video visible.
                 child: Container(
@@ -686,9 +662,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                     ),
                 ),
               ),
+            ),
           ),
         ),
-        Positioned(
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 110),
+          curve: Curves.easeOut,
           top: 0,
           bottom: 0,
           left: _tvSidebarVisible ? 310 : -360,
@@ -696,12 +675,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           // Guide is an overlay beside the rail; it never resizes the video.
           child: IgnorePointer(
             ignoring: !_tvSidebarVisible || _tvShowingCategories,
-            child: (_tvSidebarVisible && !_tvShowingCategories)
-                ? Builder(builder: (context) {
-                    final preview = _tvEpgPreviewChannel(channels);
-                    return preview == null ? const SizedBox.shrink() : _buildTvEpgPanel(preview);
-                  })
-                : const SizedBox.shrink(),
+            child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 90),
+            opacity: _tvSidebarVisible && !_tvShowingCategories ? 1 : 0,
+            child: Builder(builder: (context) {
+              final preview = _tvEpgPreviewChannel(channels);
+              return preview == null ? const SizedBox.shrink() : _buildTvEpgPanel(preview);
+            }),
+          ),
           ),
         ),
       ],
@@ -719,7 +700,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
       child: Focus(
         focusNode: focusNode,
-        autofocus: false,
+        autofocus: focusedByIndex,
         onFocusChange: (hasFocus) {
           if (hasFocus && mounted && _tvFocusedChannelIndex != index) {
             setState(() => _tvFocusedChannelIndex = index);
@@ -1102,27 +1083,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   void _rebuildEpgChannelIndex() {
-    final now = DateTime.now().toUtc();
-    final start = now.subtract(const Duration(days: 3));
-    final end = now.add(const Duration(days: 3));
-    final byUrl = <String, List<EpgProgram>>{};
-    final schedules = <String, List<EpgProgram>>{};
-    for (final channel in _channels) {
-      final source = _resolveEpgCandidates(channel);
-      byUrl[channel.url] = source;
-      schedules[channel.url] = source
-          .where((p) => p.stop.isAfter(start) && p.start.isBefore(end))
-          .toList(growable: false);
-    }
-    _epgByChannelUrl = byUrl;
-    _epgScheduleByChannelUrl = schedules;
+    _epgByChannelUrl = <String, List<EpgProgram>>{
+      for (final channel in _channels) channel.url: _resolveEpgCandidates(channel),
+    };
   }
 
   EpgProgram? _epgForChannel(Channel channel) =>
-      _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? const <EpgProgram>[]);
+      _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
 
-  List<EpgProgram> _epgScheduleForChannel(Channel channel) =>
-      _epgScheduleByChannelUrl[channel.url] ?? const <EpgProgram>[];
+  List<EpgProgram> _epgScheduleForChannel(Channel channel) {
+    final source = _epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel);
+    final now = DateTime.now().toUtc();
+    final start = now.subtract(const Duration(days: 3));
+    final end = now.add(const Duration(days: 3));
+    return source.where((p) => p.stop.isAfter(start) && p.start.isBefore(end)).toList()
+      ..sort((a, b) => a.start.compareTo(b.start));
+  }
 
   Channel? _tvEpgPreviewChannel(List<Channel> channels) {
     if (_tvShowingCategories) return _selectedChannel;
