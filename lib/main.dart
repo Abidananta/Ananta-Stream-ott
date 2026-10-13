@@ -1378,26 +1378,34 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
 
   String _logoForChannel(Channel channel) {
-    // Logos are loaded ONLY from this app's channel_logos/ folder hosted in
-    // the Ananta-Ott GitHub repository. Never use XMLTV/EPG artwork,
-    // playlist tvg-logo, or the external India logo catalogue.
-    // CachedNetworkImage caches successfully downloaded images on device.
-    final rawNames = <String>[channel.name, channel.tvgName];
-    final candidates = <String>{};
-    for (final rawName in rawNames) {
-      final cleaned = rawName.toLowerCase().trim()
-          .replaceAll('&', ' and ')
-          .replaceAll(RegExp(r'\b(hd|fhd|uhd|4k|sd|hevc|h265)\b', caseSensitive: false), ' ')
-          .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
-          .replaceAll(RegExp(r'-+'), '-')
-          .replaceAll(RegExp(r'^-|-$'), '');
-      if (cleaned.isNotEmpty) candidates.add(cleaned);
+    // Logos come ONLY from this app's channel_logos folder in the user's
+    // repository. Do not use XMLTV/EPG artwork, playlist tvg-logo, or any
+    // external logo catalogue. CachedNetworkImageProvider caches downloaded
+    // files on device.
+    String slugFor(String value) {
+      var name = value.toLowerCase().trim();
+      // The logo filenames retain quality suffixes: "Star Plus HD" must map
+      // to star-plus-hd-in.png, while "Big Magic" maps to big-magic-in.png.
+      name = name.replaceAll(RegExp(r'\[(?:in|india)\]|\((?:in|india)\)', caseSensitive: false), ' ');
+      name = name.replaceAll('&', ' and ');
+      name = name.replaceAll(RegExp(r'[^a-z0-9]+'), '-');
+      name = name.replaceAll(RegExp(r'-+'), '-');
+      name = name.replaceAll(RegExp(r'^-|-$'), '');
+      if (name.isEmpty) return '';
+      if (!name.endsWith('-in')) name = '$name-in';
+      return name;
     }
-    if (candidates.isEmpty) return '';
-    // Use the first channel-name-derived filename. Store files as
-    // channel_logos/<channel-name-slug>.png in the repository.
-    final slug = candidates.first;
-    return 'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/main/channel_logos/$slug.png';
+
+    // Try the visible playlist channel name first, then tvg-name if present.
+    // Quality labels (HD/FHD/4K) are deliberately preserved.
+    final names = <String>[channel.name, channel.tvgName];
+    for (final raw in names) {
+      final slug = slugFor(raw);
+      if (slug.isNotEmpty) {
+        return 'https://raw.githubusercontent.com/Abidananta/Ananta-Stream-ott/main/channel_logos/$slug.png';
+      }
+    }
+    return '';
   }
 
   double _epgProgress(EpgProgram? program) {
@@ -1616,6 +1624,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         }
       }
       if (!mounted || requestId != _playlistRequestId) return;
+      final shouldAutoPlayFirstChannel = _selectedChannel == null;
       final groups = updated.map((c) => c.group).toSet();
       setState(() {
         _channels = updated;
@@ -1626,6 +1635,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _status = '${updated.length} channels loaded';
         _rebuildEpgChannelIndex();
       });
+      // Start the first channel from the loaded playlist automatically on app
+      // launch (skip the built-in PTV utility entry when playlist channels exist).
+      if (shouldAutoPlayFirstChannel && mounted) {
+        final firstPlaylistChannel = updated.length > 1 ? updated[1] : updated.first;
+        unawaited(_playChannel(firstPlaylistChannel));
+      }
     } catch (e) {
       debugPrint('Playlist refresh error: $e');
       if (!mounted || requestId != _playlistRequestId) return;
