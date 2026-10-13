@@ -430,9 +430,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
-    // Android TV remotes normally deliver D-pad navigation as arrow keys.
-    final isUpKey = key == LogicalKeyboardKey.arrowUp;
-    final isDownKey = key == LogicalKeyboardKey.arrowDown;
+    final isUpKey = key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowUp;
+    final isDownKey = key == LogicalKeyboardKey.arrowDown ||
+        key == LogicalKeyboardKey.arrowDown;
     final isConfirmKey = key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
