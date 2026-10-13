@@ -243,6 +243,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _loadPlaylist();
     _initializeEpg();
     unawaited(_loadIndiaLogoIndex());
+    // Keep the TV player key handler focused from the first frame so physical
+    // Android TV remotes can deliver D-pad events even before the first tap.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -428,6 +431,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
+    final isUpKey = key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.gameButtonDpadUp;
+    final isDownKey = key == LogicalKeyboardKey.arrowDown ||
+        key == LogicalKeyboardKey.gameButtonDpadDown;
     final isConfirmKey = key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
@@ -462,8 +469,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       }
     }
 
-    if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
-      final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+    if (isUpKey || isDownKey) {
+      final delta = isDownKey ? 1 : -1;
       if (_tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories) {
         final preview = _tvEpgPreviewChannel(channels);
         if (_tvEpgSelectionMode && preview != null) {
@@ -473,8 +480,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         }
         return KeyEventResult.handled;
       }
-      if (!_tvSidebarVisible && key == LogicalKeyboardKey.arrowUp) {
+      if (!_tvSidebarVisible && isUpKey) {
         _showChannelInfoFor10Seconds();
+        // Reclaim focus after the remote event so subsequent D-pad presses
+        // continue to reach the player handler rather than a stale overlay.
+        _focusTvPlayer();
         return KeyEventResult.handled;
       }
       if (_tvShowingCategories) {
@@ -629,6 +639,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           child: RepaintBoundary(
             child: Focus(
               focusNode: _tvPlayerFocusNode,
+              autofocus: true,
               onKeyEvent: _handleRemoteKey,
               child: _buildPlayer(fullscreen: true),
             ),
@@ -1391,11 +1402,25 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     for (final name in normalizedNames) {
       final exact = _indiaLogosByName[name];
       if (exact != null && exact.isNotEmpty) return exact;
-      // Fallback tolerant matching handles suffixes such as HD, FHD and regional
-      // variants, but only for reasonably distinctive channel names.
+      // Try common playlist naming variations: regional labels, HD/SD and
+      // network suffixes. Names are normalized against the repository's
+      // lower-case, dash-separated filenames (usually ending in -in).
+      final candidates = <String>{
+        name,
+        name.replaceAll(RegExp(r'(hd|fhd|uhd|4k|sd)$'), ''),
+      }..remove('');
+      for (final candidate in candidates) {
+        final match = _indiaLogosByName[candidate];
+        if (match != null && match.isNotEmpty) return match;
+      }
+      // Conservative fuzzy matching: avoid tiny names such as 'tv' matching
+      // unrelated stations, but tolerate extra HD/language words in playlists.
       if (name.length >= 5) {
-        for (final entry in _indiaLogosByName.entries) {
-          if (entry.key.length >= 5 && (entry.key.contains(name) || name.contains(entry.key))) {
+        final entries = _indiaLogosByName.entries.toList()
+          ..sort((a, b) => b.key.length.compareTo(a.key.length));
+        for (final entry in entries) {
+          if (entry.key.length >= 5 &&
+              (entry.key == name || entry.key.contains(name) || name.contains(entry.key))) {
             return entry.value;
           }
         }
