@@ -206,7 +206,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   bool _tvSidebarVisible = false;
   bool _tvShowingCategories = false;
   bool _tvEpgVisible = false;
+  bool _tvEpgSelectionMode = false;
+  bool _channelInfoVisible = false;
+  Timer? _channelInfoTimer;
   bool _epgLoading = false;
+  int _tvFocusedEpgIndex = 0;
+  int _tvEpgSelectedDayOffset = 0;
   int _tvFocusedChannelIndex = 0;
   int _tvFocusedCategoryIndex = 0;
   final ScrollController _tvChannelScrollController = ScrollController();
@@ -360,6 +365,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _tvShowingCategories = false;
       _tvSidebarVisible = true;
       _tvEpgVisible = false;
+      _tvEpgSelectionMode = false;
       _tvFocusedChannelIndex = safeIndex;
     });
     FocusManager.instance.primaryFocus?.unfocus();
@@ -375,6 +381,33 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       final focus = _tvChannelFocusNodes[channels[safeIndex].url];
       if (focus != null && focus.canRequestFocus) focus.requestFocus();
     });
+  }
+
+  void _showChannelInfoFor10Seconds() {
+    _channelInfoTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _channelInfoVisible = true);
+    _channelInfoTimer = Timer(const Duration(seconds: 10), () {
+      if (mounted) setState(() => _channelInfoVisible = false);
+    });
+  }
+
+  void _moveTvEpgSelection(int delta, Channel channel) {
+    final schedule = _epgScheduleForChannel(channel);
+    if (schedule.isEmpty) return;
+    _tvFocusedEpgIndex = (_tvFocusedEpgIndex + delta).clamp(0, schedule.length - 1).toInt();
+    _scrollTvEpgToIndex(_tvFocusedEpgIndex);
+    if (mounted) setState(() {});
+  }
+
+  void _scrollTvEpgToIndex(int index) {
+    if (!_tvEpgScrollController.hasClients) return;
+    final position = _tvEpgScrollController.position;
+    // Guide rows have variable height; this estimate keeps keyboard selection
+    // near the viewport while ListView remains the source of truth for scrolling.
+    final target = (index * 118.0).clamp(0.0, position.maxScrollExtent).toDouble();
+    _tvEpgScrollController.animateTo(target,
+        duration: const Duration(milliseconds: 110), curve: Curves.easeOut);
   }
 
   void _scrollTvEpg(int delta) {
@@ -429,7 +462,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
       final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
       if (_tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories) {
-        _scrollTvEpg(delta);
+        final preview = _tvEpgPreviewChannel(channels);
+        if (_tvEpgSelectionMode && preview != null) {
+          _moveTvEpgSelection(delta, preview);
+        } else {
+          _scrollTvEpg(delta);
+        }
+        return KeyEventResult.handled;
+      }
+      if (!_tvSidebarVisible && key == LogicalKeyboardKey.arrowUp) {
+        _showChannelInfoFor10Seconds();
         return KeyEventResult.handled;
       }
       if (_tvShowingCategories) {
@@ -457,6 +499,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (!_tvSidebarVisible) {
         final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
         _showTvChannels(index: current >= 0 ? current : _tvFocusedChannelIndex);
+      } else if (_tvSidebarVisible && _tvEpgVisible) {
+        // Guide browsing is a separate remote mode. Enter must not zap the
+        // channel while the 3-day EPG selection rail is active.
+        return KeyEventResult.handled;
       } else if (_tvShowingCategories) {
         if (categories.isNotEmpty) {
           final category = categories[_tvFocusedCategoryIndex.clamp(0, categories.length - 1)];
@@ -478,7 +524,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
 
     if (key == LogicalKeyboardKey.arrowLeft) {
       if (_tvSidebarVisible && !_tvShowingCategories) {
-        setState(() => _tvEpgVisible = false);
+        setState(() { _tvEpgVisible = false; _tvEpgSelectionMode = false; });
         _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
       } else if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
@@ -491,10 +537,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (key == LogicalKeyboardKey.arrowRight) {
       if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
-      } else if (_tvSidebarVisible) {
-        // Right toggles the 3-day guide beside the channel rail. It does not
-        // change the playing channel, so guide browsing cannot interrupt video.
-        setState(() => _tvEpgVisible = !_tvEpgVisible);
+      } else if (_tvSidebarVisible && !_tvEpgVisible) {
+        // First Right opens the 3-day guide without interrupting playback.
+        setState(() { _tvEpgVisible = true; _tvEpgSelectionMode = true; _tvFocusedEpgIndex = 0; _tvEpgSelectedDayOffset = 0; });
+      } else if (_tvSidebarVisible && _tvEpgVisible) {
+        // Second Right enables the guide selection rail; Up/Down now browse
+        // every programme rather than moving channel focus.
+        setState(() => _tvEpgSelectionMode = !_tvEpgSelectionMode);
       } else {
         // Hidden sidebar: ignore Right as well; Enter is the only opener.
       }
@@ -507,7 +556,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         return KeyEventResult.handled;
       }
       if (_tvSidebarVisible) {
-        setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; });
+        setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; _tvEpgSelectionMode = false; });
         FocusManager.instance.primaryFocus?.unfocus();
         _focusTvPlayer();
         return KeyEventResult.handled;
@@ -540,7 +589,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
       final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
       if (_tvEpgVisible) {
-        _scrollTvEpg(delta);
+        final preview = _tvEpgPreviewChannel(channels);
+        if (_tvEpgSelectionMode && preview != null) {
+          _moveTvEpgSelection(delta, preview);
+        } else {
+          _scrollTvEpg(delta);
+        }
         return KeyEventResult.handled;
       }
       if (key == LogicalKeyboardKey.arrowUp && index == 0) {
@@ -552,6 +606,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
+      if (_tvEpgVisible) return KeyEventResult.handled;
       if (index >= 0 && index < channels.length) _playChannel(channels[index]);
       return KeyEventResult.handled;
     }
@@ -1300,7 +1355,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   Widget _buildTvEpgPanel(Channel channel) {
-    final schedule = _epgScheduleForChannel(channel);
+    final allSchedule = _epgScheduleForChannel(channel);
+    final localToday = DateTime.now();
+    final selectedLocalDay = DateTime(localToday.year, localToday.month, localToday.day)
+        .add(Duration(days: _tvEpgSelectedDayOffset));
+    final schedule = allSchedule.where((program) {
+      final localStart = program.start.toLocal();
+      final localStop = program.stop.toLocal();
+      final dayStart = selectedLocalDay;
+      final dayEnd = dayStart.add(const Duration(days: 1));
+      return localStop.isAfter(dayStart) && localStart.isBefore(dayEnd);
+    }).toList();
     final now = DateTime.now().toUtc();
     return Container(
       decoration: BoxDecoration(
@@ -1312,11 +1377,49 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 12, 10),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('3-DAY TV GUIDE', style: TextStyle(fontSize: 11, letterSpacing: 1.3, color: Color(0xFFC9BEFF), fontWeight: FontWeight.bold)),
+              Text(_tvEpgSelectionMode ? '3-DAY TV GUIDE · SELECT WITH UP/DOWN' : '3-DAY TV GUIDE · PRESS RIGHT TO NAVIGATE', style: const TextStyle(fontSize: 10, letterSpacing: 0.7, color: Color(0xFFC9BEFF), fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               Text(channel.name.trim(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               Text(channel.group, style: const TextStyle(fontSize: 11, color: Colors.white60)),
             ]),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+            child: Row(
+              children: List.generate(3, (dayOffset) {
+                final day = DateTime(localToday.year, localToday.month, localToday.day)
+                    .add(Duration(days: dayOffset));
+                final selected = _tvEpgSelectedDayOffset == dayOffset;
+                final label = dayOffset == 0 ? 'TODAY' : dayOffset == 1 ? 'TOMORROW' : '${['MON','TUE','WED','THU','FRI','SAT','SUN'][day.weekday - 1]} ${day.day}/${day.month}';
+                return Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () {
+                        setState(() {
+                          _tvEpgSelectedDayOffset = dayOffset;
+                          _tvFocusedEpgIndex = 0;
+                        });
+                        if (_tvEpgScrollController.hasClients) {
+                          _tvEpgScrollController.jumpTo(0);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 3),
+                        decoration: BoxDecoration(
+                          color: selected ? accentColor.withOpacity(0.34) : Colors.white.withOpacity(0.05),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: selected ? Colors.white : Colors.white12, width: selected ? 1.5 : 1),
+                        ),
+                        child: Text(label, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: selected ? Colors.white : Colors.white70)),
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ),
           ),
           const Divider(height: 1, color: Colors.white12),
           Expanded(
@@ -1343,9 +1446,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                         margin: const EdgeInsets.only(bottom: 6),
                         padding: const EdgeInsets.all(9),
                         decoration: BoxDecoration(
-                          color: current ? accentColor.withOpacity(0.22) : Colors.white.withOpacity(0.045),
+                          color: index == _tvFocusedEpgIndex && _tvEpgSelectionMode
+                              ? accentColor.withOpacity(0.32)
+                              : current ? accentColor.withOpacity(0.22) : Colors.white.withOpacity(0.045),
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: current ? accentColor.withOpacity(0.75) : Colors.white.withOpacity(0.07)),
+                          border: Border.all(color: index == _tvFocusedEpgIndex && _tvEpgSelectionMode
+                              ? Colors.white : current ? accentColor.withOpacity(0.75) : Colors.white.withOpacity(0.07), width: index == _tvFocusedEpgIndex && _tvEpgSelectionMode ? 2 : 1),
                         ),
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                           Row(children: [
@@ -1524,7 +1630,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _connecting = false;
         _tvSidebarVisible = false;
         _tvEpgVisible = false;
+        _tvEpgSelectionMode = false;
       });
+      _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       return;
     }
@@ -1596,7 +1704,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _bufferingStartedAt = null;
         _tvSidebarVisible = false;
         _tvEpgVisible = false;
+        _tvEpgSelectionMode = false;
       });
+      _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
@@ -1707,7 +1817,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (tvMode && _tvSidebarVisible) {
       // First BACK closes the channel rail. A subsequent BACK is allowed to
       // leave the app instead of reopening/toggling the rail forever.
-      setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; });
+      setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; _tvEpgSelectionMode = false; });
       FocusManager.instance.primaryFocus?.unfocus();
       _focusTvPlayer();
       return false;
@@ -1896,9 +2006,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                     ),
                   ),
                 ),
-              if (tvMode && _selectedChannel != null)
+              if (tvMode && _selectedChannel != null && _channelInfoVisible)
                 Positioned(
-                  bottom: initialized ? 64 : 12,
+                  bottom: initialized ? 42 : 8,
                   left: 18,
                   right: 18,
                   child: IgnorePointer(
