@@ -881,10 +881,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
               leading: CircleAvatar(
-                radius: 18,
+                radius: 26,
                 backgroundColor: accentColor.withOpacity(0.16),
                 backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
-                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 18) : null,
+                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 24) : null,
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
@@ -2021,8 +2021,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                       child: Row(
                         children: [
                           Container(
-                            width: 42,
-                            height: 42,
+                            width: 64,
+                            height: 64,
                             decoration: BoxDecoration(
                               color: accentColor.withOpacity(0.18),
                               borderRadius: BorderRadius.circular(10),
@@ -2030,7 +2030,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                             ),
                             child: _logoForChannel(_selectedChannel!).isNotEmpty
                                 ? ClipRRect(borderRadius: BorderRadius.circular(10), child: CachedNetworkImage(imageUrl: _logoForChannel(_selectedChannel!), fit: BoxFit.cover, placeholder: (_, __) => const Icon(Icons.live_tv, color: accentColor), errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
-                                : const Icon(Icons.live_tv, color: accentColor, size: 23),
+                                : const Icon(Icons.live_tv, color: accentColor, size: 30),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
@@ -2129,11 +2129,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           leading: CircleAvatar(
-            radius: 21,
+            radius: 28,
             backgroundColor: accentColor.withOpacity(0.17),
             backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
             child: _logoForChannel(channel).isEmpty
-                ? const Icon(Icons.live_tv, color: accentColor, size: 21)
+                ? const Icon(Icons.live_tv, color: accentColor, size: 26)
                 : null,
           ),
           title: Text(
