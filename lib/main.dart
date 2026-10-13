@@ -242,7 +242,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
-    unawaited(_loadIndiaLogoIndex());
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
@@ -1379,54 +1378,26 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
 
   String _logoForChannel(Channel channel) {
-    // Prefer an EPG-supplied logo, then the India TV-logos catalogue, then the
-    // playlist's tvg-logo. This avoids a stale playlist URL hiding a good EPG logo.
-    final id = channel.tvgId.trim();
-    if (id.isNotEmpty) {
-      final direct = _epgLogosById[id];
-      if (direct != null && direct.isNotEmpty) return direct;
-      final normalizedId = _normalizeEpgName(id);
-      for (final entry in _epgLogosById.entries) {
-        if (_normalizeEpgName(entry.key) == normalizedId && entry.value.isNotEmpty) return entry.value;
-      }
+    // Logos are loaded ONLY from this app's channel_logos/ folder hosted in
+    // the Ananta-Ott GitHub repository. Never use XMLTV/EPG artwork,
+    // playlist tvg-logo, or the external India logo catalogue.
+    // CachedNetworkImage caches successfully downloaded images on device.
+    final rawNames = <String>[channel.name, channel.tvgName];
+    final candidates = <String>{};
+    for (final rawName in rawNames) {
+      final cleaned = rawName.toLowerCase().trim()
+          .replaceAll('&', ' and ')
+          .replaceAll(RegExp(r'\b(hd|fhd|uhd|4k|sd|hevc|h265)\b', caseSensitive: false), ' ')
+          .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+          .replaceAll(RegExp(r'-+'), '-')
+          .replaceAll(RegExp(r'^-|-$'), '');
+      if (cleaned.isNotEmpty) candidates.add(cleaned);
     }
-    for (final name in <String>[channel.tvgName, channel.name]) {
-      final normalized = _normalizeEpgName(name);
-      final epgLogo = _epgLogosByName[normalized];
-      if (epgLogo != null && epgLogo.isNotEmpty) return epgLogo;
-    }
-    final normalizedNames = <String>{
-      _normalizeEpgName(channel.tvgName),
-      _normalizeEpgName(channel.name),
-    }..remove('');
-    for (final name in normalizedNames) {
-      final exact = _indiaLogosByName[name];
-      if (exact != null && exact.isNotEmpty) return exact;
-      // Try common playlist naming variations: regional labels, HD/SD and
-      // network suffixes. Names are normalized against the repository's
-      // lower-case, dash-separated filenames (usually ending in -in).
-      final candidates = <String>{
-        name,
-        name.replaceAll(RegExp(r'(hd|fhd|uhd|4k|sd)$'), ''),
-      }..remove('');
-      for (final candidate in candidates) {
-        final match = _indiaLogosByName[candidate];
-        if (match != null && match.isNotEmpty) return match;
-      }
-      // Conservative fuzzy matching: avoid tiny names such as 'tv' matching
-      // unrelated stations, but tolerate extra HD/language words in playlists.
-      if (name.length >= 5) {
-        final entries = _indiaLogosByName.entries.toList()
-          ..sort((a, b) => b.key.length.compareTo(a.key.length));
-        for (final entry in entries) {
-          if (entry.key.length >= 5 &&
-              (entry.key == name || entry.key.contains(name) || name.contains(entry.key))) {
-            return entry.value;
-          }
-        }
-      }
-    }
-    return channel.logo.trim();
+    if (candidates.isEmpty) return '';
+    // Use the first channel-name-derived filename. Store files as
+    // channel_logos/<channel-name-slug>.png in the repository.
+    final slug = candidates.first;
+    return 'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/main/channel_logos/$slug.png';
   }
 
   double _epgProgress(EpgProgram? program) {
