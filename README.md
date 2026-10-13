@@ -1,12 +1,14 @@
-Ananta OTT – EPG logos and guide progress update
-Included
-Loads XMLTV programme data from the three configured EPG feeds.
-Reads channel `<icon src="...">` entries from EPG and matches logos by EPG channel ID/name.
-Stores logo URLs alongside the three-day EPG cache and uses `cached_network_image` for on-device image caching.
-Shows a programme progress bar under the current programme in the channel sidebar and channel info card, plus current/next programme text in the info card.
-Removes the player timeline/progress bar from the bottom control row.
-Explicitly sets playback volume to 100% after stream initialization.
-Keeps the Android TV D-pad UP/DOWN channel list navigation.
+Ananta OTT — Channel browsing, EPG scroll and stream recovery update
+Included source changes
+Removes the duplicate inner ListTile focus highlight so only one channel selection border is visible.
+Makes the 3-day EPG panel respond to remote UP/DOWN and displays a scrollbar thumb.
+Keeps cached EPG logos loaded through `cached_network_image`.
+Removes the bottom favourite button strip beneath the channel info card.
+Adds up to five retries for stream initialization failures/timeouts, with increasing delays.
+Adds a playback health check that retries a stream after a prolonged buffering state or player error.
+Sets player volume to 100% and disables audio mixing with other apps.
+Preserves the current/next EPG information card and EPG progress bar.
 Build
-Upload the contents of this folder to the repository root and run `.github/workflows/build-apk.yml` in GitHub Actions.
-Note: source-level changes have not been compiled or tested on a physical TV box. A stream with an unsupported audio codec or no audio track cannot be made audible solely by setting player volume; that requires stream/decoder verification.
+Upload the contents of this folder to the GitHub repository root and run `.github/workflows/build-apk.yml`.
+Important limitations
+This is a source patch and has not been compiled or tested on a physical TV box. Retries can recover transient network errors, but cannot repair an unavailable stream or a stream with an absent/unsupported audio track. Android HLS playback requires the stream's audio and video sample codecs to be supported by the device's media decoder.
