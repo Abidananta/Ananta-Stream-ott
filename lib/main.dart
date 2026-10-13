@@ -2008,7 +2008,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                 ),
               if (tvMode && _selectedChannel != null && _channelInfoVisible)
                 Positioned(
-                  bottom: initialized ? 42 : 8,
+                  // Keep the live information card slightly above the bottom edge
+                  // so it does not sit on top of TV overscan/system UI.
+                  bottom: initialized ? 66 : 24,
                   left: 18,
                   right: 18,
                   child: IgnorePointer(
