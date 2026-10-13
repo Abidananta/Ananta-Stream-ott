@@ -222,6 +222,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   String _epgStatus = 'Loading programme guide…';
   Timer? _epgClock;
   Timer? _epgRefreshTimer;
+  Timer? _playbackHealthTimer;
+  DateTime? _bufferingStartedAt;
+  int _runtimeRetryCount = 0;
+  final ScrollController _tvEpgScrollController = ScrollController();
   int _playlistRequestId = 0;
   int _playRequestId = 0;
 
@@ -235,6 +239,31 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (mounted) setState(() {});
     });
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
+    // Recover a stream that stalls after it initially starts (for example, a brief network drop).
+    _playbackHealthTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+      if (!mounted || _connecting || _selectedChannel == null) return;
+      final player = _player;
+      if (player == null) return;
+      final value = player.value;
+      if (value.hasError) {
+        if (_runtimeRetryCount < 5) {
+          _runtimeRetryCount++;
+          _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
+        }
+        return;
+      }
+      if (value.isBuffering) {
+        _bufferingStartedAt ??= DateTime.now();
+        if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24) && _runtimeRetryCount < 5) {
+          _runtimeRetryCount++;
+          _bufferingStartedAt = null;
+          _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
+        }
+      } else {
+        _bufferingStartedAt = null;
+        _runtimeRetryCount = 0;
+      }
+    });
   }
 
   // Xiaomi Mi Box / Android TV remote handling. Focus and index are managed
@@ -348,6 +377,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     });
   }
 
+  void _scrollTvEpg(int delta) {
+    if (!_tvEpgScrollController.hasClients) return;
+    final position = _tvEpgScrollController.position;
+    final target = (_tvEpgScrollController.offset + delta * 150.0)
+        .clamp(0.0, position.maxScrollExtent).toDouble();
+    _tvEpgScrollController.animateTo(target,
+        duration: const Duration(milliseconds: 120), curve: Curves.easeOut);
+  }
+
   KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
@@ -390,6 +428,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
 
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
       final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+      if (_tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories) {
+        _scrollTvEpg(delta);
+        return KeyEventResult.handled;
+      }
       if (_tvShowingCategories) {
         _moveTvCategory(delta);
         return KeyEventResult.handled;
@@ -497,6 +539,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
 
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
       final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+      if (_tvEpgVisible) {
+        _scrollTvEpg(delta);
+        return KeyEventResult.handled;
+      }
       if (key == LogicalKeyboardKey.arrowUp && index == 0) {
         _tvSearchFocusNode.requestFocus();
         return KeyEventResult.handled;
@@ -769,13 +815,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                   : selected ? Colors.white.withOpacity(0.13) : Colors.white.withOpacity(0.035),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
-                color: focused ? accentColor : (selected ? accentColor.withOpacity(0.6) : Colors.white.withOpacity(0.07)),
+                color: focused ? accentColor : Colors.white.withOpacity(0.07),
                 width: focused ? 2 : 1,
               ),
             ),
             child: ListTile(
-              focusColor: accentColor.withOpacity(0.22),
-              hoverColor: accentColor.withOpacity(0.16),
+              focusColor: Colors.transparent,
+              hoverColor: Colors.transparent,
               dense: false,
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
@@ -1276,7 +1322,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           Expanded(
             child: schedule.isEmpty
               ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_epgStatus == 'Loading programme guide…' ? 'Loading guide…' : 'No 3-day guide available for this channel', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white60, fontSize: 12))))
-              : ListView.builder(
+              : Scrollbar(
+                  controller: _tvEpgScrollController,
+                  thumbVisibility: true,
+                  child: ListView.builder(
+                  controller: _tvEpgScrollController,
+                  physics: const ClampingScrollPhysics(),
                   padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
                   itemCount: schedule.length,
                   itemBuilder: (context, index) {
@@ -1321,6 +1372,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                       ),
                     ]);
                   },
+                ),
                 ),
           ),
         ]),
@@ -1455,12 +1507,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   // --------------------------------------------------
   // PLAYBACK
   // --------------------------------------------------
-  Future<void> _playChannel(Channel channel) async {
+  Future<void> _playChannel(Channel channel, {int retryAttempt = 0}) async {
     if (!mounted) return;
     // Every selection supersedes the previous pending request. Do not block
     // channel changes while a stream is buffering, and keep the current player
     // alive until a replacement stream is actually ready.
-    if (_selectedChannel?.url == channel.url && _player?.value.isInitialized == true) {
+    if (retryAttempt == 0 && _selectedChannel?.url == channel.url && _player?.value.isInitialized == true) {
       // Choosing the currently playing channel cancels any other stream that
       // is still buffering instead of leaving a stale request running.
       ++_playRequestId;
@@ -1499,12 +1551,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         'Accept': '*/*',
         'Connection': 'keep-alive',
       },
+      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
     );
     _pendingPlayer = controller;
     setState(() {
       // Keep the sidebar open during buffering so another channel can be
       // selected immediately. Only one native video controller is kept alive
       // to reduce decoder exhaustion on low-memory Android TV boxes.
+      _selectedChannel = channel;
       _playerError = null;
       _connecting = true;
       _controlsVisible = true;
@@ -1538,6 +1592,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _selectedChannel = channel;
         _status = 'Playing ${channel.name}';
         _connecting = false;
+        _runtimeRetryCount = 0;
+        _bufferingStartedAt = null;
         _tvSidebarVisible = false;
         _tvEpgVisible = false;
       });
@@ -1552,20 +1608,32 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = 'Stream timed out. Choose another channel.';
+        _playerError = retryAttempt < 5 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/5)…' : 'Stream timed out after 5 retries.';
         _status = 'Stream timed out';
         _connecting = false;
       });
+      if (retryAttempt < 5) {
+        await Future.delayed(Duration(seconds: 1 + retryAttempt));
+        if (mounted && requestId == _playRequestId) {
+          await _playChannel(channel, retryAttempt: retryAttempt + 1);
+        }
+      }
     } catch (e) {
       debugPrint('Playback error for ${channel.url}: $e');
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = 'Unable to play this stream. Try another channel.';
+        _playerError = retryAttempt < 5 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/5)…' : 'Unable to play after 5 retries.';
         _status = 'Playback failed';
         _connecting = false;
       });
+      if (retryAttempt < 5) {
+        await Future.delayed(Duration(seconds: 1 + retryAttempt));
+        if (mounted && requestId == _playRequestId) {
+          await _playChannel(channel, retryAttempt: retryAttempt + 1);
+        }
+      }
     }
 
   }
@@ -1881,48 +1949,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                     ),
                   ),
                 ),
-              if (initialized)
-                Positioned(
-                  bottom: 10,
-                  left: 18,
-                  right: 18,
-                  child: _glass(
-                    radius: 12,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 9,
-                      vertical: 7,
-                    ),
-                    child: Row(
-                      children: [
-                        const Spacer(),
-                        IconButton(
-                          tooltip: 'Favorite',
-                          visualDensity: VisualDensity.compact,
-                          constraints: const BoxConstraints(
-                            minWidth: 30,
-                            minHeight: 30,
-                          ),
-                          padding: EdgeInsets.zero,
-                          onPressed: _selectedChannel == null
-                              ? null
-                              : () => _toggleFavorite(
-                                    _selectedChannel!,
-                                  ),
-                          icon: Icon(
-                            _selectedChannel != null &&
-                                    _favorites.contains(
-                                      _selectedChannel!.url,
-                                    )
-                                ? Icons.favorite
-                                : Icons.favorite_border,
-                            size: 19,
-                            color: Colors.pinkAccent,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
               if (_playerError != null)
                 Center(
                   child: FilledButton.icon(
@@ -2037,6 +2063,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _controlsTimer?.cancel();
     _epgClock?.cancel();
     _epgRefreshTimer?.cancel();
+    _playbackHealthTimer?.cancel();
     _playlistRequestId++;
     _playRequestId++;
     final pendingPlayer = _pendingPlayer;
@@ -2045,6 +2072,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _searchController.dispose();
     _tvChannelScrollController.dispose();
     _tvCategoryScrollController.dispose();
+    _tvEpgScrollController.dispose();
     _tvPlayerFocusNode.dispose();
     _tvSearchFocusNode.dispose();
     for (final node in _tvChannelFocusNodes.values) { node.dispose(); }
