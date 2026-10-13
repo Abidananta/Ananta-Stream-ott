@@ -224,6 +224,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   Map<String, List<EpgProgram>> _epgByChannelUrl = {};
   Map<String, String> _epgLogosById = {};
   Map<String, String> _epgLogosByName = {};
+  Map<String, String> _indiaLogosByName = {};
+  bool _indiaLogoIndexLoading = false;
   String _epgStatus = 'Loading programme guide…';
   Timer? _epgClock;
   Timer? _epgRefreshTimer;
@@ -240,6 +242,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
+    unawaited(_loadIndiaLogoIndex());
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -881,10 +884,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
               leading: CircleAvatar(
-                radius: 26,
+                radius: 30,
                 backgroundColor: accentColor.withOpacity(0.16),
                 backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
-                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 24) : null,
+                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
@@ -1044,6 +1047,57 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     var name = value.toLowerCase().trim();
     name = name.replaceAll(RegExp(r'\b(hd|fhd|uhd|4k|sd|hevc|h265|live|tv)\b', caseSensitive: false), ' ');
     return name.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+  }
+
+  Future<void> _loadIndiaLogoIndex() async {
+    if (_indiaLogoIndexLoading) return;
+    _indiaLogoIndexLoading = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getString('ananta_india_logo_index_v1');
+      if (cached != null && cached.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(cached) as Map<String, dynamic>;
+          final map = decoded.map<String, String>((key, value) => MapEntry(key, value.toString()));
+          if (map.isNotEmpty && mounted) setState(() => _indiaLogosByName = map);
+        } catch (_) {}
+      }
+      // Use GitHub's tree API rather than HTML scraping; it returns stable file
+      // paths that can be converted into direct raw image URLs.
+      final response = await http.get(
+        Uri.parse('https://api.github.com/repos/tv-logo/tv-logos/git/trees/main?recursive=1'),
+        headers: const {'Accept': 'application/vnd.github+json', 'User-Agent': 'AnantaOTT/1.0'},
+      ).timeout(const Duration(seconds: 18));
+      if (response.statusCode != 200) return;
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final tree = decoded['tree'];
+      if (tree is! List) return;
+      final map = <String, String>{};
+      for (final item in tree) {
+        if (item is! Map) continue;
+        final path = item['path']?.toString() ?? '';
+        if (!path.startsWith('countries/india/')) continue;
+        if (!RegExp(r'\.(png|jpe?g|webp)$', caseSensitive: false).hasMatch(path)) continue;
+        final file = path.split('/').last.replaceFirst(RegExp(r'\.[^.]+$'), '');
+        var base = file.toLowerCase().replaceAll('_', '-');
+        base = base.replaceFirst(RegExp(r'-in$'), '').replaceAll('-', ' ');
+        final normalized = _normalizeEpgName(base);
+        if (normalized.isEmpty) continue;
+        final url = 'https://raw.githubusercontent.com/tv-logo/tv-logos/main/$path';
+        map.putIfAbsent(normalized, () => url);
+        // Also index the exact filename spelling before HD/SD tokens are removed.
+        final fullNormalized = _normalizeEpgName(file.replaceAll('-', ' '));
+        if (fullNormalized.isNotEmpty) map.putIfAbsent(fullNormalized, () => url);
+      }
+      if (map.isNotEmpty) {
+        await prefs.setString('ananta_india_logo_index_v1', jsonEncode(map));
+        if (mounted) setState(() => _indiaLogosByName = map);
+      }
+    } catch (error) {
+      debugPrint('India TV logo index unavailable: $error');
+    } finally {
+      _indiaLogoIndexLoading = false;
+    }
   }
 
   Future<void> _initializeEpg() async {
@@ -1314,15 +1368,40 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
 
   String _logoForChannel(Channel channel) {
-    if (channel.logo.trim().isNotEmpty) return channel.logo.trim();
+    // Prefer an EPG-supplied logo, then the India TV-logos catalogue, then the
+    // playlist's tvg-logo. This avoids a stale playlist URL hiding a good EPG logo.
     final id = channel.tvgId.trim();
-    if (id.isNotEmpty && _epgLogosById[id] != null) return _epgLogosById[id]!;
-    final names = <String>[channel.tvgName, channel.name];
-    for (final name in names) {
-      final logo = _epgLogosByName[_normalizeEpgName(name)];
-      if (logo != null && logo.isNotEmpty) return logo;
+    if (id.isNotEmpty) {
+      final direct = _epgLogosById[id];
+      if (direct != null && direct.isNotEmpty) return direct;
+      final normalizedId = _normalizeEpgName(id);
+      for (final entry in _epgLogosById.entries) {
+        if (_normalizeEpgName(entry.key) == normalizedId && entry.value.isNotEmpty) return entry.value;
+      }
     }
-    return '';
+    for (final name in <String>[channel.tvgName, channel.name]) {
+      final normalized = _normalizeEpgName(name);
+      final epgLogo = _epgLogosByName[normalized];
+      if (epgLogo != null && epgLogo.isNotEmpty) return epgLogo;
+    }
+    final normalizedNames = <String>{
+      _normalizeEpgName(channel.tvgName),
+      _normalizeEpgName(channel.name),
+    }..remove('');
+    for (final name in normalizedNames) {
+      final exact = _indiaLogosByName[name];
+      if (exact != null && exact.isNotEmpty) return exact;
+      // Fallback tolerant matching handles suffixes such as HD, FHD and regional
+      // variants, but only for reasonably distinctive channel names.
+      if (name.length >= 5) {
+        for (final entry in _indiaLogosByName.entries) {
+          if (entry.key.length >= 5 && (entry.key.contains(name) || name.contains(entry.key))) {
+            return entry.value;
+          }
+        }
+      }
+    }
+    return channel.logo.trim();
   }
 
   double _epgProgress(EpgProgram? program) {
@@ -1663,15 +1742,19 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     );
     _pendingPlayer = controller;
     setState(() {
-      // Keep the sidebar open during buffering so another channel can be
-      // selected immediately. Only one native video controller is kept alive
-      // to reduce decoder exhaustion on low-memory Android TV boxes.
+      // Hide the channel rail immediately on selection, rather than waiting
+      // for the new stream to initialize. This keeps the TV picture clear
+      // while buffering and prevents the sidebar from lingering over video.
+      _tvSidebarVisible = false;
+      _tvEpgVisible = false;
+      _tvEpgSelectionMode = false;
       _selectedChannel = channel;
       _playerError = null;
       _connecting = true;
       _controlsVisible = true;
       _status = 'Buffering ${channel.name}...';
     });
+    _showChannelInfoFor10Seconds();
     try {
       await controller.initialize().timeout(const Duration(seconds: 20));
       if (!mounted || requestId != _playRequestId) {
@@ -2010,7 +2093,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                 Positioned(
                   // Keep the live information card slightly above the bottom edge
                   // so it does not sit on top of TV overscan/system UI.
-                  bottom: initialized ? 66 : 24,
+                  bottom: initialized ? 48 : 20,
                   left: 18,
                   right: 18,
                   child: IgnorePointer(
@@ -2021,15 +2104,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                       child: Row(
                         children: [
                           Container(
-                            width: 64,
-                            height: 64,
+                            width: 76,
+                            height: 76,
                             decoration: BoxDecoration(
                               color: accentColor.withOpacity(0.18),
                               borderRadius: BorderRadius.circular(10),
                               border: Border.all(color: accentColor.withOpacity(0.45)),
                             ),
                             child: _logoForChannel(_selectedChannel!).isNotEmpty
-                                ? ClipRRect(borderRadius: BorderRadius.circular(10), child: CachedNetworkImage(imageUrl: _logoForChannel(_selectedChannel!), fit: BoxFit.cover, placeholder: (_, __) => const Icon(Icons.live_tv, color: accentColor), errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
+                                ? ClipRRect(borderRadius: BorderRadius.circular(10), child: CachedNetworkImage(imageUrl: _logoForChannel(_selectedChannel!), fit: BoxFit.contain, placeholder: (_, __) => const Icon(Icons.live_tv, color: accentColor), errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
                                 : const Icon(Icons.live_tv, color: accentColor, size: 30),
                           ),
                           const SizedBox(width: 12),
@@ -2129,11 +2212,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           leading: CircleAvatar(
-            radius: 28,
+            radius: 32,
             backgroundColor: accentColor.withOpacity(0.17),
             backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
             child: _logoForChannel(channel).isEmpty
-                ? const Icon(Icons.live_tv, color: accentColor, size: 26)
+                ? const Icon(Icons.live_tv, color: accentColor, size: 30)
                 : null,
           ),
           title: Text(
