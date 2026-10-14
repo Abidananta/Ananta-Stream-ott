@@ -172,6 +172,21 @@ class AnantaPlayerController {
   }
   Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
   Future<void> play() => _engine.play();
+
+  // Wait until libmpv reports real video dimensions before committing a new
+  // channel to the UI. Opening a media item is not the same as having a frame
+  // ready; swapping players earlier exposes the black startup texture.
+  Future<void> waitForVideoReady() async {
+    final state = _engine.state;
+    if ((state.width ?? 0) > 0 && (state.height ?? 0) > 0) return;
+    await _engine.stream.width.firstWhere((value) => value != null && value > 0)
+        .timeout(const Duration(seconds: 15));
+    final latest = _engine.state;
+    if ((latest.height ?? 0) > 0) return;
+    await _engine.stream.height.firstWhere((value) => value != null && value > 0)
+        .timeout(const Duration(seconds: 5));
+  }
+
   Future<void> pause() => _engine.pause();
   Future<void> dispose() async {
     await _bufferingSubscription?.cancel();
@@ -1376,10 +1391,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       list.sort((a, b) => a.start.compareTo(b.start));
     }
     if (!mounted) return;
-    if (byId.isNotEmpty || byName.isNotEmpty) {
-      await _saveCachedEpg(byId, byName, logosById, logosByName);
-    }
-    if (!mounted) return;
+    // Publish the newly parsed guide immediately; disk/cache persistence runs
+    // asynchronously so slow storage on TV boxes cannot delay the UI update.
     setState(() {
       if (byId.isNotEmpty || byName.isNotEmpty) {
         _epgById = byId;
@@ -1392,6 +1405,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       }
       _rebuildEpgChannelIndex();
     });
+    if (byId.isNotEmpty || byName.isNotEmpty) {
+      unawaited(_saveCachedEpg(byId, byName, logosById, logosByName));
+    }
     debugPrint('EPG loaded: ${byId.length} channel IDs, ${byName.length} names from $successfulSources sources');
     } finally {
       _epgLoading = false;
@@ -1824,7 +1840,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _tvSidebarVisible = false;
       _tvEpgVisible = false;
       _tvEpgSelectionMode = false;
-      _selectedChannel = channel;
+      // Keep the committed channel identity in sync with the video still on
+      // screen. The selected channel is committed only after its first frame.
       _playerError = null;
       _connecting = true;
       _controlsVisible = true;
@@ -1843,12 +1860,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         );
       }
 
-      // Explicitly set audible playback. Some TV builds can retain a muted
-      // volume state across controller replacements; unsupported stream codecs
-      // still depend on the device's native decoder.
+      // Set volume before playback, then wait for actual video dimensions. The
+      // previous player remains mounted and visible during this entire period.
       await controller.setVolume(1.0);
-      // Commit the channel only after its stream initializes successfully.
       await controller.play();
+      await controller.waitForVideoReady();
+      // Give the video texture a frame boundary to attach before swapping out
+      // the old player, avoiding a black gap between the two textures.
+      await Future<void>.delayed(const Duration(milliseconds: 80));
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
