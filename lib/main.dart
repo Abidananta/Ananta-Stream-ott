@@ -159,9 +159,10 @@ class AnantaPlayerController {
       // Give live HLS streams a modest demux cache so brief network stalls
       // can recover without immediately dropping the picture. These options
       // are best-effort because support can vary by libmpv build.
-      try { await _engine.setProperty('cache', 'yes'); } catch (_) {}
-      try { await _engine.setProperty('cache-secs', '15'); } catch (_) {}
-      try { await _engine.setProperty('demuxer-readahead-secs', '15'); } catch (_) {}
+      // The media_kit Player API used by this project does not expose
+      // setProperty(). Keep initialization compatible with the pinned API.
+      // Buffering recovery is handled by the player's buffering state and
+      // retry logic elsewhere in the app.
       await _engine.open(Media(uri.toString(), httpHeaders: httpHeaders), play: false);
       _opened = true;
     } catch (e) {
