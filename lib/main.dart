@@ -242,6 +242,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
+    unawaited(_loadIndiaLogoIndex());
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
@@ -388,11 +389,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     });
   }
 
-  void _showChannelInfoFor10Seconds() {
+  void _showChannelInfoFor15Seconds() {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(const Duration(seconds: 10), () {
+    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -431,9 +432,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
     final isUpKey = key == LogicalKeyboardKey.arrowUp ||
-        key == LogicalKeyboardKey.arrowUp;
+        key == LogicalKeyboardKey.gameButtonDpadUp;
     final isDownKey = key == LogicalKeyboardKey.arrowDown ||
-        key == LogicalKeyboardKey.arrowDown;
+        key == LogicalKeyboardKey.gameButtonDpadDown;
     final isConfirmKey = key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
@@ -480,7 +481,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         return KeyEventResult.handled;
       }
       if (!_tvSidebarVisible && isUpKey) {
-        _showChannelInfoFor10Seconds();
+        _showChannelInfoFor15Seconds();
         // Reclaim focus after the remote event so subsequent D-pad presses
         // continue to reach the player handler rather than a stale overlay.
         _focusTvPlayer();
@@ -1378,34 +1379,54 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
 
   String _logoForChannel(Channel channel) {
-    // Logos come ONLY from this app's channel_logos folder in the user's
-    // repository. Do not use XMLTV/EPG artwork, playlist tvg-logo, or any
-    // external logo catalogue. CachedNetworkImageProvider caches downloaded
-    // files on device.
-    String slugFor(String value) {
-      var name = value.toLowerCase().trim();
-      // The logo filenames retain quality suffixes: "Star Plus HD" must map
-      // to star-plus-hd-in.png, while "Big Magic" maps to big-magic-in.png.
-      name = name.replaceAll(RegExp(r'\[(?:in|india)\]|\((?:in|india)\)', caseSensitive: false), ' ');
-      name = name.replaceAll('&', ' and ');
-      name = name.replaceAll(RegExp(r'[^a-z0-9]+'), '-');
-      name = name.replaceAll(RegExp(r'-+'), '-');
-      name = name.replaceAll(RegExp(r'^-|-$'), '');
-      if (name.isEmpty) return '';
-      if (!name.endsWith('-in')) name = '$name-in';
-      return name;
-    }
-
-    // Try the visible playlist channel name first, then tvg-name if present.
-    // Quality labels (HD/FHD/4K) are deliberately preserved.
-    final names = <String>[channel.name, channel.tvgName];
-    for (final raw in names) {
-      final slug = slugFor(raw);
-      if (slug.isNotEmpty) {
-        return 'https://raw.githubusercontent.com/Abidananta/Ananta-Stream-ott/main/channel_logos/$slug.png';
+    // Prefer an EPG-supplied logo, then the India TV-logos catalogue, then the
+    // playlist's tvg-logo. This avoids a stale playlist URL hiding a good EPG logo.
+    final id = channel.tvgId.trim();
+    if (id.isNotEmpty) {
+      final direct = _epgLogosById[id];
+      if (direct != null && direct.isNotEmpty) return direct;
+      final normalizedId = _normalizeEpgName(id);
+      for (final entry in _epgLogosById.entries) {
+        if (_normalizeEpgName(entry.key) == normalizedId && entry.value.isNotEmpty) return entry.value;
       }
     }
-    return '';
+    for (final name in <String>[channel.tvgName, channel.name]) {
+      final normalized = _normalizeEpgName(name);
+      final epgLogo = _epgLogosByName[normalized];
+      if (epgLogo != null && epgLogo.isNotEmpty) return epgLogo;
+    }
+    final normalizedNames = <String>{
+      _normalizeEpgName(channel.tvgName),
+      _normalizeEpgName(channel.name),
+    }..remove('');
+    for (final name in normalizedNames) {
+      final exact = _indiaLogosByName[name];
+      if (exact != null && exact.isNotEmpty) return exact;
+      // Try common playlist naming variations: regional labels, HD/SD and
+      // network suffixes. Names are normalized against the repository's
+      // lower-case, dash-separated filenames (usually ending in -in).
+      final candidates = <String>{
+        name,
+        name.replaceAll(RegExp(r'(hd|fhd|uhd|4k|sd)$'), ''),
+      }..remove('');
+      for (final candidate in candidates) {
+        final match = _indiaLogosByName[candidate];
+        if (match != null && match.isNotEmpty) return match;
+      }
+      // Conservative fuzzy matching: avoid tiny names such as 'tv' matching
+      // unrelated stations, but tolerate extra HD/language words in playlists.
+      if (name.length >= 5) {
+        final entries = _indiaLogosByName.entries.toList()
+          ..sort((a, b) => b.key.length.compareTo(a.key.length));
+        for (final entry in entries) {
+          if (entry.key.length >= 5 &&
+              (entry.key == name || entry.key.contains(name) || name.contains(entry.key))) {
+            return entry.value;
+          }
+        }
+      }
+    }
+    return channel.logo.trim();
   }
 
   double _epgProgress(EpgProgram? program) {
@@ -1624,7 +1645,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         }
       }
       if (!mounted || requestId != _playlistRequestId) return;
-      final shouldAutoPlayFirstChannel = _selectedChannel == null;
       final groups = updated.map((c) => c.group).toSet();
       setState(() {
         _channels = updated;
@@ -1635,12 +1655,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _status = '${updated.length} channels loaded';
         _rebuildEpgChannelIndex();
       });
-      // Start the first channel from the loaded playlist automatically on app
-      // launch (skip the built-in PTV utility entry when playlist channels exist).
-      if (shouldAutoPlayFirstChannel && mounted) {
-        final firstPlaylistChannel = updated.length > 1 ? updated[1] : updated.first;
-        unawaited(_playChannel(firstPlaylistChannel));
-      }
     } catch (e) {
       debugPrint('Playlist refresh error: $e');
       if (!mounted || requestId != _playlistRequestId) return;
@@ -1722,7 +1736,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor10Seconds();
+      _showChannelInfoFor15Seconds();
       _focusTvPlayer();
       return;
     }
@@ -1765,7 +1779,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _controlsVisible = true;
       _status = 'Buffering ${channel.name}...';
     });
-    _showChannelInfoFor10Seconds();
+    _showChannelInfoFor15Seconds();
     try {
       await controller.initialize().timeout(const Duration(seconds: 20));
       if (!mounted || requestId != _playRequestId) {
@@ -1800,7 +1814,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor10Seconds();
+      _showChannelInfoFor15Seconds();
       _focusTvPlayer();
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
