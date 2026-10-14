@@ -3,12 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'tv_remote_control.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:video_player/video_player.dart';
+import 'package:flutter_vlc_player/flutter_vlc_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 const String appName = 'Ananta OTT';
@@ -190,8 +189,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
-  VideoPlayerController? _player;
-  VideoPlayerController? _pendingPlayer;
+  VlcPlayerController? _player;
+  VlcPlayerController? _pendingPlayer;
   Channel? _selectedChannel;
   Timer? _controlsTimer;
   String _selectedCategory = 'All';
@@ -256,7 +255,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       final player = _player;
       if (player == null) return;
       final value = player.value;
-      if (value.hasError) {
+      if (value.errorDescription.isNotEmpty) {
         if (_runtimeRetryCount < 5) {
           _runtimeRetryCount++;
           _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
@@ -389,11 +388,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     });
   }
 
-  void _showChannelInfoFor15Seconds() {
+  void _showChannelInfoFor10Seconds() {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(RemoteControl.channelInfoDuration, () {
+    _channelInfoTimer = Timer(const Duration(seconds: 10), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -431,12 +430,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
-    final isUpKey = RemoteControl.isUp(key);
-    final isDownKey = RemoteControl.isDown(key);
-    final isConfirmKey = RemoteControl.isConfirm(key) ||
-        RemoteControl.isEnter(key) ||
-        RemoteControl.isNumpadEnter(key) ||
-        RemoteControl.isGamepadConfirm(key);
+    final isUpKey = key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowUp;
+    final isDownKey = key == LogicalKeyboardKey.arrowDown ||
+        key == LogicalKeyboardKey.arrowDown;
+    final isConfirmKey = key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter ||
+        key == LogicalKeyboardKey.gameButtonA;
     // Some TV remotes emit confirm-key repeat events when the button is held.
     // Do not repeatedly rebuild the sidebar or issue duplicate playback requests.
     if (isConfirmKey && event is KeyRepeatEvent) return KeyEventResult.handled;
@@ -447,22 +448,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     // Search remains usable with the TV keyboard. D-pad UP opens categories;
     // DOWN moves into results, avoiding a focus trap inside the text field.
     if (editingSearch) {
-      if (RemoteControl.isConfirm(key) || RemoteControl.isEnter(key) ||
-          RemoteControl.isNumpadEnter(key) || RemoteControl.isGamepadConfirm(key)) {
+      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
         FocusManager.instance.primaryFocus?.unfocus();
         _showTvChannels(index: 0);
         return KeyEventResult.handled;
       }
-      if (RemoteControl.isDown(key)) {
+      if (key == LogicalKeyboardKey.arrowDown) {
         FocusManager.instance.primaryFocus?.unfocus();
         _showTvChannels(index: 0);
         return KeyEventResult.handled;
       }
-      if (RemoteControl.isUp(key)) {
+      if (key == LogicalKeyboardKey.arrowUp) {
         _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
         return KeyEventResult.handled;
       }
-      if (!RemoteControl.isEscape(key) && !RemoteControl.isBack(key)) {
+      if (key != LogicalKeyboardKey.escape && key != LogicalKeyboardKey.browserBack) {
         return KeyEventResult.ignored;
       }
     }
@@ -479,7 +480,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         return KeyEventResult.handled;
       }
       if (!_tvSidebarVisible && isUpKey) {
-        _showChannelInfoFor15Seconds();
+        _showChannelInfoFor10Seconds();
         // Reclaim focus after the remote event so subsequent D-pad presses
         // continue to reach the player handler rather than a stale overlay.
         _focusTvPlayer();
@@ -505,8 +506,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return KeyEventResult.handled;
     }
 
-    if (RemoteControl.isConfirm(key) || RemoteControl.isEnter(key) ||
-        RemoteControl.isNumpadEnter(key) || RemoteControl.isGamepadConfirm(key)) {
+    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
       if (!_tvSidebarVisible) {
         final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
         _showTvChannels(index: current >= 0 ? current : _tvFocusedChannelIndex);
@@ -533,7 +534,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return KeyEventResult.handled;
     }
 
-    if (RemoteControl.isLeft(key)) {
+    if (key == LogicalKeyboardKey.arrowLeft) {
       if (_tvSidebarVisible && !_tvShowingCategories) {
         setState(() { _tvEpgVisible = false; _tvEpgSelectionMode = false; });
         _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
@@ -545,7 +546,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return KeyEventResult.handled;
     }
 
-    if (RemoteControl.isRight(key)) {
+    if (key == LogicalKeyboardKey.arrowRight) {
       if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
       } else if (_tvSidebarVisible && !_tvEpgVisible) {
@@ -561,7 +562,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return KeyEventResult.handled;
     }
 
-    if (RemoteControl.isEscape(key) || RemoteControl.isBack(key)) {
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.browserBack) {
       if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
         return KeyEventResult.handled;
@@ -585,20 +586,20 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     // stale tile focus to select/zap a channel while the sidebar is invisible.
     // Enter's first action in this state is ONLY to reopen the sidebar.
     if (!_tvSidebarVisible) {
-      if (RemoteControl.isConfirm(key) || RemoteControl.isEnter(key) ||
-          RemoteControl.isNumpadEnter(key) || RemoteControl.isGamepadConfirm(key)) {
+      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
         _showTvChannels(index: _tvFocusedChannelIndex);
         return KeyEventResult.handled;
       }
-      if (RemoteControl.isUp(key) || RemoteControl.isDown(key) ||
-          RemoteControl.isLeft(key) || RemoteControl.isRight(key)) {
+      if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown ||
+          key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
         return KeyEventResult.handled;
       }
       return KeyEventResult.ignored;
     }
 
-    if (RemoteControl.isUp(key) || RemoteControl.isDown(key)) {
-      final delta = RemoteControl.isDown(key) ? 1 : -1;
+    if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
+      final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
       if (_tvEpgVisible) {
         final preview = _tvEpgPreviewChannel(channels);
         if (_tvEpgSelectionMode && preview != null) {
@@ -608,20 +609,20 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         }
         return KeyEventResult.handled;
       }
-      if (RemoteControl.isUp(key) && index == 0) {
+      if (key == LogicalKeyboardKey.arrowUp && index == 0) {
         _tvSearchFocusNode.requestFocus();
         return KeyEventResult.handled;
       }
       _focusTvChannel((index + delta).clamp(0, channels.length - 1).toInt());
       return KeyEventResult.handled;
     }
-    if (RemoteControl.isConfirm(key) || RemoteControl.isEnter(key) ||
-        RemoteControl.isNumpadEnter(key) || RemoteControl.isGamepadConfirm(key)) {
+    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
       if (_tvEpgVisible) return KeyEventResult.handled;
       if (index >= 0 && index < channels.length) _playChannel(channels[index]);
       return KeyEventResult.handled;
     }
-    if (RemoteControl.isLeft(key) || RemoteControl.isRight(key)) {
+    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
       return _handleRemoteKey(node, event);
     }
     return KeyEventResult.ignored;
@@ -1377,26 +1378,34 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
 
   String _logoForChannel(Channel channel) {
-    // Logos are loaded ONLY from this app's channel_logos/ folder hosted in
-    // the Ananta-Ott GitHub repository. Never use XMLTV/EPG artwork,
-    // playlist tvg-logo, or the external India logo catalogue.
-    // CachedNetworkImage caches successfully downloaded images on device.
-    final rawNames = <String>[channel.name, channel.tvgName];
-    final candidates = <String>{};
-    for (final rawName in rawNames) {
-      final cleaned = rawName.toLowerCase().trim()
-          .replaceAll('&', ' and ')
-          .replaceAll(RegExp(r'\b(hd|fhd|uhd|4k|sd|hevc|h265)\b', caseSensitive: false), ' ')
-          .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
-          .replaceAll(RegExp(r'-+'), '-')
-          .replaceAll(RegExp(r'^-|-$'), '');
-      if (cleaned.isNotEmpty) candidates.add(cleaned);
+    // Logos come ONLY from this app's channel_logos folder in the user's
+    // repository. Do not use XMLTV/EPG artwork, playlist tvg-logo, or any
+    // external logo catalogue. CachedNetworkImageProvider caches downloaded
+    // files on device.
+    String slugFor(String value) {
+      var name = value.toLowerCase().trim();
+      // The logo filenames retain quality suffixes: "Star Plus HD" must map
+      // to star-plus-hd-in.png, while "Big Magic" maps to big-magic-in.png.
+      name = name.replaceAll(RegExp(r'\[(?:in|india)\]|\((?:in|india)\)', caseSensitive: false), ' ');
+      name = name.replaceAll('&', ' and ');
+      name = name.replaceAll(RegExp(r'[^a-z0-9]+'), '-');
+      name = name.replaceAll(RegExp(r'-+'), '-');
+      name = name.replaceAll(RegExp(r'^-|-$'), '');
+      if (name.isEmpty) return '';
+      if (!name.endsWith('-in')) name = '$name-in';
+      return name;
     }
-    if (candidates.isEmpty) return '';
-    // Use the first channel-name-derived filename. Store files as
-    // channel_logos/<channel-name-slug>.png in the repository.
-    final slug = candidates.first;
-    return 'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/main/channel_logos/$slug.png';
+
+    // Try the visible playlist channel name first, then tvg-name if present.
+    // Quality labels (HD/FHD/4K) are deliberately preserved.
+    final names = <String>[channel.name, channel.tvgName];
+    for (final raw in names) {
+      final slug = slugFor(raw);
+      if (slug.isNotEmpty) {
+        return 'https://raw.githubusercontent.com/Abidananta/Ananta-Stream-ott/main/channel_logos/$slug.png';
+      }
+    }
+    return '';
   }
 
   double _epgProgress(EpgProgram? program) {
@@ -1615,6 +1624,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         }
       }
       if (!mounted || requestId != _playlistRequestId) return;
+      final shouldAutoPlayFirstChannel = _selectedChannel == null;
       final groups = updated.map((c) => c.group).toSet();
       setState(() {
         _channels = updated;
@@ -1625,6 +1635,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _status = '${updated.length} channels loaded';
         _rebuildEpgChannelIndex();
       });
+      // Start the first channel from the loaded playlist automatically on app
+      // launch (skip the built-in PTV utility entry when playlist channels exist).
+      if (shouldAutoPlayFirstChannel && mounted) {
+        final firstPlaylistChannel = updated.length > 1 ? updated[1] : updated.first;
+        unawaited(_playChannel(firstPlaylistChannel));
+      }
     } catch (e) {
       debugPrint('Playlist refresh error: $e');
       if (!mounted || requestId != _playlistRequestId) return;
@@ -1706,7 +1722,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor15Seconds();
+      _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       return;
     }
@@ -1726,17 +1742,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     if (!mounted || requestId != _playRequestId) return;
     _controlsTimer?.cancel();
-    final controller = VideoPlayerController.networkUrl(
-      Uri.parse(channel.url),
-      httpHeaders: const {
-        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
-        'Accept': '*/*',
-        'Connection': 'keep-alive',
-      },
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+    final controller = VlcPlayerController.network(
+      channel.url,
+      autoInitialize: false,
+      autoPlay: false,
+      hwAcc: HwAcc.auto,
+      options: VlcPlayerOptions(),
     );
     _pendingPlayer = controller;
     setState(() {
+      _player = controller;
       // Hide the channel rail immediately on selection, rather than waiting
       // for the new stream to initialize. This keeps the TV picture clear
       // while buffering and prevents the sidebar from lingering over video.
@@ -1749,23 +1764,24 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _controlsVisible = true;
       _status = 'Buffering ${channel.name}...';
     });
-    _showChannelInfoFor15Seconds();
+    _showChannelInfoFor10Seconds();
     try {
-      await controller.initialize().timeout(const Duration(seconds: 20));
+      // Let Flutter attach the VLC platform view before initializing LibVLC.
+      await WidgetsBinding.instance.endOfFrame;
+      await controller.initialize().timeout(const Duration(seconds: 30));
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
       }
-      if (controller.value.hasError) {
-        throw Exception(
-          controller.value.errorDescription ?? 'Player error',
-        );
+      if (controller.value.errorDescription.isNotEmpty &&
+          controller.value.errorDescription != VlcPlayerValue.noError) {
+        throw Exception(controller.value.errorDescription);
       }
 
       // Explicitly set audible playback. Some TV builds can retain a muted
       // volume state across controller replacements; unsupported stream codecs
       // still depend on the device's native decoder.
-      await controller.setVolume(1.0);
+      await controller.setVolume(100);
       // Commit the channel only after its stream initializes successfully.
       await controller.play();
       if (!mounted || requestId != _playRequestId) {
@@ -1784,7 +1800,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor15Seconds();
+      _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
@@ -1794,6 +1810,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     } on TimeoutException {
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
+      if (identical(_player, controller)) setState(() => _player = null);
       _pendingPlayer = null;
       setState(() {
         _playerError = retryAttempt < 5 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/5)…' : 'Stream timed out after 5 retries.';
@@ -1810,6 +1827,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       debugPrint('Playback error for ${channel.url}: $e');
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
+      if (identical(_player, controller)) setState(() => _player = null);
       _pendingPlayer = null;
       setState(() {
         _playerError = retryAttempt < 5 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/5)…' : 'Unable to play after 5 retries.';
@@ -1955,10 +1973,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
             if (initialized)
               Center(
                 child: AspectRatio(
-                  aspectRatio: player!.value.aspectRatio > 0
-                      ? player.value.aspectRatio
-                      : 16 / 9,
-                  child: VideoPlayer(player),
+                  aspectRatio: 16 / 9,
+                  child: VlcPlayer(
+                    controller: player!,
+                    aspectRatio: 16 / 9,
+                    placeholder: const Center(
+                      child: CircularProgressIndicator(color: accentColor),
+                    ),
+                  ),
                 ),
               )
             else
