@@ -198,7 +198,15 @@ class VideoPlayer extends StatelessWidget {
   final AnantaPlayerController controller;
   const VideoPlayer(this.controller, {super.key});
   @override
-  Widget build(BuildContext context) => Video(controller: controller._video, controls: NoVideoControls);
+  Widget build(BuildContext context) => Video(
+        // A channel switch must create a fresh video texture/controller binding.
+        // Reusing the previous Video widget state can leave audio playing while
+        // the video surface stays black on some Android TV devices.
+        key: ValueKey<AnantaPlayerController>(controller),
+        controller: controller._video,
+        controls: NoVideoControls,
+        fit: BoxFit.contain,
+      );
 }
 
 class Channel {
