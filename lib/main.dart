@@ -220,7 +220,7 @@ class VideoPlayer extends StatelessWidget {
         key: ValueKey<AnantaPlayerController>(controller),
         controller: controller._video,
         controls: NoVideoControls,
-        fit: BoxFit.contain,
+        fit: BoxFit.cover,
       );
 }
 
@@ -1872,6 +1872,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     });
     _showChannelInfoFor10Seconds();
     try {
+      _pendingPlayer = controller;
+      if (mounted) setState(() {}); // Mount the hidden video surface before waiting for metadata.
       await controller.initialize().timeout(const Duration(seconds: 20));
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
@@ -1889,8 +1891,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       // dimensions late (or not at all). Keeping that player pending means its
       // Video widget is never mounted, so audio can be heard while the screen
       // stays black with a permanent buffering spinner.
-      await controller.setVolume(1.0);
+      await controller.setVolume(0.0);
       await controller.play();
+      await controller.waitForVideoReady().timeout(const Duration(seconds: 12));
+      if (!mounted || requestId != _playRequestId) {
+        await controller.dispose();
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await controller.setVolume(1.0);
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
@@ -2082,14 +2091,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               Positioned.fill(
                 child: ColoredBox(
                   color: Colors.black,
-                  child: Center(
-                    child: AspectRatio(
-                      aspectRatio: player!.value.aspectRatio > 0
-                          ? player.value.aspectRatio
-                          : 16 / 9,
-                      child: VideoPlayer(player),
-                    ),
-                  ),
+                  child: VideoPlayer(player!),
                 ),
               )
             else
@@ -2107,6 +2109,19 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                             ? accentColor
                             : Colors.redAccent,
                       ),
+              ),
+            // Keep the pending decoder's Video widget mounted but invisible.
+            // On Android TV, video output metadata may not arrive until the
+            // media_kit Video surface is attached. This lets the current channel
+            // remain visible while the replacement warms up off-screen.
+            if (_pendingPlayer != null && _pendingPlayer != player)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Opacity(
+                    opacity: 0.01,
+                    child: VideoPlayer(_pendingPlayer!),
+                  ),
+                ),
               ),
             // Show progress without covering the current picture during a switch.
             if (initialized && _connecting)
