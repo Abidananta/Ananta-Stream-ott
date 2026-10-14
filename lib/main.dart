@@ -7,7 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:video_player/video_player.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 const String appName = 'Ananta OTT';
@@ -115,7 +116,55 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   runApp(const AnantaOttApp());
+}
+
+// Compatibility wrapper keeps the existing Ananta OTT UI and channel logic
+// while using libmpv/FFmpeg-backed media_kit for broader audio codec support.
+class _AnantaPlayerValue {
+  final AnantaPlayerController owner;
+  const _AnantaPlayerValue(this.owner);
+  bool get isInitialized => owner._opened;
+  bool get hasError => owner._error != null;
+  String? get errorDescription => owner._error;
+  bool get isPlaying => owner._engine.state.playing;
+  double get aspectRatio {
+    final w = owner._engine.state.width ?? 0;
+    final h = owner._engine.state.height ?? 0;
+    return w > 0 && h > 0 ? w / h : 16 / 9;
+  }
+}
+
+class AnantaPlayerController {
+  final Uri uri;
+  final Map<String, String> httpHeaders;
+  final Player _engine = Player();
+  late final VideoController _video = VideoController(_engine);
+  bool _opened = false;
+  String? _error;
+  AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, dynamic videoPlayerOptions});
+  _AnantaPlayerValue get value => _AnantaPlayerValue(this);
+  Future<void> initialize() async {
+    try {
+      await _engine.open(Media(uri.toString(), httpHeaders: httpHeaders), play: false);
+      _opened = true;
+    } catch (e) {
+      _error = e.toString();
+      rethrow;
+    }
+  }
+  Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
+  Future<void> play() => _engine.play();
+  Future<void> pause() => _engine.pause();
+  Future<void> dispose() async => _engine.dispose();
+}
+
+class VideoPlayer extends StatelessWidget {
+  final AnantaPlayerController controller;
+  const VideoPlayer(this.controller, {super.key});
+  @override
+  Widget build(BuildContext context) => Video(controller: controller._video, controls: NoVideoControls);
 }
 
 class Channel {
@@ -189,8 +238,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
-  VideoPlayerController? _player;
-  VideoPlayerController? _pendingPlayer;
+  AnantaPlayerController? _player;
+  AnantaPlayerController? _pendingPlayer;
   Channel? _selectedChannel;
   Timer? _controlsTimer;
   String _selectedCategory = 'All';
@@ -1742,14 +1791,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     if (!mounted || requestId != _playRequestId) return;
     _controlsTimer?.cancel();
-    final controller = VideoPlayerController.networkUrl(
+    final controller = AnantaPlayerController.networkUrl(
       Uri.parse(channel.url),
       httpHeaders: const {
         'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
         'Accept': '*/*',
         'Connection': 'keep-alive',
       },
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+      videoPlayerOptions: null,
     );
     _pendingPlayer = controller;
     setState(() {
@@ -1784,15 +1833,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       await controller.setVolume(1.0);
       // Commit the channel only after its stream initializes successfully.
       await controller.play();
-      // Some Android TV builds restore the audio output state when playback
-      // starts. Apply full volume again after play() as well. This does not
-      // transcode audio or add codecs; decoding remains the Android player's
-      // responsibility.
-      await controller.setVolume(1.0);
-      debugPrint(
-        'Ananta OTT audio output enabled: volume=1.0, '
-        'channel=${channel.name}, url=${channel.url}',
-      );
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
