@@ -152,6 +152,21 @@ class AnantaPlayerController {
     }, onError: (Object error) {
       debugPrint('Player buffering-state error: $error');
     });
+    _engine.stream.width.listen((value) {
+      debugPrint('Ananta video width: $value for $uri');
+    }, onError: (Object error) {
+      debugPrint('Ananta video-width stream error: $error');
+    });
+    _engine.stream.height.listen((value) {
+      debugPrint('Ananta video height: $value for $uri');
+    }, onError: (Object error) {
+      debugPrint('Ananta video-height stream error: $error');
+    });
+    _engine.stream.error.listen((value) {
+      debugPrint('Ananta media engine error for $uri: $value');
+    }, onError: (Object error) {
+      debugPrint('Ananta media error stream failure: $error');
+    });
   }
   _AnantaPlayerValue get value => _AnantaPlayerValue(this);
   Future<void> initialize() async {
@@ -1868,14 +1883,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         );
       }
 
-      // Set volume before playback, then wait for actual video dimensions. The
-      // previous player remains mounted and visible during this entire period.
+      // Start playback, then mount the new Video widget immediately. Do not
+      // wait for width/height metadata before committing the player: on some
+      // Android TV streams libmpv starts audio first and reports video
+      // dimensions late (or not at all). Keeping that player pending means its
+      // Video widget is never mounted, so audio can be heard while the screen
+      // stays black with a permanent buffering spinner.
       await controller.setVolume(1.0);
       await controller.play();
-      await controller.waitForVideoReady();
-      // Give the video texture a frame boundary to attach before swapping out
-      // the old player, avoiding a black gap between the two textures.
-      await Future<void>.delayed(const Duration(milliseconds: 80));
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
