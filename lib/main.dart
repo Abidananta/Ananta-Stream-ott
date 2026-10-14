@@ -129,6 +129,9 @@ class _AnantaPlayerValue {
   bool get hasError => owner._error != null;
   String? get errorDescription => owner._error;
   bool get isPlaying => owner._engine.state.playing;
+  // media_kit exposes buffering asynchronously; this compatibility wrapper
+  // does not expose a synchronous buffering flag.
+  bool get isBuffering => false;
   double get aspectRatio {
     final w = owner._engine.state.width ?? 0;
     final h = owner._engine.state.height ?? 0;
