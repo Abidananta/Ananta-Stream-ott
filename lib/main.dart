@@ -7,7 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_vlc_player/flutter_vlc_player.dart';
+import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 const String appName = 'Ananta OTT';
@@ -189,8 +189,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
-  VlcPlayerController? _player;
-  VlcPlayerController? _pendingPlayer;
+  VideoPlayerController? _player;
+  VideoPlayerController? _pendingPlayer;
   Channel? _selectedChannel;
   Timer? _controlsTimer;
   String _selectedCategory = 'All';
@@ -255,7 +255,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       final player = _player;
       if (player == null) return;
       final value = player.value;
-      if (value.errorDescription.isNotEmpty) {
+      if (value.hasError) {
         if (_runtimeRetryCount < 5) {
           _runtimeRetryCount++;
           _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
@@ -1742,16 +1742,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     if (!mounted || requestId != _playRequestId) return;
     _controlsTimer?.cancel();
-    final controller = VlcPlayerController.network(
-      channel.url,
-      autoInitialize: false,
-      autoPlay: false,
-      hwAcc: HwAcc.auto,
-      options: VlcPlayerOptions(),
+    final controller = VideoPlayerController.networkUrl(
+      Uri.parse(channel.url),
+      httpHeaders: const {
+        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+        'Accept': '*/*',
+        'Connection': 'keep-alive',
+      },
+      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
     );
     _pendingPlayer = controller;
     setState(() {
-      _player = controller;
       // Hide the channel rail immediately on selection, rather than waiting
       // for the new stream to initialize. This keeps the TV picture clear
       // while buffering and prevents the sidebar from lingering over video.
@@ -1766,24 +1767,32 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     });
     _showChannelInfoFor10Seconds();
     try {
-      // Let Flutter attach the VLC platform view before initializing LibVLC.
-      await WidgetsBinding.instance.endOfFrame;
-      await controller.initialize().timeout(const Duration(seconds: 30));
+      await controller.initialize().timeout(const Duration(seconds: 20));
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
       }
-      if (controller.value.errorDescription.isNotEmpty &&
-          controller.value.errorDescription != VlcPlayerValue.noError) {
-        throw Exception(controller.value.errorDescription);
+      if (controller.value.hasError) {
+        throw Exception(
+          controller.value.errorDescription ?? 'Player error',
+        );
       }
 
       // Explicitly set audible playback. Some TV builds can retain a muted
       // volume state across controller replacements; unsupported stream codecs
       // still depend on the device's native decoder.
-      await controller.setVolume(100);
+      await controller.setVolume(1.0);
       // Commit the channel only after its stream initializes successfully.
       await controller.play();
+      // Some Android TV builds restore the audio output state when playback
+      // starts. Apply full volume again after play() as well. This does not
+      // transcode audio or add codecs; decoding remains the Android player's
+      // responsibility.
+      await controller.setVolume(1.0);
+      debugPrint(
+        'Ananta OTT audio output enabled: volume=1.0, '
+        'channel=${channel.name}, url=${channel.url}',
+      );
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
@@ -1810,7 +1819,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     } on TimeoutException {
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
-      if (identical(_player, controller)) setState(() => _player = null);
       _pendingPlayer = null;
       setState(() {
         _playerError = retryAttempt < 5 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/5)…' : 'Stream timed out after 5 retries.';
@@ -1827,7 +1835,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       debugPrint('Playback error for ${channel.url}: $e');
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
-      if (identical(_player, controller)) setState(() => _player = null);
       _pendingPlayer = null;
       setState(() {
         _playerError = retryAttempt < 5 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/5)…' : 'Unable to play after 5 retries.';
@@ -1973,14 +1980,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
             if (initialized)
               Center(
                 child: AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: VlcPlayer(
-                    controller: player!,
-                    aspectRatio: 16 / 9,
-                    placeholder: const Center(
-                      child: CircularProgressIndicator(color: accentColor),
-                    ),
-                  ),
+                  aspectRatio: player!.value.aspectRatio > 0
+                      ? player.value.aspectRatio
+                      : 16 / 9,
+                  child: VideoPlayer(player),
                 ),
               )
             else
