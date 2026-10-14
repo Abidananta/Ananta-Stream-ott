@@ -431,10 +431,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
-    final isUpKey = key == LogicalKeyboardKey.arrowUp ||
-        key == LogicalKeyboardKey.gameButtonDpadUp;
-    final isDownKey = key == LogicalKeyboardKey.arrowDown ||
-        key == LogicalKeyboardKey.gameButtonDpadDown;
+    final isUpKey = key == LogicalKeyboardKey.arrowUp;
+    final isDownKey = key == LogicalKeyboardKey.arrowDown;
     final isConfirmKey = key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
