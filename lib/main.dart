@@ -129,9 +129,7 @@ class _AnantaPlayerValue {
   bool get hasError => owner._error != null;
   String? get errorDescription => owner._error;
   bool get isPlaying => owner._engine.state.playing;
-  // media_kit exposes buffering asynchronously; this compatibility wrapper
-  // does not expose a synchronous buffering flag.
-  bool get isBuffering => false;
+  bool get isBuffering => owner._buffering;
   double get aspectRatio {
     final w = owner._engine.state.width ?? 0;
     final h = owner._engine.state.height ?? 0;
@@ -145,11 +143,25 @@ class AnantaPlayerController {
   final Player _engine = Player();
   late final VideoController _video = VideoController(_engine);
   bool _opened = false;
+  bool _buffering = false;
   String? _error;
-  AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, dynamic videoPlayerOptions});
+  StreamSubscription<bool>? _bufferingSubscription;
+  AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, dynamic videoPlayerOptions}) {
+    _bufferingSubscription = _engine.stream.buffering.listen((value) {
+      _buffering = value;
+    }, onError: (Object error) {
+      debugPrint('Player buffering-state error: $error');
+    });
+  }
   _AnantaPlayerValue get value => _AnantaPlayerValue(this);
   Future<void> initialize() async {
     try {
+      // Give live HLS streams a modest demux cache so brief network stalls
+      // can recover without immediately dropping the picture. These options
+      // are best-effort because support can vary by libmpv build.
+      try { await _engine.setProperty('cache', 'yes'); } catch (_) {}
+      try { await _engine.setProperty('cache-secs', '15'); } catch (_) {}
+      try { await _engine.setProperty('demuxer-readahead-secs', '15'); } catch (_) {}
       await _engine.open(Media(uri.toString(), httpHeaders: httpHeaders), play: false);
       _opened = true;
     } catch (e) {
@@ -160,7 +172,10 @@ class AnantaPlayerController {
   Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
   Future<void> play() => _engine.play();
   Future<void> pause() => _engine.pause();
-  Future<void> dispose() async => _engine.dispose();
+  Future<void> dispose() async {
+    await _bufferingSubscription?.cancel();
+    await _engine.dispose();
+  }
 }
 
 class VideoPlayer extends StatelessWidget {
@@ -301,14 +316,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (mounted) setState(() {});
     });
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
-    // Recover a stream that stalls after it initially starts (for example, a brief network drop).
+    // Recover a stream that stalls after it initially starts; allow six retries.
     _playbackHealthTimer = Timer.periodic(const Duration(seconds: 8), (_) {
       if (!mounted || _connecting || _selectedChannel == null) return;
       final player = _player;
       if (player == null) return;
       final value = player.value;
       if (value.hasError) {
-        if (_runtimeRetryCount < 5) {
+        if (_runtimeRetryCount < 6) {
           _runtimeRetryCount++;
           _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
         }
@@ -316,7 +331,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       }
       if (value.isBuffering) {
         _bufferingStartedAt ??= DateTime.now();
-        if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24) && _runtimeRetryCount < 5) {
+        if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24) && _runtimeRetryCount < 6) {
           _runtimeRetryCount++;
           _bufferingStartedAt = null;
           _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
@@ -444,7 +459,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(const Duration(seconds: 10), () {
+    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -1785,13 +1800,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     if (previousPending != null) {
       try { await previousPending.dispose(); } catch (_) {}
     }
-    // Release the previous native decoder before creating another one. TV
-    // boxes often have very limited hardware decoder slots; retaining two
-    // ExoPlayer instances is a common cause of decoder errors and force-closes.
-    if (oldPlayer != null) {
-      if (mounted) setState(() { _player = null; });
-      try { await oldPlayer.dispose(); } catch (_) {}
-    }
+    // Keep the current player visible while the next channel opens. This avoids
+    // a black frame during channel changes and lets viewers keep the last video
+    // frame if the network temporarily drops. Dispose the old player only after
+    // the replacement has successfully started.
     if (!mounted || requestId != _playRequestId) return;
     _controlsTimer?.cancel();
     final controller = AnantaPlayerController.networkUrl(
@@ -1864,11 +1876,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = retryAttempt < 5 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/5)…' : 'Stream timed out after 5 retries.';
+        _playerError = retryAttempt < 6 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Stream timed out after 6 retries.';
         _status = 'Stream timed out';
         _connecting = false;
       });
-      if (retryAttempt < 5) {
+      if (retryAttempt < 6) {
         await Future.delayed(Duration(seconds: 1 + retryAttempt));
         if (mounted && requestId == _playRequestId) {
           await _playChannel(channel, retryAttempt: retryAttempt + 1);
@@ -1880,11 +1892,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = retryAttempt < 5 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/5)…' : 'Unable to play after 5 retries.';
+        _playerError = retryAttempt < 6 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Unable to play after 6 retries.';
         _status = 'Playback failed';
         _connecting = false;
       });
-      if (retryAttempt < 5) {
+      if (retryAttempt < 6) {
         await Future.delayed(Duration(seconds: 1 + retryAttempt));
         if (mounted && requestId == _playRequestId) {
           await _playChannel(channel, retryAttempt: retryAttempt + 1);
