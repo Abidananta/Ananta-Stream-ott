@@ -11,7 +11,9 @@ dependencies:
     sdk: flutter
   http: ^1.2.2
   shared_preferences: ^2.3.2
-  video_player: ^2.9.2
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
   cached_network_image: ^3.4.1
   wakelock_plus: ^1.2.8
 
