@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'tv_remote_control.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:http/http.dart' as http;
@@ -242,7 +243,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
-    unawaited(_loadIndiaLogoIndex());
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
@@ -393,7 +393,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
+    _channelInfoTimer = Timer(RemoteControl.channelInfoDuration, () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -431,12 +431,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
-    final isUpKey = key == LogicalKeyboardKey.arrowUp;
-    final isDownKey = key == LogicalKeyboardKey.arrowDown;
-    final isConfirmKey = key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.gameButtonA;
+    final isUpKey = RemoteControl.isUp(key);
+    final isDownKey = RemoteControl.isDown(key);
+    final isConfirmKey = RemoteControl.isConfirm(key) ||
+        RemoteControl.isEnter(key) ||
+        RemoteControl.isNumpadEnter(key) ||
+        RemoteControl.isGamepadConfirm(key);
     // Some TV remotes emit confirm-key repeat events when the button is held.
     // Do not repeatedly rebuild the sidebar or issue duplicate playback requests.
     if (isConfirmKey && event is KeyRepeatEvent) return KeyEventResult.handled;
@@ -447,22 +447,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     // Search remains usable with the TV keyboard. D-pad UP opens categories;
     // DOWN moves into results, avoiding a focus trap inside the text field.
     if (editingSearch) {
-      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
-          key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
+      if (RemoteControl.isConfirm(key) || RemoteControl.isEnter(key) ||
+          RemoteControl.isNumpadEnter(key) || RemoteControl.isGamepadConfirm(key)) {
         FocusManager.instance.primaryFocus?.unfocus();
         _showTvChannels(index: 0);
         return KeyEventResult.handled;
       }
-      if (key == LogicalKeyboardKey.arrowDown) {
+      if (RemoteControl.isDown(key)) {
         FocusManager.instance.primaryFocus?.unfocus();
         _showTvChannels(index: 0);
         return KeyEventResult.handled;
       }
-      if (key == LogicalKeyboardKey.arrowUp) {
+      if (RemoteControl.isUp(key)) {
         _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
         return KeyEventResult.handled;
       }
-      if (key != LogicalKeyboardKey.escape && key != LogicalKeyboardKey.browserBack) {
+      if (!RemoteControl.isEscape(key) && !RemoteControl.isBack(key)) {
         return KeyEventResult.ignored;
       }
     }
@@ -505,8 +505,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return KeyEventResult.handled;
     }
 
-    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
+    if (RemoteControl.isConfirm(key) || RemoteControl.isEnter(key) ||
+        RemoteControl.isNumpadEnter(key) || RemoteControl.isGamepadConfirm(key)) {
       if (!_tvSidebarVisible) {
         final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
         _showTvChannels(index: current >= 0 ? current : _tvFocusedChannelIndex);
@@ -533,7 +533,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return KeyEventResult.handled;
     }
 
-    if (key == LogicalKeyboardKey.arrowLeft) {
+    if (RemoteControl.isLeft(key)) {
       if (_tvSidebarVisible && !_tvShowingCategories) {
         setState(() { _tvEpgVisible = false; _tvEpgSelectionMode = false; });
         _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
@@ -545,7 +545,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return KeyEventResult.handled;
     }
 
-    if (key == LogicalKeyboardKey.arrowRight) {
+    if (RemoteControl.isRight(key)) {
       if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
       } else if (_tvSidebarVisible && !_tvEpgVisible) {
@@ -561,7 +561,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return KeyEventResult.handled;
     }
 
-    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.browserBack) {
+    if (RemoteControl.isEscape(key) || RemoteControl.isBack(key)) {
       if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
         return KeyEventResult.handled;
@@ -585,20 +585,20 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     // stale tile focus to select/zap a channel while the sidebar is invisible.
     // Enter's first action in this state is ONLY to reopen the sidebar.
     if (!_tvSidebarVisible) {
-      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
-          key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
+      if (RemoteControl.isConfirm(key) || RemoteControl.isEnter(key) ||
+          RemoteControl.isNumpadEnter(key) || RemoteControl.isGamepadConfirm(key)) {
         _showTvChannels(index: _tvFocusedChannelIndex);
         return KeyEventResult.handled;
       }
-      if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown ||
-          key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+      if (RemoteControl.isUp(key) || RemoteControl.isDown(key) ||
+          RemoteControl.isLeft(key) || RemoteControl.isRight(key)) {
         return KeyEventResult.handled;
       }
       return KeyEventResult.ignored;
     }
 
-    if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
-      final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+    if (RemoteControl.isUp(key) || RemoteControl.isDown(key)) {
+      final delta = RemoteControl.isDown(key) ? 1 : -1;
       if (_tvEpgVisible) {
         final preview = _tvEpgPreviewChannel(channels);
         if (_tvEpgSelectionMode && preview != null) {
@@ -608,20 +608,20 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         }
         return KeyEventResult.handled;
       }
-      if (key == LogicalKeyboardKey.arrowUp && index == 0) {
+      if (RemoteControl.isUp(key) && index == 0) {
         _tvSearchFocusNode.requestFocus();
         return KeyEventResult.handled;
       }
       _focusTvChannel((index + delta).clamp(0, channels.length - 1).toInt());
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
+    if (RemoteControl.isConfirm(key) || RemoteControl.isEnter(key) ||
+        RemoteControl.isNumpadEnter(key) || RemoteControl.isGamepadConfirm(key)) {
       if (_tvEpgVisible) return KeyEventResult.handled;
       if (index >= 0 && index < channels.length) _playChannel(channels[index]);
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+    if (RemoteControl.isLeft(key) || RemoteControl.isRight(key)) {
       return _handleRemoteKey(node, event);
     }
     return KeyEventResult.ignored;
@@ -1377,54 +1377,26 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
 
   String _logoForChannel(Channel channel) {
-    // Prefer an EPG-supplied logo, then the India TV-logos catalogue, then the
-    // playlist's tvg-logo. This avoids a stale playlist URL hiding a good EPG logo.
-    final id = channel.tvgId.trim();
-    if (id.isNotEmpty) {
-      final direct = _epgLogosById[id];
-      if (direct != null && direct.isNotEmpty) return direct;
-      final normalizedId = _normalizeEpgName(id);
-      for (final entry in _epgLogosById.entries) {
-        if (_normalizeEpgName(entry.key) == normalizedId && entry.value.isNotEmpty) return entry.value;
-      }
+    // Logos are loaded ONLY from this app's channel_logos/ folder hosted in
+    // the Ananta-Ott GitHub repository. Never use XMLTV/EPG artwork,
+    // playlist tvg-logo, or the external India logo catalogue.
+    // CachedNetworkImage caches successfully downloaded images on device.
+    final rawNames = <String>[channel.name, channel.tvgName];
+    final candidates = <String>{};
+    for (final rawName in rawNames) {
+      final cleaned = rawName.toLowerCase().trim()
+          .replaceAll('&', ' and ')
+          .replaceAll(RegExp(r'\b(hd|fhd|uhd|4k|sd|hevc|h265)\b', caseSensitive: false), ' ')
+          .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+          .replaceAll(RegExp(r'-+'), '-')
+          .replaceAll(RegExp(r'^-|-$'), '');
+      if (cleaned.isNotEmpty) candidates.add(cleaned);
     }
-    for (final name in <String>[channel.tvgName, channel.name]) {
-      final normalized = _normalizeEpgName(name);
-      final epgLogo = _epgLogosByName[normalized];
-      if (epgLogo != null && epgLogo.isNotEmpty) return epgLogo;
-    }
-    final normalizedNames = <String>{
-      _normalizeEpgName(channel.tvgName),
-      _normalizeEpgName(channel.name),
-    }..remove('');
-    for (final name in normalizedNames) {
-      final exact = _indiaLogosByName[name];
-      if (exact != null && exact.isNotEmpty) return exact;
-      // Try common playlist naming variations: regional labels, HD/SD and
-      // network suffixes. Names are normalized against the repository's
-      // lower-case, dash-separated filenames (usually ending in -in).
-      final candidates = <String>{
-        name,
-        name.replaceAll(RegExp(r'(hd|fhd|uhd|4k|sd)$'), ''),
-      }..remove('');
-      for (final candidate in candidates) {
-        final match = _indiaLogosByName[candidate];
-        if (match != null && match.isNotEmpty) return match;
-      }
-      // Conservative fuzzy matching: avoid tiny names such as 'tv' matching
-      // unrelated stations, but tolerate extra HD/language words in playlists.
-      if (name.length >= 5) {
-        final entries = _indiaLogosByName.entries.toList()
-          ..sort((a, b) => b.key.length.compareTo(a.key.length));
-        for (final entry in entries) {
-          if (entry.key.length >= 5 &&
-              (entry.key == name || entry.key.contains(name) || name.contains(entry.key))) {
-            return entry.value;
-          }
-        }
-      }
-    }
-    return channel.logo.trim();
+    if (candidates.isEmpty) return '';
+    // Use the first channel-name-derived filename. Store files as
+    // channel_logos/<channel-name-slug>.png in the repository.
+    final slug = candidates.first;
+    return 'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/main/channel_logos/$slug.png';
   }
 
   double _epgProgress(EpgProgram? program) {
