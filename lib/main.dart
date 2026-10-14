@@ -188,8 +188,9 @@ class AnantaPlayerController {
   Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
   Future<void> play() => _engine.play();
 
-  // Wait for libmpv to report video dimensions before the app replaces its
-  // currently visible channel with this pending stream.
+  // Wait until libmpv reports real video dimensions before committing a new
+  // channel to the UI. Opening a media item is not the same as having a frame
+  // ready; swapping players earlier exposes the black startup texture.
   Future<void> waitForVideoReady() async {
     final state = _engine.state;
     if ((state.width ?? 0) > 0 && (state.height ?? 0) > 0) return;
@@ -1882,23 +1883,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         );
       }
 
-      // Keep the currently committed channel visible and audible while the
-      // replacement opens. Start the pending stream muted, and do not swap its
-      // Video surface into the UI until libmpv reports video dimensions. This
-      // avoids replacing a working picture with the new stream's black startup
-      // surface. If video never becomes ready, the timeout enters the retry
-      // path below and the old channel remains on screen.
-      await controller.setVolume(0.0);
-      await controller.play();
-      await controller.waitForVideoReady().timeout(const Duration(seconds: 18));
-      if (!mounted || requestId != _playRequestId) {
-        await controller.dispose();
-        return;
-      }
-      // Allow the decoder/video output a short moment to attach after metadata
-      // appears, then unmute and commit the new channel.
-      await Future<void>.delayed(const Duration(milliseconds: 150));
+      // Start playback, then mount the new Video widget immediately. Do not
+      // wait for width/height metadata before committing the player: on some
+      // Android TV streams libmpv starts audio first and reports video
+      // dimensions late (or not at all). Keeping that player pending means its
+      // Video widget is never mounted, so audio can be heard while the screen
+      // stays black with a permanent buffering spinner.
       await controller.setVolume(1.0);
+      await controller.play();
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
