@@ -2033,13 +2033,21 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         child: Stack(
           fit: StackFit.expand,
           children: [
+            // Keep rendering the committed player while a replacement channel
+            // initializes. The pending controller is deliberately not used here:
+            // it may have no video frames yet and would show a black screen.
             if (initialized)
-              Center(
-                child: AspectRatio(
-                  aspectRatio: player!.value.aspectRatio > 0
-                      ? player.value.aspectRatio
-                      : 16 / 9,
-                  child: VideoPlayer(player),
+              Positioned.fill(
+                child: ColoredBox(
+                  color: Colors.black,
+                  child: Center(
+                    child: AspectRatio(
+                      aspectRatio: player!.value.aspectRatio > 0
+                          ? player.value.aspectRatio
+                          : 16 / 9,
+                      child: VideoPlayer(player),
+                    ),
+                  ),
                 ),
               )
             else
@@ -2057,6 +2065,37 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                             ? accentColor
                             : Colors.redAccent,
                       ),
+              ),
+            // Show progress without covering the current picture during a switch.
+            if (initialized && _connecting)
+              Positioned(
+                right: 12,
+                top: 12,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.62),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 13,
+                          height: 13,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: accentColor,
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Text('Switching channel…', style: TextStyle(color: Colors.white, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             // All controls disappear together after 2 seconds.
             if (_controlsVisible) ...[
