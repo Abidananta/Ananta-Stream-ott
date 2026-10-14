@@ -38,9 +38,7 @@ jobs:
 
       - name: Copy app source and configure Android TV icon and manifest
         run: |
-          # Copy every Dart source file, including the dedicated TV remote module.
-          mkdir -p build_app/lib
-          cp lib/*.dart build_app/lib/
+          cp lib/main.dart build_app/lib/main.dart
           cp pubspec.yaml build_app/pubspec.yaml
           mkdir -p build_app/android/app/src/main/res/drawable-nodpi
           cp assets/ananta_launcher_icon.png build_app/android/app/src/main/res/drawable-nodpi/ananta_launcher_icon.png
