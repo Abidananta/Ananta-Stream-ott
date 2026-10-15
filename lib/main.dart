@@ -532,7 +532,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
     final key = event.logicalKey;
     final isDpadUp = key == LogicalKeyboardKey.arrowUp ||
-        key == LogicalKeyboardKey.gameButtonDpadUp;
+        key == LogicalKeyboardKey.arrowUp;
     if (!isDpadUp || !mounted || _tvSidebarVisible) return false;
     // Handle at the hardware-keyboard layer so it works even if the native
     // video texture has taken focus. Ignore repeats to avoid restarting timer.
