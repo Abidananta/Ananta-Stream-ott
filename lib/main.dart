@@ -372,8 +372,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
+    // The programme clock only needs a rebuild while its panel is visible.
+    // Avoid rebuilding the entire 353-channel list every minute on low-memory TVs.
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (mounted) setState(() {});
+      if (mounted && (_tvEpgVisible || _channelInfoVisible)) setState(() {});
     });
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
     // Recover a stream that stalls after it initially starts; allow six retries.
@@ -2443,6 +2445,23 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     );
   }
 
+  // Stop native playback before disposing Flutter widgets. media_kit's
+  // dispose is asynchronous, so explicitly stop both active and pending
+  // players to prevent audio continuing after leaving the app.
+  Future<void> _stopAndDisposePlayer(AnantaPlayerController? player) async {
+    if (player == null) return;
+    try {
+      await player._engine.stop();
+    } catch (error) {
+      debugPrint('Player stop during shutdown failed: $error');
+    }
+    try {
+      await player.dispose();
+    } catch (error) {
+      debugPrint('Player dispose during shutdown failed: $error');
+    }
+  }
+
   // --------------------------------------------------
   // DISPOSE
   // --------------------------------------------------
@@ -2456,7 +2475,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _playRequestId++;
     final pendingPlayer = _pendingPlayer;
     _pendingPlayer = null;
-    if (pendingPlayer != null) { pendingPlayer.dispose(); }
+    if (pendingPlayer != null) { unawaited(_stopAndDisposePlayer(pendingPlayer)); }
     _searchController.dispose();
     _tvChannelScrollController.dispose();
     _tvCategoryScrollController.dispose();
@@ -2465,7 +2484,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _tvSearchFocusNode.dispose();
     for (final node in _tvChannelFocusNodes.values) { node.dispose(); }
     _tvChannelFocusNodes.clear();
-    _player?.dispose();
+    final activePlayer = _player;
+    _player = null;
+    unawaited(_stopAndDisposePlayer(activePlayer));
     WakelockPlus.disable();
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.edgeToEdge,
