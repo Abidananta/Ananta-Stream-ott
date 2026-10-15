@@ -518,7 +518,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     });
   }
 
-  void _showChannelInfoFor10Seconds() {
+  void _showChannelInfoFor15Seconds() {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
@@ -608,7 +608,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         return KeyEventResult.handled;
       }
       if (!_tvSidebarVisible && isUpKey) {
-        _showChannelInfoFor10Seconds();
+        _showChannelInfoFor15Seconds();
         // Reclaim focus after the remote event so subsequent D-pad presses
         // continue to reach the player handler rather than a stale overlay.
         _focusTvPlayer();
@@ -1851,7 +1851,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor10Seconds();
+      _showChannelInfoFor15Seconds();
       _focusTvPlayer();
       return;
     }
@@ -1892,7 +1892,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _controlsVisible = true;
       _status = 'Buffering ${channel.name}...';
     });
-    _showChannelInfoFor10Seconds();
+    _showChannelInfoFor15Seconds();
     try {
       _pendingPlayer = controller;
       if (mounted) setState(() {}); // Mount the hidden video surface before waiting for metadata.
@@ -1938,7 +1938,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor10Seconds();
+      _showChannelInfoFor15Seconds();
       _focusTvPlayer();
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
@@ -2458,6 +2458,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _pendingPlayer = null;
       _playRequestId++;
       _connecting = false;
+      // Request native stop immediately before asynchronous cleanup.
+      if (active != null) {
+        unawaited(active._engine.stop().catchError((Object e) {
+          debugPrint('Immediate active-player stop failed: $e');
+        }));
+      }
+      if (pending != null && pending != active) {
+        unawaited(pending._engine.stop().catchError((Object e) {
+          debugPrint('Immediate pending-player stop failed: $e');
+        }));
+      }
       unawaited(_stopAndDisposePlayer(active));
       if (pending != active) unawaited(_stopAndDisposePlayer(pending));
       WakelockPlus.disable();
