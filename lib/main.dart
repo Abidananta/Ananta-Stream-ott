@@ -312,7 +312,7 @@ class AnantaHomePage extends StatefulWidget {
   State<AnantaHomePage> createState() => _AnantaHomePageState();
 }
 
-class _AnantaHomePageState extends State<AnantaHomePage> {
+class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
@@ -366,6 +366,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
@@ -559,10 +560,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     }
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
-    final isUpKey = key == LogicalKeyboardKey.arrowUp ||
-        key == LogicalKeyboardKey.arrowUp;
-    final isDownKey = key == LogicalKeyboardKey.arrowDown ||
-        key == LogicalKeyboardKey.arrowDown;
+    final isUpKey = key == LogicalKeyboardKey.arrowUp;
+    final isDownKey = key == LogicalKeyboardKey.arrowDown;
     final isConfirmKey = key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
@@ -2445,6 +2444,26 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     );
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Android may keep native audio alive briefly when the app is backgrounded.
+    // Stop immediately on background/inactive; playback can be reopened by
+    // selecting a channel again when the app returns.
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      final active = _player;
+      final pending = _pendingPlayer;
+      _player = null;
+      _pendingPlayer = null;
+      _playRequestId++;
+      _connecting = false;
+      unawaited(_stopAndDisposePlayer(active));
+      if (pending != active) unawaited(_stopAndDisposePlayer(pending));
+      WakelockPlus.disable();
+    }
+  }
+
   // Stop native playback before disposing Flutter widgets. media_kit's
   // dispose is asynchronous, so explicitly stop both active and pending
   // players to prevent audio continuing after leaving the app.
@@ -2467,6 +2486,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   // --------------------------------------------------
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controlsTimer?.cancel();
     _epgClock?.cancel();
     _epgRefreshTimer?.cancel();
