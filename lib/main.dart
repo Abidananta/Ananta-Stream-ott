@@ -367,6 +367,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    HardwareKeyboard.instance.addHandler(_handleGlobalRemoteKey);
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
@@ -518,11 +519,23 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     });
   }
 
-  void _showChannelInfoFor15Seconds() {
+  // Catch Android TV remote keys at the hardware-keyboard level as well as
+  // the focused player node. Some TV boxes move focus to the native video
+  // surface, so a Focus.onKeyEvent callback alone may not receive DPAD UP.
+  bool _handleGlobalRemoteKey(KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+    if (event.logicalKey != LogicalKeyboardKey.arrowUp) return false;
+    if (!mounted || _tvSidebarVisible) return false;
+    _showChannelInfoFor20Seconds();
+    _focusTvPlayer();
+    return true;
+  }
+
+  void _showChannelInfoFor20Seconds() {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
+    _channelInfoTimer = Timer(const Duration(seconds: 20), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -608,7 +621,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         return KeyEventResult.handled;
       }
       if (!_tvSidebarVisible && isUpKey) {
-        _showChannelInfoFor15Seconds();
+        _showChannelInfoFor20Seconds();
         // Reclaim focus after the remote event so subsequent D-pad presses
         // continue to reach the player handler rather than a stale overlay.
         _focusTvPlayer();
@@ -1851,7 +1864,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor15Seconds();
+      _showChannelInfoFor20Seconds();
       _focusTvPlayer();
       return;
     }
@@ -1892,7 +1905,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _controlsVisible = true;
       _status = 'Buffering ${channel.name}...';
     });
-    _showChannelInfoFor15Seconds();
+    _showChannelInfoFor20Seconds();
     try {
       _pendingPlayer = controller;
       if (mounted) setState(() {}); // Mount the hidden video surface before waiting for metadata.
@@ -1938,7 +1951,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor15Seconds();
+      _showChannelInfoFor20Seconds();
       _focusTvPlayer();
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
@@ -2498,6 +2511,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    HardwareKeyboard.instance.removeHandler(_handleGlobalRemoteKey);
     _controlsTimer?.cancel();
     _epgClock?.cancel();
     _epgRefreshTimer?.cancel();
