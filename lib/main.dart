@@ -2467,25 +2467,23 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         child: ListTile(
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          // Give logos a larger circular area, but preserve the entire logo.
-          // BoxFit.contain prevents rectangular logos from being cropped; the
-          // circle is a background container, not a clip mask for the image.
+          // Keep the original logo-space size. Fit the complete source logo
+          // inside the circle without cropping or stretching its proportions.
           leading: Container(
-            width: 76,
-            height: 76,
+            width: 60,
+            height: 60,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: accentColor.withOpacity(0.17),
             ),
-            padding: const EdgeInsets.all(3),
             child: _logoForChannel(channel).isNotEmpty
                 ? CachedNetworkImage(
                     imageUrl: _logoForChannel(channel),
                     fit: BoxFit.contain,
-                    width: 70,
-                    height: 70,
-                    memCacheWidth: 140,
-                    memCacheHeight: 140,
+                    width: 60,
+                    height: 60,
+                    memCacheWidth: 120,
+                    memCacheHeight: 120,
                     fadeInDuration: Duration.zero,
                     placeholder: (_, __) => const Center(
                       child: Icon(Icons.live_tv, color: accentColor, size: 28),
