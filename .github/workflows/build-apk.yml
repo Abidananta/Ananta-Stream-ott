@@ -83,9 +83,11 @@ jobs:
           # switches to a black player surface after Flutter starts.
           for activity in root.findall('.//activity'):
               activity.set(ns + 'theme', '@style/LaunchTheme')
-              meta = activity.find("meta-data[@android:name='io.flutter.embedding.android.NormalTheme']")
-              if meta is not None:
-                  meta.set(ns + 'resource', '@style/NormalTheme')
+              # ElementTree XPath doesn't know the "android" prefix unless a
+              # namespace map is passed; inspect metadata attributes directly.
+              for meta in activity.findall('meta-data'):
+                  if meta.get(ns + 'name') == 'io.flutter.embedding.android.NormalTheme':
+                      meta.set(ns + 'resource', '@style/NormalTheme')
           tree.write(manifest, encoding='utf-8', xml_declaration=True)
           # Use a dark native launch screen to avoid the default white flash.
           res = Path('build_app/android/app/src/main/res')
