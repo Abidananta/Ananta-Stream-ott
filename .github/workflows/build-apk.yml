@@ -79,7 +79,29 @@ jobs:
                   filt = ET.SubElement(launcher, 'intent-filter')
                   action = ET.SubElement(filt, 'action'); action.set(ns + 'name', 'android.intent.action.MAIN')
                   category = ET.SubElement(filt, 'category'); category.set(ns + 'name', 'android.intent.category.LEANBACK_LAUNCHER')
+          # Ensure the Flutter activity uses our transparent launch theme and
+          # switches to a black player surface after Flutter starts.
+          for activity in root.findall('.//activity'):
+              activity.set(ns + 'theme', '@style/LaunchTheme')
+              meta = activity.find("meta-data[@android:name='io.flutter.embedding.android.NormalTheme']")
+              if meta is not None:
+                  meta.set(ns + 'resource', '@style/NormalTheme')
           tree.write(manifest, encoding='utf-8', xml_declaration=True)
+          # Use a dark native launch screen to avoid the default white flash.
+          res = Path('build_app/android/app/src/main/res')
+          values = res / 'values'
+          values.mkdir(parents=True, exist_ok=True)
+          (values / 'styles.xml').write_text('''<resources>
+            <style name="LaunchTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+              <item name="android:windowBackground">@android:color/transparent</item>
+              <item name="android:colorAccent">#9B82FF</item>
+              <item name="android:windowDisablePreview">true</item>
+            </style>
+            <style name="NormalTheme" parent="@android:style/Theme.Material.NoActionBar">
+              <item name="android:windowBackground">@android:color/black</item>
+            </style>
+          </resources>''')
+          (res / 'drawable').mkdir(parents=True, exist_ok=True)
           PY
 
       - name: Resolve dependencies
