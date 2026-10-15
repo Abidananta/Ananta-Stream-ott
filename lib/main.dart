@@ -529,10 +529,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // the focused player node. Some TV boxes move focus to the native video
   // surface, so a Focus.onKeyEvent callback alone may not receive DPAD UP.
   bool _handleGlobalRemoteKey(KeyEvent event) {
-    if (event is! KeyDownEvent) return false;
-    if (event.logicalKey != LogicalKeyboardKey.arrowUp) return false;
-    if (!mounted || _tvSidebarVisible) return false;
-    debugPrint('Ananta OTT: remote DPAD_UP received; showing channel info');
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+    final key = event.logicalKey;
+    final isDpadUp = key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.gameButtonDpadUp;
+    if (!isDpadUp || !mounted || _tvSidebarVisible) return false;
+    // Handle at the hardware-keyboard layer so it works even if the native
+    // video texture has taken focus. Ignore repeats to avoid restarting timer.
+    if (event is KeyRepeatEvent) return true;
+    debugPrint('Ananta OTT: global remote UP received');
     _showChannelInfoFor20Seconds();
     return true;
   }
@@ -2462,13 +2467,36 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         child: ListTile(
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          leading: CircleAvatar(
-            radius: 32,
-            backgroundColor: accentColor.withOpacity(0.17),
-            backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
-            child: _logoForChannel(channel).isEmpty
-                ? const Icon(Icons.live_tv, color: accentColor, size: 30)
-                : null,
+          // Give logos a larger circular area, but preserve the entire logo.
+          // BoxFit.contain prevents rectangular logos from being cropped; the
+          // circle is a background container, not a clip mask for the image.
+          leading: Container(
+            width: 76,
+            height: 76,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: accentColor.withOpacity(0.17),
+            ),
+            padding: const EdgeInsets.all(3),
+            child: _logoForChannel(channel).isNotEmpty
+                ? CachedNetworkImage(
+                    imageUrl: _logoForChannel(channel),
+                    fit: BoxFit.contain,
+                    width: 70,
+                    height: 70,
+                    memCacheWidth: 140,
+                    memCacheHeight: 140,
+                    fadeInDuration: Duration.zero,
+                    placeholder: (_, __) => const Center(
+                      child: Icon(Icons.live_tv, color: accentColor, size: 28),
+                    ),
+                    errorWidget: (_, __, ___) => const Center(
+                      child: Icon(Icons.live_tv, color: accentColor, size: 28),
+                    ),
+                  )
+                : const Center(
+                    child: Icon(Icons.live_tv, color: accentColor, size: 28),
+                  ),
           ),
           title: Text(
             channel.name,
