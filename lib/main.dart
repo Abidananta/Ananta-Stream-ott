@@ -1368,12 +1368,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       await File('${dataDir.path}/epg_cache.json').writeAsString(cachePayload, flush: true);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('ananta_epg_3day_cache_v1', cachePayload);
-        'savedAt': DateTime.now().millisecondsSinceEpoch,
-        'byId': _epgMapToJson(byId),
-        'byName': _epgMapToJson(byName),
-        'logosById': logosById,
-        'logosByName': logosByName,
-      }));
     } catch (error) {
       debugPrint('Cached EPG could not be saved: $error');
     }
