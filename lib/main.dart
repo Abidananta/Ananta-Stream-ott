@@ -372,6 +372,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
+    // Defer optional online logo-catalog discovery until the first frame is on
+    // screen; startup must not compete with initial playback and channel UI.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_loadIndiaLogoIndex());
+    });
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
@@ -1035,11 +1040,34 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               dense: false,
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: CircleAvatar(
-                radius: 30,
-                backgroundColor: accentColor.withOpacity(0.16),
-                backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
-                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
+              leading: SizedBox(
+                width: 60,
+                height: 60,
+                child: ClipOval(
+                  child: ColoredBox(
+                    color: accentColor.withOpacity(0.12),
+                    child: _logoForChannel(channel).isNotEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.all(3),
+                            child: CachedNetworkImage(
+                              imageUrl: _logoForChannel(channel),
+                              fit: BoxFit.contain,
+                              width: 60,
+                              height: 60,
+                              memCacheWidth: 160,
+                              memCacheHeight: 160,
+                              fadeInDuration: Duration.zero,
+                              placeholder: (_, __) => const Center(
+                                child: Icon(Icons.live_tv, color: accentColor, size: 26),
+                              ),
+                              errorWidget: (_, __, ___) => const Center(
+                                child: Icon(Icons.live_tv, color: accentColor, size: 26),
+                              ),
+                            ),
+                          )
+                        : const Center(child: Icon(Icons.live_tv, color: accentColor, size: 26)),
+                  ),
+                ),
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
