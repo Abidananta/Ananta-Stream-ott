@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -523,11 +524,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // the focused player node. Some TV boxes move focus to the native video
   // surface, so a Focus.onKeyEvent callback alone may not receive DPAD UP.
   bool _handleGlobalRemoteKey(KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+    if (event is! KeyDownEvent) return false;
     if (event.logicalKey != LogicalKeyboardKey.arrowUp) return false;
     if (!mounted || _tvSidebarVisible) return false;
+    debugPrint('Ananta OTT: remote DPAD_UP received; showing channel info');
     _showChannelInfoFor20Seconds();
-    _focusTvPlayer();
     return true;
   }
 
@@ -1304,7 +1305,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   Future<bool> _loadCachedEpg() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cached = prefs.getString('ananta_epg_3day_cache_v1');
+      String? cached = prefs.getString('ananta_epg_3day_cache_v1');
+      if (cached == null) {
+        final dataDir = await _anantaLocalDataDirectory();
+        final cacheFile = File('${dataDir.path}/epg_cache.json');
+        if (await cacheFile.exists()) cached = await cacheFile.readAsString();
+      }
       if (cached == null || cached.isEmpty) return false;
       final decoded = jsonDecode(cached);
       if (decoded is! Map) return false;
@@ -1337,6 +1343,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     }
   }
 
+  Future<Directory> _anantaLocalDataDirectory() async {
+    final base = await getApplicationSupportDirectory();
+    final dir = Directory('${base.path}/AnantaOTT');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
+  }
+
   Future<void> _saveCachedEpg(
     Map<String, List<EpgProgram>> byId,
     Map<String, List<EpgProgram>> byName,
@@ -1344,8 +1357,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     Map<String, String> logosByName,
   ) async {
     try {
+      final cachePayload = jsonEncode({
+        'savedAt': DateTime.now().millisecondsSinceEpoch,
+        'byId': _epgMapToJson(byId),
+        'byName': _epgMapToJson(byName),
+        'logosById': logosById,
+        'logosByName': logosByName,
+      });
+      final dataDir = await _anantaLocalDataDirectory();
+      await File('${dataDir.path}/epg_cache.json').writeAsString(cachePayload, flush: true);
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('ananta_epg_3day_cache_v1', jsonEncode({
+      await prefs.setString('ananta_epg_3day_cache_v1', cachePayload);
         'savedAt': DateTime.now().millisecondsSinceEpoch,
         'byId': _epgMapToJson(byId),
         'byName': _epgMapToJson(byName),
