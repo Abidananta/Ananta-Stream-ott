@@ -167,6 +167,7 @@ class AnantaPlayerController {
       debugPrint('Ananta video-height stream error: $error');
     });
     _errorSubscription = _engine.stream.error.listen((value) {
+      if (value.trim().isNotEmpty) _error = value;
       debugPrint('Ananta media engine error for $uri: $value');
     }, onError: (Object error) {
       debugPrint('Ananta media error stream failure: $error');
@@ -440,15 +441,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (player == null) return;
       final value = player.value;
       if (value.hasError) {
-        if (_runtimeRetryCount < 6) {
-          _runtimeRetryCount++;
-          _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
-        }
+        _runtimeRetryCount++;
+        _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
         return;
       }
       if (value.isBuffering) {
         _bufferingStartedAt ??= DateTime.now();
-        if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24) && _runtimeRetryCount < 6) {
+        if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24)) {
           _runtimeRetryCount++;
           _bufferingStartedAt = null;
           _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
@@ -1078,10 +1077,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
               leading: CircleAvatar(
-                radius: 30,
+                radius: 36,
                 backgroundColor: accentColor.withOpacity(0.16),
                 backgroundImage: logoUrl.isEmpty ? null : _logoImageProvider(logoUrl),
-                child: logoUrl.isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
+                child: logoUrl.isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 32) : null,
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
@@ -1513,6 +1512,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           'Accept-Encoding': 'gzip',
         }).timeout(const Duration(seconds: 20));
         if (response.statusCode != 200) continue;
+        // Keep a copy of each EPG feed in app-specific local storage for offline
+        // diagnostics/reuse. No broad/shared-storage permission is needed.
+        try {
+          final base = await getApplicationSupportDirectory();
+          final folder = Directory('${base.path}/AnantaOTT/epg_sources');
+          await folder.create(recursive: true);
+          final sourceName = Uri.parse(source).pathSegments.last.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+          await File('${folder.path}/$sourceName').writeAsBytes(response.bodyBytes, flush: false);
+        } catch (cacheError) {
+          debugPrint('EPG source file cache failed: $cacheError');
+        }
         final parsed = await compute(_parseEpgPayload, response.bodyBytes);
         final sourceNames = (parsed['namesById'] as Map).map<String, List<String>>(
           (key, value) => MapEntry(key.toString(), (value as List).map((item) => item.toString()).toList()),
@@ -2114,12 +2124,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (!mounted || requestId != _playRequestId || _appInBackground) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = retryAttempt < 6 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Stream timed out after 6 retries.';
-        _status = 'Stream timed out';
+        _playerError = 'Network/stream timeout. Reconnecting…';
+        _status = 'Reconnecting to ${channel.name}';
         _connecting = false;
       });
-      if (retryAttempt < 6) {
-        await Future.delayed(Duration(seconds: 1 + retryAttempt));
+      {
+        await Future.delayed(Duration(seconds: (1 + retryAttempt).clamp(1, 20).toInt()));
         if (mounted && !_appInBackground && requestId == _playRequestId) {
           await _playChannel(channel, retryAttempt: retryAttempt + 1);
         }
@@ -2131,12 +2141,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (!mounted || requestId != _playRequestId || _appInBackground) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = retryAttempt < 6 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Unable to play after 6 retries.';
-        _status = 'Playback failed';
+        _playerError = 'Stream interrupted. Reconnecting…';
+        _status = 'Reconnecting to ${channel.name}';
         _connecting = false;
       });
-      if (retryAttempt < 6) {
-        await Future.delayed(Duration(seconds: 1 + retryAttempt));
+      {
+        await Future.delayed(Duration(seconds: (1 + retryAttempt).clamp(1, 20).toInt()));
         if (mounted && !_appInBackground && requestId == _playRequestId) {
           await _playChannel(channel, retryAttempt: retryAttempt + 1);
         }
@@ -2474,7 +2484,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                             ),
                             child: _logoForChannel(_selectedChannel!).isNotEmpty
                                 ? ClipRRect(borderRadius: BorderRadius.circular(10), child: CachedNetworkImage(imageUrl: _logoForChannel(_selectedChannel!), fit: BoxFit.contain, placeholder: (_, __) => const Icon(Icons.live_tv, color: accentColor), errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
-                                : const Icon(Icons.live_tv, color: accentColor, size: 30),
+                                : const Icon(Icons.live_tv, color: accentColor, size: 34),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
@@ -2573,11 +2583,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           leading: CircleAvatar(
-            radius: 32,
+            radius: 36,
             backgroundColor: accentColor.withOpacity(0.17),
             backgroundImage: _logoForChannel(channel).isNotEmpty ? _logoImageProvider(_logoForChannel(channel)) : null,
             child: _logoForChannel(channel).isEmpty
-                ? const Icon(Icons.live_tv, color: accentColor, size: 30)
+                ? const Icon(Icons.live_tv, color: accentColor, size: 34)
                 : null,
           ),
           title: Text(
