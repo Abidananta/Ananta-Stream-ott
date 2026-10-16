@@ -190,7 +190,7 @@ class AnantaPlayerController {
     }
   }
   Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
-  Future<void> play() => _engine.play();
+  Future<void> play() => _engine.play();\n  Future<void> stop() => _engine.stop();
 
   // Wait until libmpv reports real video dimensions before committing a new
   // channel to the UI. Opening a media item is not the same as having a frame
@@ -324,7 +324,7 @@ class AnantaHomePage extends StatefulWidget {
   State<AnantaHomePage> createState() => _AnantaHomePageState();
 }
 
-class _AnantaHomePageState extends State<AnantaHomePage> {
+class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
@@ -378,10 +378,48 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   final Map<String, String> _localLogoPaths = <String, String>{};
   bool _localLogoCacheReady = false;
   bool _logoDownloadRunning = false;
+  bool _appInBackground = false;
+  bool _shuttingDownPlayback = false;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      _appInBackground = true;
+      // Stop both the visible and pending players as soon as Android backgrounds
+      // the app. Do not wait for State.dispose(), which may run later.
+      unawaited(_stopAllPlayback());
+    } else if (state == AppLifecycleState.resumed) {
+      _appInBackground = false;
+    }
+  }
+
+  Future<void> _stopAllPlayback() async {
+    if (_shuttingDownPlayback) return;
+    _shuttingDownPlayback = true;
+    ++_playRequestId; // invalidate in-flight open/retry operations immediately
+    _controlsTimer?.cancel();
+    _channelInfoTimer?.cancel();
+    final active = _player;
+    final pending = _pendingPlayer;
+    _player = null;
+    _pendingPlayer = null;
+    // Stop first, then dispose. Stop is issued to both players before awaiting
+    // either one so a pending channel cannot continue producing audio.
+    final players = <AnantaPlayerController>{if (active != null) active, if (pending != null) pending};
+    await Future.wait(players.map((player) async {
+      try { await player.stop(); } catch (_) {}
+      try { await player.dispose(); } catch (_) {}
+    }));
+    try { await WakelockPlus.disable(); } catch (_) {}
+    _shuttingDownPlayback = false;
+  }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadFavorites();
     _loadPlaylist();
     unawaited(_initializeLocalLogoCache());
@@ -390,12 +428,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (mounted) setState(() {});
+      // Avoid rebuilding the full player every minute when guide overlays are hidden.
+      if (mounted && (_tvEpgVisible || _channelInfoVisible)) setState(() {});
     });
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
     // Recover a stream that stalls after it initially starts; allow six retries.
     _playbackHealthTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      if (!mounted || _connecting || _selectedChannel == null) return;
+      if (!mounted || _appInBackground || _shuttingDownPlayback || _connecting || _selectedChannel == null) return;
       final player = _player;
       if (player == null) return;
       final value = player.value;
@@ -1248,16 +1287,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
             final uri = Uri.parse(url);
             final name = uri.pathSegments.isEmpty ? '' : uri.pathSegments.last;
             if (name.isEmpty) return;
-            final file = File('${_logoDirectory!.path}/$name');
+            // Different logo hosts often reuse filenames; keep cache entries unique per URL.
+            final safeName = '${uri.host}_${uri.pathSegments.last}'.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+            final file = File('${_logoDirectory!.path}/$safeName');
             await file.writeAsBytes(response.bodyBytes, flush: false);
             _localLogoPaths[url] = file.path;
           } catch (_) {}
         }));
-        if (mounted) setState(() {});
       }
       final base = await getApplicationSupportDirectory();
       final indexFile = File('${base.path}/AnantaOTT/logo_index.json');
       await indexFile.writeAsString(jsonEncode(_localLogoPaths), flush: false);
+      if (mounted) setState(() {});
     } catch (e) {
       debugPrint('Logo download cache failed: $e');
     } finally {
@@ -1378,7 +1419,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   Future<bool> _loadCachedEpg() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cached = prefs.getString('ananta_epg_3day_cache_v1');
+      String? cached;
+      // Read the guide from the app's persistent device folder first. SharedPreferences
+      // remains a fallback for older installs that have not written epg_cache.json yet.
+      try {
+        final base = await getApplicationSupportDirectory();
+        final cacheFile = File('${base.path}/AnantaOTT/epg_cache.json');
+        if (await cacheFile.exists()) cached = await cacheFile.readAsString();
+      } catch (_) {}
+      cached ??= prefs.getString('ananta_epg_3day_cache_v1');
       if (cached == null || cached.isEmpty) return false;
       final decoded = jsonDecode(cached);
       if (decoded is! Map) return false;
@@ -1419,13 +1468,25 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   ) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('ananta_epg_3day_cache_v1', jsonEncode({
+      final cachePayload = jsonEncode({
         'savedAt': DateTime.now().millisecondsSinceEpoch,
         'byId': _epgMapToJson(byId),
         'byName': _epgMapToJson(byName),
         'logosById': logosById,
         'logosByName': logosByName,
-      }));
+      });
+      await prefs.setString('ananta_epg_3day_cache_v1', cachePayload);
+      // Persist the same three-day guide beside the logo cache so startup can
+      // render it locally without waiting for the EPG servers.
+      try {
+        final base = await getApplicationSupportDirectory();
+        final folder = Directory('${base.path}/AnantaOTT');
+        await folder.create(recursive: true);
+        final cacheFile = File('${folder.path}/epg_cache.json');
+        await cacheFile.writeAsString(cachePayload, flush: false);
+      } catch (e) {
+        debugPrint('EPG file cache write failed: $e');
+      }
     } catch (error) {
       debugPrint('Cached EPG could not be saved: $error');
     }
@@ -1925,7 +1986,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   // PLAYBACK
   // --------------------------------------------------
   Future<void> _playChannel(Channel channel, {int retryAttempt = 0}) async {
-    if (!mounted) return;
+    if (!mounted || _appInBackground || _shuttingDownPlayback) return;
     // Every selection supersedes the previous pending request. Do not block
     // channel changes while a stream is buffering, and keep the current player
     // alive until a replacement stream is actually ready.
@@ -2005,30 +2066,37 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       // dimensions late (or not at all). Keeping that player pending means its
       // Video widget is never mounted, so audio can be heard while the screen
       // stays black with a permanent buffering spinner.
-      await controller.setVolume(0.0);
-      await controller.play();
-      await controller.waitForVideoReady().timeout(const Duration(seconds: 12));
-      if (!mounted || requestId != _playRequestId) {
+      if (!mounted || requestId != _playRequestId || _appInBackground) {
         await controller.dispose();
         return;
       }
-      await Future<void>.delayed(const Duration(milliseconds: 120));
-      await controller.setVolume(1.0);
-      if (!mounted || requestId != _playRequestId) {
-        await controller.dispose();
-        return;
-      }
+      // Commit and mount the Video surface before playback starts. Waiting for
+      // width/height metadata can hang indefinitely on some live IPTV streams.
       _pendingPlayer = null;
       setState(() {
         _player = controller;
         _selectedChannel = channel;
+        _status = 'Connecting to ${channel.name}...';
+        _connecting = true;
+        _tvSidebarVisible = false;
+        _tvEpgVisible = false;
+        _tvEpgSelectionMode = false;
+      });
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || requestId != _playRequestId || _appInBackground) {
+        await controller.dispose();
+        return;
+      }
+      await controller.play().timeout(const Duration(seconds: 15));
+      if (!mounted || requestId != _playRequestId || _appInBackground) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
         _status = 'Playing ${channel.name}';
         _connecting = false;
         _runtimeRetryCount = 0;
         _bufferingStartedAt = null;
-        _tvSidebarVisible = false;
-        _tvEpgVisible = false;
-        _tvEpgSelectionMode = false;
       });
       _showChannelInfoFor10Seconds();
       _focusTvPlayer();
@@ -2039,7 +2107,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       _scheduleControlsHide();
     } on TimeoutException {
       try { await controller.dispose(); } catch (_) {}
-      if (!mounted || requestId != _playRequestId) return;
+      if (identical(_player, controller)) _player = null;
+      if (!mounted || requestId != _playRequestId || _appInBackground) return;
       _pendingPlayer = null;
       setState(() {
         _playerError = retryAttempt < 6 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Stream timed out after 6 retries.';
@@ -2048,14 +2117,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       });
       if (retryAttempt < 6) {
         await Future.delayed(Duration(seconds: 1 + retryAttempt));
-        if (mounted && requestId == _playRequestId) {
+        if (mounted && !_appInBackground && requestId == _playRequestId) {
           await _playChannel(channel, retryAttempt: retryAttempt + 1);
         }
       }
     } catch (e) {
       debugPrint('Playback error for ${channel.url}: $e');
       try { await controller.dispose(); } catch (_) {}
-      if (!mounted || requestId != _playRequestId) return;
+      if (identical(_player, controller)) _player = null;
+      if (!mounted || requestId != _playRequestId || _appInBackground) return;
       _pendingPlayer = null;
       setState(() {
         _playerError = retryAttempt < 6 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Unable to play after 6 retries.';
@@ -2064,7 +2134,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       });
       if (retryAttempt < 6) {
         await Future.delayed(Duration(seconds: 1 + retryAttempt));
-        if (mounted && requestId == _playRequestId) {
+        if (mounted && !_appInBackground && requestId == _playRequestId) {
           await _playChannel(channel, retryAttempt: retryAttempt + 1);
         }
       }
@@ -2147,7 +2217,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       return false;
     }
 
-    // Let Android handle BACK when the TV sidebar is already hidden.
+    // Stop media before allowing Android to leave the activity; do not rely
+    // on dispose(), which may happen after the audio pipeline has lingered.
+    await _stopAllPlayback();
     return true;
   }
 
@@ -2541,6 +2613,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   // --------------------------------------------------
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controlsTimer?.cancel();
     _channelInfoTimer?.cancel();
     _epgClock?.cancel();
