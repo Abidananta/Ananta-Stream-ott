@@ -961,6 +961,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                                         padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
                                         itemCount: channels.length,
                                         itemExtent: 96,
+                                        addAutomaticKeepAlives: false,
+                                        addRepaintBoundaries: true,
                                         itemBuilder: (context, index) => _buildTvChannelTile(channels[index], index),
                                       ),
                           ),
@@ -1017,8 +1019,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         onKeyEvent: (node, event) => _handleChannelTileKey(node, event, index),
         child: Builder(builder: (context) {
           final focused = Focus.of(context).hasFocus || focusedByIndex;
-          return AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
+          return Container(
             decoration: BoxDecoration(
               color: focused
                   ? accentColor.withOpacity(0.34)
@@ -1044,22 +1045,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
-              subtitle: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(_epgLabel(channel), maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: _epgForChannel(channel) == null ? Colors.white38 : const Color(0xFFC9BEFF), fontSize: 10, fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 4),
-                  ClipRRect(borderRadius: BorderRadius.circular(3), child: LinearProgressIndicator(
-                    value: _epgProgress(_epgForChannel(channel)), minHeight: 3,
-                    backgroundColor: Colors.white12,
-                    valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
-                  )),
-                  const SizedBox(height: 3),
-                  Text(channel.group, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white54, fontSize: 10)),
-                ],
+              // Keep sidebar rows lightweight: EPG matching/progress can be
+              // expensive across hundreds of channels on low-memory TV boxes.
+              // Detailed EPG remains available in the dedicated EPG panel.
+              subtitle: Text(
+                channel.group,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white54, fontSize: 10),
               ),
               trailing: Icon(favorite ? Icons.favorite : Icons.chevron_right,
                 color: favorite ? Colors.pinkAccent : Colors.white38, size: 18),
@@ -2567,7 +2560,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   Future<void> _stopAndDispose(AnantaPlayerController player) async {
     try { await player.setVolume(0); } catch (_) {}
-    try { await player.stop(); } catch (_) {}
+    try { await player.pause(); } catch (_) {}
     try { await player.dispose(); } catch (e) { debugPrint('Player cleanup error: $e'); }
   }
 
