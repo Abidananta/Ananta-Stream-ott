@@ -2467,34 +2467,40 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         child: ListTile(
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          // Keep the original logo-space size. Fit the complete source logo
-          // inside the circle without cropping or stretching its proportions.
-          leading: Container(
+          // Keep the original 60x60 logo space. Center the entire source logo
+          // inside a true circle; contain preserves its aspect ratio and avoids cropping.
+          leading: SizedBox(
             width: 60,
             height: 60,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: accentColor.withOpacity(0.17),
+            child: ClipOval(
+              child: ColoredBox(
+                color: accentColor.withOpacity(0.17),
+                child: Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: _logoForChannel(channel).isNotEmpty
+                      ? Center(
+                          child: CachedNetworkImage(
+                            imageUrl: _logoForChannel(channel),
+                            fit: BoxFit.contain,
+                            width: 54,
+                            height: 54,
+                            memCacheWidth: 120,
+                            memCacheHeight: 120,
+                            fadeInDuration: Duration.zero,
+                            placeholder: (_, __) => const Center(
+                              child: Icon(Icons.live_tv, color: accentColor, size: 28),
+                            ),
+                            errorWidget: (_, __, ___) => const Center(
+                              child: Icon(Icons.live_tv, color: accentColor, size: 28),
+                            ),
+                          ),
+                        )
+                      : const Center(
+                          child: Icon(Icons.live_tv, color: accentColor, size: 28),
+                        ),
+                ),
+              ),
             ),
-            child: _logoForChannel(channel).isNotEmpty
-                ? CachedNetworkImage(
-                    imageUrl: _logoForChannel(channel),
-                    fit: BoxFit.contain,
-                    width: 60,
-                    height: 60,
-                    memCacheWidth: 120,
-                    memCacheHeight: 120,
-                    fadeInDuration: Duration.zero,
-                    placeholder: (_, __) => const Center(
-                      child: Icon(Icons.live_tv, color: accentColor, size: 28),
-                    ),
-                    errorWidget: (_, __, ___) => const Center(
-                      child: Icon(Icons.live_tv, color: accentColor, size: 28),
-                    ),
-                  )
-                : const Center(
-                    child: Icon(Icons.live_tv, color: accentColor, size: 28),
-                  ),
           ),
           title: Text(
             channel.name,
