@@ -190,7 +190,8 @@ class AnantaPlayerController {
     }
   }
   Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
-  Future<void> play() => _engine.play();\n  Future<void> stop() => _engine.stop();
+  Future<void> play() => _engine.play();
+  Future<void> stop() => _engine.stop();
 
   // Wait until libmpv reports real video dimensions before committing a new
   // channel to the UI. Opening a media item is not the same as having a frame
