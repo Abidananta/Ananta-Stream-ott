@@ -374,12 +374,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   final ScrollController _tvEpgScrollController = ScrollController();
   int _playlistRequestId = 0;
   int _playRequestId = 0;
+  Directory? _anantaDataDir;
+  final Map<String, String> _localLogoPaths = {};
+  bool _logoDownloadRunning = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadFavorites();
+    unawaited(_prepareLocalStorage());
     _loadPlaylist();
     _initializeEpg();
     // Keep the TV player key handler focused from the first frame so physical
@@ -1031,11 +1035,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               dense: false,
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: CircleAvatar(
-                radius: 30,
-                backgroundColor: accentColor.withOpacity(0.16),
-                backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
-                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
+              leading: SizedBox(
+                width: 60,
+                height: 60,
+                child: _logoForChannel(channel).isEmpty
+                    ? const Icon(Icons.live_tv, color: accentColor, size: 28)
+                    : _channelLogoImage(_logoForChannel(channel), fit: BoxFit.contain),
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
@@ -1248,6 +1253,76 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     }
   }
 
+  Future<void> _prepareLocalStorage() async {
+    try {
+      final base = await getApplicationSupportDirectory();
+      final root = Directory('${base.path}/AnantaOTT');
+      final logos = Directory('${root.path}/logos');
+      await logos.create(recursive: true);
+      _anantaDataDir = root;
+      // Load the local logo index before any network requests.
+      final indexFile = File('${root.path}/logo_index.json');
+      if (await indexFile.exists()) {
+        final decoded = jsonDecode(await indexFile.readAsString());
+        if (decoded is Map) {
+          for (final entry in decoded.entries) {
+            final path = entry.value.toString();
+            if (await File(path).exists()) _localLogoPaths[entry.key.toString()] = path;
+          }
+        }
+      }
+      if (mounted) setState(() {});
+      unawaited(_downloadChannelLogos());
+    } catch (e) {
+      debugPrint('Local logo storage unavailable: $e');
+    }
+  }
+
+  Future<void> _downloadChannelLogos() async {
+    if (_logoDownloadRunning) return;
+    final root = _anantaDataDir;
+    if (root == null) return;
+    _logoDownloadRunning = true;
+    try {
+      final dir = Directory('${root.path}/logos');
+      await dir.create(recursive: true);
+      final index = <String, String>{..._localLogoPaths};
+      // Cache each logo in app-local storage. Existing files are reused on startup.
+      for (final channel in _channels) {
+        final url = _logoForChannel(channel);
+        if (url.isEmpty || !url.startsWith('http')) continue;
+        final uri = Uri.tryParse(url);
+        if (uri == null) continue;
+        final filename = '${uri.pathSegments.isNotEmpty ? uri.pathSegments.last : 'logo.png'}';
+        final safeName = filename.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+        final cacheKey = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
+        final file = File('${dir.path}/${cacheKey}_$safeName');
+        if (await file.exists() && await file.length() > 0) {
+          _localLogoPaths[url] = file.path; index[url] = file.path; continue;
+        }
+        try {
+          final response = await http.get(uri, headers: const {'User-Agent': 'AnantaOTT/1.0'}).timeout(const Duration(seconds: 8));
+          if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+            await file.writeAsBytes(response.bodyBytes, flush: true);
+            _localLogoPaths[url] = file.path; index[url] = file.path;
+          }
+        } catch (e) { debugPrint('Logo download skipped for $url: $e'); }
+      }
+      await File('${root.path}/logo_index.json').writeAsString(jsonEncode(index), flush: true);
+      if (mounted) setState(() {});
+    } catch (e) { debugPrint('Logo cache error: $e'); }
+    finally { _logoDownloadRunning = false; }
+  }
+
+  Widget _channelLogoImage(String url, {BoxFit fit = BoxFit.contain}) {
+    final local = _localLogoPaths[url];
+    if (local != null) {
+      final file = File(local);
+      if (file.existsSync()) return Image.file(file, fit: fit, errorBuilder: (_, __, ___) => CachedNetworkImage(imageUrl: url, fit: fit));
+    }
+    return url.isEmpty ? const Icon(Icons.live_tv, color: accentColor) : CachedNetworkImage(imageUrl: url, fit: fit, errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor));
+  }
+
   Future<void> _initializeEpg() async {
     // Always show the on-device guide first. Only fetch on startup when the
     // cache is absent/expired; a cache younger than two hours is never fetched
@@ -1347,6 +1422,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             : 'Using saved guide; refresh pending';
         _rebuildEpgChannelIndex();
       });
+      unawaited(_downloadChannelLogos());
       return cacheIsFresh;
     } catch (error) {
       debugPrint('Cached EPG could not be loaded: $error');
@@ -1797,6 +1873,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _status = '${updated.length} channels loaded';
         _rebuildEpgChannelIndex();
       });
+      // Download/cache logos after the real playlist is available.
+      unawaited(_downloadChannelLogos());
       // Start the first channel from the loaded playlist automatically on app
       // launch (skip the built-in PTV utility entry when playlist channels exist).
       if (shouldAutoPlayFirstChannel && mounted) {
@@ -1946,37 +2024,44 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       // dimensions late (or not at all). Keeping that player pending means its
       // Video widget is never mounted, so audio can be heard while the screen
       // stays black with a permanent buffering spinner.
-      await controller.setVolume(0.0);
-      await controller.play();
-      await controller.waitForVideoReady().timeout(const Duration(seconds: 12));
-      if (!mounted || requestId != _playRequestId) {
-        await controller.dispose();
-        return;
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 120));
-      await controller.setVolume(1.0);
-      if (!mounted || requestId != _playRequestId) {
-        await controller.dispose();
-        return;
-      }
+      // Start the stream with normal audio and commit the player as soon as
+      // initialization succeeds. Waiting for a video-ready event while muted
+      // caused audio-only startup on streams whose dimensions arrive late.
+      // Commit and mount the video surface BEFORE starting playback. Starting
+      // the decoder first can let audio become audible while Flutter has not
+      // yet attached the video texture, which looks like an audio-only hang.
       _pendingPlayer = null;
       setState(() {
         _player = controller;
         _selectedChannel = channel;
-        _status = 'Playing ${channel.name}';
-        _connecting = false;
+        _status = 'Connecting video…';
+        _connecting = true;
         _runtimeRetryCount = 0;
         _bufferingStartedAt = null;
         _tvSidebarVisible = false;
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || requestId != _playRequestId) {
+        await controller.dispose();
+        return;
+      }
+      await controller.play();
+      if (!mounted || requestId != _playRequestId) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _status = 'Playing ${channel.name}';
+        _connecting = false;
+      });
       _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       if (oldPlayer != null && oldPlayer != controller) {
-        try { await oldPlayer.dispose(); } catch (_) {}
+        unawaited(oldPlayer.dispose());
       }
-      await WakelockPlus.enable();
+      unawaited(WakelockPlus.enable());
       _scheduleControlsHide();
     } on TimeoutException {
       try { await controller.dispose(); } catch (_) {}
@@ -2480,6 +2565,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   // DISPOSE
   // --------------------------------------------------
+  Future<void> _stopAndDispose(AnantaPlayerController player) async {
+    try { await player.setVolume(0); } catch (_) {}
+    try { await player.stop(); } catch (_) {}
+    try { await player.dispose(); } catch (e) { debugPrint('Player cleanup error: $e'); }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused ||
@@ -2487,10 +2578,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       // Stop both committed and in-flight streams as soon as the app leaves foreground.
       final active = _player;
       final pending = _pendingPlayer;
-      if (active != null) unawaited(active.dispose());
-      if (pending != null && pending != active) unawaited(pending.dispose());
       _player = null;
       _pendingPlayer = null;
+      ++_playRequestId; // invalidate in-flight initialize/play continuations
+      if (active != null) unawaited(_stopAndDispose(active));
+      if (pending != null && pending != active) unawaited(_stopAndDispose(pending));
       unawaited(WakelockPlus.disable());
     }
   }
@@ -2507,7 +2599,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _playRequestId++;
     final pendingPlayer = _pendingPlayer;
     _pendingPlayer = null;
-    if (pendingPlayer != null) { unawaited(pendingPlayer.dispose().catchError((Object e) { debugPrint('Pending player cleanup error: $e'); })); }
+    if (pendingPlayer != null) { unawaited(_stopAndDispose(pendingPlayer)); }
     _searchController.dispose();
     _tvChannelScrollController.dispose();
     _tvCategoryScrollController.dispose();
@@ -2518,7 +2610,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _tvChannelFocusNodes.clear();
     final activePlayer = _player;
     _player = null;
-    if (activePlayer != null) { unawaited(activePlayer.dispose().catchError((Object e) { debugPrint('Active player cleanup error: $e'); })); }
+    if (activePlayer != null) { unawaited(_stopAndDispose(activePlayer)); }
     unawaited(WakelockPlus.disable().catchError((Object e) { debugPrint('Wakelock cleanup error: $e'); }));
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.edgeToEdge,
