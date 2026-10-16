@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -323,7 +324,7 @@ class AnantaHomePage extends StatefulWidget {
   State<AnantaHomePage> createState() => _AnantaHomePageState();
 }
 
-class _AnantaHomePageState extends State<AnantaHomePage> {
+class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
@@ -377,6 +378,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
@@ -389,7 +391,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
     // Recover a stream that stalls after it initially starts; allow six retries.
     _playbackHealthTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      if (!mounted || _connecting || _selectedChannel == null) return;
+      if (!mounted || WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed || _connecting || _selectedChannel == null) return;
       final player = _player;
       if (player == null) return;
       final value = player.value;
@@ -1296,10 +1298,30 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     return result;
   }
 
+  Future<Directory> _anantaDataDirectory() async {
+    // App-specific external storage when available, internal support storage otherwise.
+    // Android scoped storage allows this without broad storage permissions.
+    Directory? base;
+    try { base = await getExternalStorageDirectory(); } catch (_) {}
+    base ??= await getApplicationSupportDirectory();
+    final dir = Directory('${base.path}/AnantaOTT');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    final logos = Directory('${dir.path}/logos');
+    if (!await logos.exists()) await logos.create(recursive: true);
+    return dir;
+  }
+
+  Future<File> _epgCacheFile() async {
+    final dir = await _anantaDataDirectory();
+    return File('${dir.path}/epg_cache.json');
+  }
+
   Future<bool> _loadCachedEpg() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cached = prefs.getString('ananta_epg_3day_cache_v1');
+      String? cached;
+      try { final file = await _epgCacheFile(); if (await file.exists()) cached = await file.readAsString(); } catch (_) {}
+      cached ??= prefs.getString('ananta_epg_3day_cache_v1');
       if (cached == null || cached.isEmpty) return false;
       final decoded = jsonDecode(cached);
       if (decoded is! Map) return false;
@@ -1339,14 +1361,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     Map<String, String> logosByName,
   ) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('ananta_epg_3day_cache_v1', jsonEncode({
+      final payload = jsonEncode({
         'savedAt': DateTime.now().millisecondsSinceEpoch,
         'byId': _epgMapToJson(byId),
         'byName': _epgMapToJson(byName),
         'logosById': logosById,
         'logosByName': logosByName,
-      }));
+      });
+      final file = await _epgCacheFile();
+      await file.writeAsString(payload, flush: true);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('ananta_epg_3day_cache_v1', payload);
     } catch (error) {
       debugPrint('Cached EPG could not be saved: $error');
     }
@@ -2456,7 +2481,23 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   // DISPOSE
   // --------------------------------------------------
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      // Stop both committed and in-flight streams as soon as the app leaves foreground.
+      final active = _player;
+      final pending = _pendingPlayer;
+      if (active != null) unawaited(active.dispose());
+      if (pending != null && pending != active) unawaited(pending.dispose());
+      _player = null;
+      _pendingPlayer = null;
+      unawaited(WakelockPlus.disable());
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controlsTimer?.cancel();
     _channelInfoTimer?.cancel();
     _epgClock?.cancel();
