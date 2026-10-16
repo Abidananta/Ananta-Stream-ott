@@ -1088,8 +1088,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                         child: Image(
                           image: _logoImageProvider(logoUrl),
                           fit: BoxFit.contain,
-                          width: 86,
-                          height: 86,
+                          width: 64,
+                          height: 64,
                           errorBuilder: (_, __, ___) => const Icon(
                             Icons.live_tv, color: accentColor, size: 40,
                           ),
@@ -2211,9 +2211,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       ]);
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     } else {
-      // Restore sensor/system orientation rather than locking every phone to portrait.
-      // Android TV devices can remain in their normal landscape orientation.
-      await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      // Exit fullscreen back to the normal mobile portrait layout.
+      // Large landscape devices (Android TV/tablets) retain their natural orientation.
+      final view = WidgetsBinding.instance.platformDispatcher.views.first;
+      final logicalWidth = view.physicalSize.width / view.devicePixelRatio;
+      final logicalHeight = view.physicalSize.height / view.devicePixelRatio;
+      if (logicalWidth < 700 && logicalHeight < 700) {
+        await SystemChrome.setPreferredOrientations([
+          DeviceOrientation.portraitUp,
+        ]);
+      } else {
+        await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      }
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     if (!mounted) return;
