@@ -1077,10 +1077,24 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
               leading: CircleAvatar(
-                radius: 36,
+                radius: 46,
                 backgroundColor: accentColor.withOpacity(0.16),
-                backgroundImage: logoUrl.isEmpty ? null : _logoImageProvider(logoUrl),
-                child: logoUrl.isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 32) : null,
+                // Contain the complete source logo inside the larger circle. Cover
+                // crops wide/tall channel artwork and cuts off text around its edges.
+                child: logoUrl.isEmpty
+                    ? const Icon(Icons.live_tv, color: accentColor, size: 40)
+                    : Padding(
+                        padding: const EdgeInsets.all(3),
+                        child: Image(
+                          image: _logoImageProvider(logoUrl),
+                          fit: BoxFit.contain,
+                          width: 86,
+                          height: 86,
+                          errorBuilder: (_, __, ___) => const Icon(
+                            Icons.live_tv, color: accentColor, size: 40,
+                          ),
+                        ),
+                      ),
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
