@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -313,7 +312,7 @@ class AnantaHomePage extends StatefulWidget {
   State<AnantaHomePage> createState() => _AnantaHomePageState();
 }
 
-class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
+class _AnantaHomePageState extends State<AnantaHomePage> {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
@@ -367,18 +366,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    HardwareKeyboard.instance.addHandler(_handleGlobalRemoteKey);
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
-    // The programme clock only needs a rebuild while its panel is visible.
-    // Avoid rebuilding the entire 353-channel list every minute on low-memory TVs.
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (mounted && (_tvEpgVisible || _channelInfoVisible)) setState(() {});
+      if (mounted) setState(() {});
     });
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
     // Recover a stream that stalls after it initially starts; allow six retries.
@@ -520,23 +515,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     });
   }
 
-  // Catch Android TV remote keys at the hardware-keyboard level as well as
-  // the focused player node. Some TV boxes move focus to the native video
-  // surface, so a Focus.onKeyEvent callback alone may not receive DPAD UP.
-  bool _handleGlobalRemoteKey(KeyEvent event) {
-    if (event is! KeyDownEvent) return false;
-    if (event.logicalKey != LogicalKeyboardKey.arrowUp) return false;
-    if (!mounted || _tvSidebarVisible) return false;
-    debugPrint('Ananta OTT: remote DPAD_UP received; showing channel info');
-    _showChannelInfoFor20Seconds();
-    return true;
-  }
-
-  void _showChannelInfoFor20Seconds() {
+  void _showChannelInfoFor10Seconds() {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(const Duration(seconds: 20), () {
+    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -574,8 +557,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     }
     final primaryContext = FocusManager.instance.primaryFocus?.context;
     final key = event.logicalKey;
-    final isUpKey = key == LogicalKeyboardKey.arrowUp;
-    final isDownKey = key == LogicalKeyboardKey.arrowDown;
+    final isUpKey = key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowUp;
+    final isDownKey = key == LogicalKeyboardKey.arrowDown ||
+        key == LogicalKeyboardKey.arrowDown;
     final isConfirmKey = key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
@@ -622,7 +607,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         return KeyEventResult.handled;
       }
       if (!_tvSidebarVisible && isUpKey) {
-        _showChannelInfoFor20Seconds();
+        _showChannelInfoFor10Seconds();
         // Reclaim focus after the remote event so subsequent D-pad presses
         // continue to reach the player handler rather than a stale overlay.
         _focusTvPlayer();
@@ -1305,12 +1290,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   Future<bool> _loadCachedEpg() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      String? cached = prefs.getString('ananta_epg_3day_cache_v1');
-      if (cached == null) {
-        final dataDir = await _anantaLocalDataDirectory();
-        final cacheFile = File('${dataDir.path}/epg_cache.json');
-        if (await cacheFile.exists()) cached = await cacheFile.readAsString();
-      }
+      final cached = prefs.getString('ananta_epg_3day_cache_v1');
       if (cached == null || cached.isEmpty) return false;
       final decoded = jsonDecode(cached);
       if (decoded is! Map) return false;
@@ -1343,13 +1323,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     }
   }
 
-  Future<Directory> _anantaLocalDataDirectory() async {
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory('${base.path}/AnantaOTT');
-    if (!await dir.exists()) await dir.create(recursive: true);
-    return dir;
-  }
-
   Future<void> _saveCachedEpg(
     Map<String, List<EpgProgram>> byId,
     Map<String, List<EpgProgram>> byName,
@@ -1357,17 +1330,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     Map<String, String> logosByName,
   ) async {
     try {
-      final cachePayload = jsonEncode({
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('ananta_epg_3day_cache_v1', jsonEncode({
         'savedAt': DateTime.now().millisecondsSinceEpoch,
         'byId': _epgMapToJson(byId),
         'byName': _epgMapToJson(byName),
         'logosById': logosById,
         'logosByName': logosByName,
-      });
-      final dataDir = await _anantaLocalDataDirectory();
-      await File('${dataDir.path}/epg_cache.json').writeAsString(cachePayload, flush: true);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('ananta_epg_3day_cache_v1', cachePayload);
+      }));
     } catch (error) {
       debugPrint('Cached EPG could not be saved: $error');
     }
@@ -1880,7 +1850,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor20Seconds();
+      _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       return;
     }
@@ -1921,7 +1891,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _controlsVisible = true;
       _status = 'Buffering ${channel.name}...';
     });
-    _showChannelInfoFor20Seconds();
+    _showChannelInfoFor10Seconds();
     try {
       _pendingPlayer = controller;
       if (mounted) setState(() {}); // Mount the hidden video surface before waiting for metadata.
@@ -1967,7 +1937,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor20Seconds();
+      _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
@@ -2473,61 +2443,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     );
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Android may keep native audio alive briefly when the app is backgrounded.
-    // Stop immediately on background/inactive; playback can be reopened by
-    // selecting a channel again when the app returns.
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      final active = _player;
-      final pending = _pendingPlayer;
-      _player = null;
-      _pendingPlayer = null;
-      _playRequestId++;
-      _connecting = false;
-      // Request native stop immediately before asynchronous cleanup.
-      if (active != null) {
-        unawaited(active._engine.stop().catchError((Object e) {
-          debugPrint('Immediate active-player stop failed: $e');
-        }));
-      }
-      if (pending != null && pending != active) {
-        unawaited(pending._engine.stop().catchError((Object e) {
-          debugPrint('Immediate pending-player stop failed: $e');
-        }));
-      }
-      unawaited(_stopAndDisposePlayer(active));
-      if (pending != active) unawaited(_stopAndDisposePlayer(pending));
-      WakelockPlus.disable();
-    }
-  }
-
-  // Stop native playback before disposing Flutter widgets. media_kit's
-  // dispose is asynchronous, so explicitly stop both active and pending
-  // players to prevent audio continuing after leaving the app.
-  Future<void> _stopAndDisposePlayer(AnantaPlayerController? player) async {
-    if (player == null) return;
-    try {
-      await player._engine.stop();
-    } catch (error) {
-      debugPrint('Player stop during shutdown failed: $error');
-    }
-    try {
-      await player.dispose();
-    } catch (error) {
-      debugPrint('Player dispose during shutdown failed: $error');
-    }
-  }
-
   // --------------------------------------------------
   // DISPOSE
   // --------------------------------------------------
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    HardwareKeyboard.instance.removeHandler(_handleGlobalRemoteKey);
     _controlsTimer?.cancel();
     _epgClock?.cancel();
     _epgRefreshTimer?.cancel();
@@ -2536,7 +2456,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _playRequestId++;
     final pendingPlayer = _pendingPlayer;
     _pendingPlayer = null;
-    if (pendingPlayer != null) { unawaited(_stopAndDisposePlayer(pendingPlayer)); }
+    if (pendingPlayer != null) { pendingPlayer.dispose(); }
     _searchController.dispose();
     _tvChannelScrollController.dispose();
     _tvCategoryScrollController.dispose();
@@ -2545,9 +2465,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _tvSearchFocusNode.dispose();
     for (final node in _tvChannelFocusNodes.values) { node.dispose(); }
     _tvChannelFocusNodes.clear();
-    final activePlayer = _player;
-    _player = null;
-    unawaited(_stopAndDisposePlayer(activePlayer));
+    _player?.dispose();
     WakelockPlus.disable();
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.edgeToEdge,
