@@ -372,11 +372,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
-    // Defer optional online logo-catalog discovery until the first frame is on
-    // screen; startup must not compete with initial playback and channel UI.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_loadIndiaLogoIndex());
-    });
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
@@ -529,15 +524,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // the focused player node. Some TV boxes move focus to the native video
   // surface, so a Focus.onKeyEvent callback alone may not receive DPAD UP.
   bool _handleGlobalRemoteKey(KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
-    final key = event.logicalKey;
-    final isDpadUp = key == LogicalKeyboardKey.arrowUp ||
-        key == LogicalKeyboardKey.arrowUp;
-    if (!isDpadUp || !mounted || _tvSidebarVisible) return false;
-    // Handle at the hardware-keyboard layer so it works even if the native
-    // video texture has taken focus. Ignore repeats to avoid restarting timer.
-    if (event is KeyRepeatEvent) return true;
-    debugPrint('Ananta OTT: global remote UP received');
+    if (event is! KeyDownEvent) return false;
+    if (event.logicalKey != LogicalKeyboardKey.arrowUp) return false;
+    if (!mounted || _tvSidebarVisible) return false;
+    debugPrint('Ananta OTT: remote DPAD_UP received; showing channel info');
     _showChannelInfoFor20Seconds();
     return true;
   }
@@ -1045,34 +1035,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               dense: false,
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: SizedBox(
-                width: 60,
-                height: 60,
-                child: ClipOval(
-                  child: ColoredBox(
-                    color: accentColor.withOpacity(0.12),
-                    child: _logoForChannel(channel).isNotEmpty
-                        ? Padding(
-                            padding: const EdgeInsets.all(3),
-                            child: CachedNetworkImage(
-                              imageUrl: _logoForChannel(channel),
-                              fit: BoxFit.contain,
-                              width: 60,
-                              height: 60,
-                              memCacheWidth: 160,
-                              memCacheHeight: 160,
-                              fadeInDuration: Duration.zero,
-                              placeholder: (_, __) => const Center(
-                                child: Icon(Icons.live_tv, color: accentColor, size: 26),
-                              ),
-                              errorWidget: (_, __, ___) => const Center(
-                                child: Icon(Icons.live_tv, color: accentColor, size: 26),
-                              ),
-                            ),
-                          )
-                        : const Center(child: Icon(Icons.live_tv, color: accentColor, size: 26)),
-                  ),
-                ),
+              leading: CircleAvatar(
+                radius: 30,
+                backgroundColor: accentColor.withOpacity(0.16),
+                backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
+                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
@@ -2467,40 +2434,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         child: ListTile(
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          // Keep the original 60x60 logo space. Center the entire source logo
-          // inside a true circle; contain preserves its aspect ratio and avoids cropping.
-          leading: SizedBox(
-            width: 60,
-            height: 60,
-            child: ClipOval(
-              child: ColoredBox(
-                color: accentColor.withOpacity(0.17),
-                child: Padding(
-                  padding: const EdgeInsets.all(3),
-                  child: _logoForChannel(channel).isNotEmpty
-                      ? Center(
-                          child: CachedNetworkImage(
-                            imageUrl: _logoForChannel(channel),
-                            fit: BoxFit.contain,
-                            width: 54,
-                            height: 54,
-                            memCacheWidth: 120,
-                            memCacheHeight: 120,
-                            fadeInDuration: Duration.zero,
-                            placeholder: (_, __) => const Center(
-                              child: Icon(Icons.live_tv, color: accentColor, size: 28),
-                            ),
-                            errorWidget: (_, __, ___) => const Center(
-                              child: Icon(Icons.live_tv, color: accentColor, size: 28),
-                            ),
-                          ),
-                        )
-                      : const Center(
-                          child: Icon(Icons.live_tv, color: accentColor, size: 28),
-                        ),
-                ),
-              ),
-            ),
+          leading: CircleAvatar(
+            radius: 32,
+            backgroundColor: accentColor.withOpacity(0.17),
+            backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
+            child: _logoForChannel(channel).isEmpty
+                ? const Icon(Icons.live_tv, color: accentColor, size: 30)
+                : null,
           ),
           title: Text(
             channel.name,
