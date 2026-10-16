@@ -2061,43 +2061,45 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         );
       }
 
-      // Start playback, then mount the new Video widget immediately. Do not
-      // wait for width/height metadata before committing the player: on some
-      // Android TV streams libmpv starts audio first and reports video
-      // dimensions late (or not at all). Keeping that player pending means its
-      // Video widget is never mounted, so audio can be heard while the screen
-      // stays black with a permanent buffering spinner.
+      // Keep the old player committed and audible while the candidate stream
+      // warms up. The candidate Video widget is mounted invisibly above it so
+      // libmpv can initialize its video output before we switch the picture.
       if (!mounted || requestId != _playRequestId || _appInBackground) {
         await controller.dispose();
         return;
       }
-      // Commit and mount the Video surface before playback starts. Waiting for
-      // width/height metadata can hang indefinitely on some live IPTV streams.
-      _pendingPlayer = null;
-      setState(() {
-        _player = controller;
-        _selectedChannel = channel;
-        _status = 'Connecting to ${channel.name}...';
-        _connecting = true;
-        _tvSidebarVisible = false;
-        _tvEpgVisible = false;
-        _tvEpgSelectionMode = false;
-      });
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || requestId != _playRequestId || _appInBackground) {
         await controller.dispose();
         return;
       }
+
+      // Mute the candidate during warm-up to avoid overlapping audio. Do not
+      // replace the current channel until the candidate reports real video
+      // dimensions; this prevents the black-screen/audio-first channel switch.
+      await controller.setVolume(0);
       await controller.play().timeout(const Duration(seconds: 15));
+      await controller.waitForVideoReady().timeout(const Duration(seconds: 12));
       if (!mounted || requestId != _playRequestId || _appInBackground) {
         await controller.dispose();
         return;
       }
+
+      // Candidate has a video stream now: atomically swap to it, unmute, then
+      // dispose the old decoder. Failed/slow candidates leave the old channel
+      // running and audible.
+      await controller.setVolume(1);
+      _pendingPlayer = null;
       setState(() {
+        _player = controller;
+        _selectedChannel = channel;
         _status = 'Playing ${channel.name}';
         _connecting = false;
         _runtimeRetryCount = 0;
         _bufferingStartedAt = null;
+        _tvSidebarVisible = false;
+        _tvEpgVisible = false;
+        _tvEpgSelectionMode = false;
       });
       _showChannelInfoFor10Seconds();
       _focusTvPlayer();
