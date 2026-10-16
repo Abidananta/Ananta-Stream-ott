@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -147,23 +146,26 @@ class AnantaPlayerController {
   bool _buffering = false;
   String? _error;
   StreamSubscription<bool>? _bufferingSubscription;
+  StreamSubscription<int?>? _widthSubscription;
+  StreamSubscription<int?>? _heightSubscription;
+  StreamSubscription<String>? _errorSubscription;
   AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, dynamic videoPlayerOptions}) {
     _bufferingSubscription = _engine.stream.buffering.listen((value) {
       _buffering = value;
     }, onError: (Object error) {
       debugPrint('Player buffering-state error: $error');
     });
-    _engine.stream.width.listen((value) {
+    _widthSubscription = _engine.stream.width.listen((value) {
       debugPrint('Ananta video width: $value for $uri');
     }, onError: (Object error) {
       debugPrint('Ananta video-width stream error: $error');
     });
-    _engine.stream.height.listen((value) {
+    _heightSubscription = _engine.stream.height.listen((value) {
       debugPrint('Ananta video height: $value for $uri');
     }, onError: (Object error) {
       debugPrint('Ananta video-height stream error: $error');
     });
-    _engine.stream.error.listen((value) {
+    _errorSubscription = _engine.stream.error.listen((value) {
       debugPrint('Ananta media engine error for $uri: $value');
     }, onError: (Object error) {
       debugPrint('Ananta media error stream failure: $error');
@@ -204,9 +206,17 @@ class AnantaPlayerController {
   }
 
   Future<void> pause() => _engine.pause();
+  bool _disposed = false;
   Future<void> dispose() async {
-    await _bufferingSubscription?.cancel();
-    await _engine.dispose();
+    if (_disposed) return;
+    _disposed = true;
+    // Stop playback before releasing libmpv so audio does not linger on exit.
+    try { await _engine.stop(); } catch (e) { debugPrint('Player stop during dispose: $e'); }
+    try { await _bufferingSubscription?.cancel(); } catch (_) {}
+    try { await _widthSubscription?.cancel(); } catch (_) {}
+    try { await _heightSubscription?.cancel(); } catch (_) {}
+    try { await _errorSubscription?.cancel(); } catch (_) {}
+    try { await _engine.dispose(); } catch (e) { debugPrint('Player dispose error: $e'); }
   }
 }
 
@@ -313,7 +323,7 @@ class AnantaHomePage extends StatefulWidget {
   State<AnantaHomePage> createState() => _AnantaHomePageState();
 }
 
-class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
+class _AnantaHomePageState extends State<AnantaHomePage> {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
@@ -367,23 +377,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    HardwareKeyboard.instance.addHandler(_handleGlobalRemoteKey);
     _loadFavorites();
     _loadPlaylist();
     _initializeEpg();
-    // Defer optional online logo-catalog discovery until the first frame is on
-    // screen; startup must not compete with initial playback and channel UI.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_loadIndiaLogoIndex());
-    });
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
-    // The programme clock only needs a rebuild while its panel is visible.
-    // Avoid rebuilding the entire 353-channel list every minute on low-memory TVs.
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (mounted && (_tvEpgVisible || _channelInfoVisible)) setState(() {});
+      if (mounted) setState(() {});
     });
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
     // Recover a stream that stalls after it initially starts; allow six retries.
@@ -525,33 +526,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     });
   }
 
-  // Catch Android TV remote keys at the hardware-keyboard level as well as
-  // the focused player node. Some TV boxes move focus to the native video
-  // surface, so a Focus.onKeyEvent callback alone may not receive DPAD UP.
-  bool _handleGlobalRemoteKey(KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
-    final key = event.logicalKey;
-    // Android TV remotes normally map D-pad UP to arrowUp, but some firmwares
-    // report the physical key through the event's key label instead. Accept
-    // the common normalized labels and handle only a real key-down once.
-    final label = key.keyLabel.toLowerCase();
-    final isDpadUp = key == LogicalKeyboardKey.arrowUp ||
-        label == 'dpad_up' || label == 'd-pad up' || label == 'up';
-    if (!isDpadUp || !mounted) return false;
-    if (_tvSidebarVisible) return false;
-    // Handle at the hardware-keyboard layer so it works even if the native
-    // video texture has taken focus. Ignore repeats to avoid restarting timer.
-    if (event is KeyRepeatEvent) return true;
-    debugPrint('Ananta OTT: global remote UP received');
-    _showChannelInfoFor20Seconds();
-    return true;
-  }
-
-  void _showChannelInfoFor20Seconds() {
+  void _showChannelInfoFor10Seconds() {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(const Duration(seconds: 20), () {
+    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -637,7 +616,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         return KeyEventResult.handled;
       }
       if (!_tvSidebarVisible && isUpKey) {
-        _showChannelInfoFor20Seconds();
+        if (_selectedChannel != null) _showChannelInfoFor10Seconds();
         // Reclaim focus after the remote event so subsequent D-pad presses
         // continue to reach the player handler rather than a stale overlay.
         _focusTvPlayer();
@@ -1050,24 +1029,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               dense: false,
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: SizedBox(
-                width: 60,
-                height: 60,
-                child: _logoForChannel(channel).isNotEmpty
-                    ? Center(
-                        child: CachedNetworkImage(
-                          imageUrl: _logoForChannel(channel),
-                          fit: BoxFit.contain,
-                          width: 60,
-                          height: 60,
-                          memCacheWidth: 160,
-                          memCacheHeight: 160,
-                          fadeInDuration: Duration.zero,
-                          placeholder: (_, __) => const Icon(Icons.live_tv, color: accentColor, size: 26),
-                          errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor, size: 26),
-                        ),
-                      )
-                    : const Center(child: Icon(Icons.live_tv, color: accentColor, size: 26)),
+              leading: CircleAvatar(
+                radius: 30,
+                backgroundColor: accentColor.withOpacity(0.16),
+                backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
+                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
@@ -1333,12 +1299,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   Future<bool> _loadCachedEpg() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      String? cached = prefs.getString('ananta_epg_3day_cache_v1');
-      if (cached == null) {
-        final dataDir = await _anantaLocalDataDirectory();
-        final cacheFile = File('${dataDir.path}/epg_cache.json');
-        if (await cacheFile.exists()) cached = await cacheFile.readAsString();
-      }
+      final cached = prefs.getString('ananta_epg_3day_cache_v1');
       if (cached == null || cached.isEmpty) return false;
       final decoded = jsonDecode(cached);
       if (decoded is! Map) return false;
@@ -1371,17 +1332,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     }
   }
 
-  Future<Directory> _anantaLocalDataDirectory() async {
-    // Prefer the app-specific external files directory when Android provides
-    // one. It is stored on-device, survives app restarts, and needs no broad
-    // legacy storage permission under scoped storage. Fall back internally.
-    final external = await getExternalStorageDirectory();
-    final base = external ?? await getApplicationSupportDirectory();
-    final dir = Directory('${base.path}/AnantaOTT');
-    if (!await dir.exists()) await dir.create(recursive: true);
-    return dir;
-  }
-
   Future<void> _saveCachedEpg(
     Map<String, List<EpgProgram>> byId,
     Map<String, List<EpgProgram>> byName,
@@ -1389,17 +1339,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     Map<String, String> logosByName,
   ) async {
     try {
-      final cachePayload = jsonEncode({
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('ananta_epg_3day_cache_v1', jsonEncode({
         'savedAt': DateTime.now().millisecondsSinceEpoch,
         'byId': _epgMapToJson(byId),
         'byName': _epgMapToJson(byName),
         'logosById': logosById,
         'logosByName': logosByName,
-      });
-      final dataDir = await _anantaLocalDataDirectory();
-      await File('${dataDir.path}/epg_cache.json').writeAsString(cachePayload, flush: true);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('ananta_epg_3day_cache_v1', cachePayload);
+      }));
     } catch (error) {
       debugPrint('Cached EPG could not be saved: $error');
     }
@@ -1912,7 +1859,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor20Seconds();
+      _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       return;
     }
@@ -1953,7 +1900,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _controlsVisible = true;
       _status = 'Buffering ${channel.name}...';
     });
-    _showChannelInfoFor20Seconds();
+    _showChannelInfoFor10Seconds();
     try {
       _pendingPlayer = controller;
       if (mounted) setState(() {}); // Mount the hidden video surface before waiting for metadata.
@@ -1999,7 +1946,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _tvEpgVisible = false;
         _tvEpgSelectionMode = false;
       });
-      _showChannelInfoFor20Seconds();
+      _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
@@ -2466,26 +2413,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         child: ListTile(
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          // Keep the original logo artwork: no circular clipping or background.
-          // Center it in the existing 60x60 space and preserve the full image.
-          leading: SizedBox(
-            width: 60,
-            height: 60,
-            child: _logoForChannel(channel).isNotEmpty
-                ? Center(
-                    child: CachedNetworkImage(
-                      imageUrl: _logoForChannel(channel),
-                      fit: BoxFit.contain,
-                      width: 60,
-                      height: 60,
-                      memCacheWidth: 120,
-                      memCacheHeight: 120,
-                      fadeInDuration: Duration.zero,
-                      placeholder: (_, __) => const Icon(Icons.live_tv, color: accentColor, size: 28),
-                      errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor, size: 28),
-                    ),
-                  )
-                : const Center(child: Icon(Icons.live_tv, color: accentColor, size: 28)),
+          leading: CircleAvatar(
+            radius: 32,
+            backgroundColor: accentColor.withOpacity(0.17),
+            backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
+            child: _logoForChannel(channel).isEmpty
+                ? const Icon(Icons.live_tv, color: accentColor, size: 30)
+                : null,
           ),
           title: Text(
             channel.name,
@@ -2518,62 +2452,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     );
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Android may keep native audio alive briefly when the app is backgrounded.
-    // Stop immediately on background/inactive; playback can be reopened by
-    // selecting a channel again when the app returns.
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      final active = _player;
-      final pending = _pendingPlayer;
-      _player = null;
-      _pendingPlayer = null;
-      _playRequestId++;
-      _connecting = false;
-      // Request native stop immediately before asynchronous cleanup.
-      if (active != null) {
-        unawaited(active._engine.stop().catchError((Object e) {
-          debugPrint('Immediate active-player stop failed: $e');
-        }));
-      }
-      if (pending != null && pending != active) {
-        unawaited(pending._engine.stop().catchError((Object e) {
-          debugPrint('Immediate pending-player stop failed: $e');
-        }));
-      }
-      unawaited(_stopAndDisposePlayer(active));
-      if (pending != active) unawaited(_stopAndDisposePlayer(pending));
-      WakelockPlus.disable();
-    }
-  }
-
-  // Stop native playback before disposing Flutter widgets. media_kit's
-  // dispose is asynchronous, so explicitly stop both active and pending
-  // players to prevent audio continuing after leaving the app.
-  Future<void> _stopAndDisposePlayer(AnantaPlayerController? player) async {
-    if (player == null) return;
-    try {
-      await player._engine.stop();
-    } catch (error) {
-      debugPrint('Player stop during shutdown failed: $error');
-    }
-    try {
-      await player.dispose();
-    } catch (error) {
-      debugPrint('Player dispose during shutdown failed: $error');
-    }
-  }
-
   // --------------------------------------------------
   // DISPOSE
   // --------------------------------------------------
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    HardwareKeyboard.instance.removeHandler(_handleGlobalRemoteKey);
     _controlsTimer?.cancel();
+    _channelInfoTimer?.cancel();
     _epgClock?.cancel();
     _epgRefreshTimer?.cancel();
     _playbackHealthTimer?.cancel();
@@ -2581,7 +2466,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _playRequestId++;
     final pendingPlayer = _pendingPlayer;
     _pendingPlayer = null;
-    if (pendingPlayer != null) { unawaited(_stopAndDisposePlayer(pendingPlayer)); }
+    if (pendingPlayer != null) { unawaited(pendingPlayer.dispose().catchError((Object e) { debugPrint('Pending player cleanup error: $e'); })); }
     _searchController.dispose();
     _tvChannelScrollController.dispose();
     _tvCategoryScrollController.dispose();
@@ -2592,8 +2477,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _tvChannelFocusNodes.clear();
     final activePlayer = _player;
     _player = null;
-    unawaited(_stopAndDisposePlayer(activePlayer));
-    WakelockPlus.disable();
+    if (activePlayer != null) { unawaited(activePlayer.dispose().catchError((Object e) { debugPrint('Active player cleanup error: $e'); })); }
+    unawaited(WakelockPlus.disable().catchError((Object e) { debugPrint('Wakelock cleanup error: $e'); }));
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.edgeToEdge,
     );
