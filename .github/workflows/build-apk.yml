@@ -203,7 +203,7 @@ jobs:
         run: flutter analyze --no-pub
 
       - name: Verify application version
-        working-directory: build_app
+        working-directory: 
         run: |
           grep -q "version: 1.0.8+9" pubspec.yaml
 
