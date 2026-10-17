@@ -538,7 +538,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
+    // Keep the channel information visible longer on Android TV.
+    _channelInfoTimer = Timer(const Duration(seconds: 20), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -2340,13 +2341,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                     ),
                   ),
                 ),
-              if (tvMode && _selectedChannel != null && _channelInfoVisible)
+              if (_selectedChannel != null && _channelInfoVisible)
                 Positioned(
-                  // Keep the live information card slightly above the bottom edge
-                  // so it does not sit on top of TV overscan/system UI.
-                  bottom: initialized ? 48 : 20,
-                  left: 18,
-                  right: 18,
+                  // Keep the information card at the bottom on phones and TVs.
+                  // TV safe-area spacing accounts for overscan; phones use a
+                  // compact bottom inset so the card no longer covers the top.
+                  bottom: tvMode ? (initialized ? 48 : 20) : 12,
+                  left: tvMode ? 18 : 10,
+                  right: tvMode ? 18 : 10,
                   child: IgnorePointer(
                     child: _glass(
                       radius: 14,
