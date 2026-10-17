@@ -4,10 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    tags:
-      - 'v*'
 
-# GitHub Actions needs write access to create a GitHub Release and upload the APK.
 permissions:
   contents: write
 
@@ -35,9 +32,71 @@ jobs:
         run: |
           java -version
           flutter --version
+
       - name: Generate Android project scaffolding
         run: flutter create --platforms=android --org com.ananta --project-name ott build_app
 
+      - name: Configure native Android PiP Activity
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          activity = Path('build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt')
+          activity.parent.mkdir(parents=True, exist_ok=True)
+          activity.write_text(r'''package com.ananta.ott
+
+          import android.app.PictureInPictureParams
+          import android.os.Build
+          import android.util.Rational
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+
+          class MainActivity : FlutterActivity() {
+              private val channelName = "com.ananta.ott/pip"
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+                      .setMethodCallHandler { call, result ->
+                          when (call.method) {
+                              "enterPictureInPicture" -> {
+                                  enterPip()
+                                  result.success(true)
+                              }
+                              "isPictureInPicture" -> {
+                                  result.success(isInPictureInPictureMode)
+                              }
+                              else -> result.notImplemented()
+                          }
+                      }
+              }
+
+              override fun onUserLeaveHint() {
+                  super.onUserLeaveHint()
+                  // Android Home/background action: keep the live stream visible
+                  // in PiP instead of destroying/recreating the Flutter page.
+                  enterPip()
+              }
+
+              private fun enterPip() {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isFinishing) return
+                  val builder = PictureInPictureParams.Builder()
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      builder.setAutoEnterEnabled(true)
+                      // setSeamlessSourceRectHint() is not an Android API.
+                      // Keep the standard PiP source rect API for Android 12+.
+                      builder.setSourceRectHint(
+                          android.graphics.Rect(0, 0, resources.displayMetrics.widthPixels,
+                              (resources.displayMetrics.widthPixels * 9L / 16L).toInt())
+                      )
+                  }
+                  builder.setAspectRatio(Rational(16, 9))
+                  enterPictureInPictureMode(builder.build())
+              }
+          }
+          ''')
+          PY
       - name: Copy app source and configure Android TV icon and manifest
         run: |
           test -f lib/main.dart
@@ -94,6 +153,10 @@ jobs:
           if launcher is None and activities:
               launcher = activities[0]
           if launcher is not None:
+              # Keep the Flutter activity alive and enable Android 8+ PiP.
+              launcher.set(ns + 'supportsPictureInPicture', 'true')
+              if int(root.get('android:versionCode', '0') or 0) >= 0:
+                  launcher.set(ns + 'resizeableActivity', 'true')
               has_leanback = any('android.intent.category.LEANBACK_LAUNCHER' in [c.get(ns + 'name') for c in f.findall('category')] for f in launcher.findall('intent-filter'))
               if not has_leanback:
                   filt = ET.SubElement(launcher, 'intent-filter')
@@ -101,91 +164,7 @@ jobs:
                   category = ET.SubElement(filt, 'category'); category.set(ns + 'name', 'android.intent.category.LEANBACK_LAUNCHER')
           tree.write(manifest, encoding='utf-8', xml_declaration=True)
           PY
-      - name: Enable Android Picture-in-Picture
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-          import re
-          android_dir = Path('build_app/android/app/src/main')
-          manifest = android_dir / 'AndroidManifest.xml'
-          ET.register_namespace('android', 'http://schemas.android.com/apk/res/android')
-          ns = '{http://schemas.android.com/apk/res/android}'
-          tree = ET.parse(manifest)
-          manifest_root = tree.getroot()
-          app = manifest_root.find('application')
-          if app is None:
-              raise SystemExit('AndroidManifest.xml has no application element')
-          launcher = None
-          for activity in app.findall('activity'):
-              for filt in activity.findall('intent-filter'):
-                  actions = [x.get(ns + 'name') for x in filt.findall('action')]
-                  categories = [x.get(ns + 'name') for x in filt.findall('category')]
-                  if 'android.intent.action.MAIN' in actions and 'android.intent.category.LAUNCHER' in categories:
-                      launcher = activity
-                      break
-              if launcher is not None:
-                  break
-          if launcher is None:
-              raise SystemExit('Could not find launcher activity for PiP setup')
-          launcher.set(ns + 'supportsPictureInPicture', 'true')
-          launcher.set(ns + 'resizeableActivity', 'true')
-          needed = {'screenSize', 'smallestScreenSize', 'screenLayout', 'orientation'}
-          existing = set(filter(None, launcher.get(ns + 'configChanges', '').split('|')))
-          launcher.set(ns + 'configChanges', '|'.join(sorted(existing | needed)))
-          tree.write(manifest, encoding='utf-8', xml_declaration=True)
-          # Flutter templates can generate an empty Kotlin class without braces.
-          kotlin_files = list((android_dir / 'kotlin').rglob('MainActivity.kt'))
-          if not kotlin_files:
-              raise SystemExit('MainActivity.kt not found in generated Android project')
-          activity = kotlin_files[0]
-          source = activity.read_text()
-          if 'override fun onUserLeaveHint()' not in source:
-              imports = [
-                  'import android.app.PictureInPictureParams',
-                  'import android.os.Build',
-                  'import android.util.Rational',
-              ]
-              package_match = re.search(r'(?m)^package\s+[\w.]+\s*$', source)
-              if package_match:
-                  insert_at = package_match.end()
-                  source = source[:insert_at] + '\n\n' + '\n'.join(
-                      item for item in imports if item not in source
-                  ) + source[insert_at:]
-              else:
-                  source = '\n'.join(imports) + '\n' + source
-              method = '''
-              override fun onUserLeaveHint() {
-                  super.onUserLeaveHint()
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                      try {
-                          val params = PictureInPictureParams.Builder()
-                              .setAspectRatio(Rational(16, 9))
-                              .build()
-                          enterPictureInPictureMode(params)
-                      } catch (_: Exception) {
-                          // PiP is not available on every device.
-                      }
-                  }
-              }
-              '''
-              # Handle both `class MainActivity : FlutterActivity()` and a class
-              # declaration that already has a body.
-              class_match = re.search(
-                  r'class\s+MainActivity\s*:\s*FlutterActivity\s*\(\s*\)\s*(\{)?',
-                  source
-              )
-              if not class_match:
-                  raise SystemExit('Could not find MainActivity : FlutterActivity() declaration')
-              if class_match.group(1):
-                  closing = source.rfind('}')
-                  if closing <= class_match.end():
-                      raise SystemExit('Could not find MainActivity class closing brace')
-                  source = source[:closing] + method + '\n' + source[closing:]
-              else:
-                  source = source[:class_match.end()] + ' {\n' + method + '\n}\n' + source[class_match.end():]
-              activity.write_text(source)
-          PY
+
       - name: Configure transparent launch window
         run: |
           python3 - <<'PYCODE'
@@ -200,6 +179,7 @@ jobs:
                   text = text.replace('</style>', '        <item name=\"android:windowDisablePreview\">true</item>\n    </style>', 1)
               path.write_text(text)
           PYCODE
+
       - name: Resolve dependencies
         working-directory: build_app
         run: flutter pub get -v
@@ -208,6 +188,11 @@ jobs:
         working-directory: build_app
         continue-on-error: true
         run: flutter analyze --no-pub
+
+      - name: Verify application version
+        working-directory: build_app
+        run: |
+          grep -q "version: 1.0.6+7" pubspec.yaml
 
       - name: Build release APK
         working-directory: build_app
@@ -221,11 +206,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Create GitHub Release and upload APK
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish APK to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Ananta OTT ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: v1.0.6
+          name: Ananta OTT v1.0.6
+          body: |
+            ## Ananta OTT v1.0.6
+            - Android mobile Picture-in-Picture when minimizing/home
+            - Restores the same channel/player/UI state when returning
+            - Mobile player controls sit above the bottom channel information bar with a clear gap
+            - APK automatically attached to this GitHub Release
           files: build_app/build/app/outputs/flutter-apk/app-release.apk
+          overwrite_files: true
+          make_latest: true
