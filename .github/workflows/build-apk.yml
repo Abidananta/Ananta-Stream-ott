@@ -103,6 +103,79 @@ jobs:
           tree.write(manifest, encoding='utf-8', xml_declaration=True)
           PY
 
+
+      - name: Enable Android Picture-in-Picture
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          android_dir = Path('build_app/android/app/src/main')
+          manifest = android_dir / 'AndroidManifest.xml'
+          ET.register_namespace('android', 'http://schemas.android.com/apk/res/android')
+          ns = '{http://schemas.android.com/apk/res/android}'
+          tree = ET.parse(manifest)
+          root = tree.getroot()
+          app = root.find('application')
+          if app is None:
+              raise SystemExit('AndroidManifest.xml has no application element')
+
+          launcher = None
+          for activity in app.findall('activity'):
+              for filt in activity.findall('intent-filter'):
+                  actions = [x.get(ns + 'name') for x in filt.findall('action')]
+                  categories = [x.get(ns + 'name') for x in filt.findall('category')]
+                  if 'android.intent.action.MAIN' in actions and 'android.intent.category.LAUNCHER' in categories:
+                      launcher = activity
+                      break
+              if launcher is not None:
+                  break
+          if launcher is None:
+              raise SystemExit('Could not find launcher activity for PiP setup')
+          launcher.set(ns + 'supportsPictureInPicture', 'true')
+          launcher.set(ns + 'resizeableActivity', 'true')
+          changes = launcher.get(ns + 'configChanges', '')
+          needed = ['screenSize', 'smallestScreenSize', 'screenLayout', 'orientation']
+          values = set(changes.split('|')) if changes else set()
+          values.update(needed)
+          launcher.set(ns + 'configChanges', '|'.join(sorted(values)))
+          tree.write(manifest, encoding='utf-8', xml_declaration=True)
+
+          # Add native PiP entry when the user leaves the app (Home / app switch).
+          kotlin_files = list((android_dir / 'kotlin').rglob('MainActivity.kt'))
+          if not kotlin_files:
+              raise SystemExit('MainActivity.kt not found in generated Android project')
+          activity = kotlin_files[0]
+          source = activity.read_text()
+          if 'override fun onUserLeaveHint()' not in source:
+              source = source.replace(
+                  'package com.ananta.ott',
+                  'package com.ananta.ott\n\nimport android.app.PictureInPictureParams\nimport android.os.Build\nimport android.util.Rational'
+              )
+              method = '''
+              // Enter Android Picture-in-Picture when the user presses Home or switches apps.
+              override fun onUserLeaveHint() {
+                  super.onUserLeaveHint()
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      try {
+                          val params = PictureInPictureParams.Builder()
+                              .setAspectRatio(Rational(16, 9))
+                              .build()
+                          enterPictureInPictureMode(params)
+                      } catch (_: Exception) {
+                          // PiP is unavailable on some devices; keep normal background behavior.
+                      }
+                  }
+              }
+              '''
+              # Insert the override inside MainActivity, immediately before its final brace.
+              closing = source.rfind('}')
+              if closing < 0:
+                  raise SystemExit('Could not find end of MainActivity class')
+              source = source[:closing] + method + '\n' + source[closing:]
+              activity.write_text(source)
+          PY
+
       - name: Configure transparent launch window
         run: |
           python3 - <<'PYCODE'
