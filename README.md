@@ -13,12 +13,3 @@ The source has not been compiled or tested on a physical TV box in this package.
 
 Audio compatibility update
 Playback is implemented with media_kit/libmpv rather than Flutter video_player. The bundled native playback libraries provide broader codec support, intended to address MPEG Audio Layer 1/2 (MPGA/MP2) streams. This source has not been compiled or device-tested in this environment; verify the GitHub Actions build and test on the target Android TV device.
-
-In-app update system (GitHub Releases)
-The app checks the latest stable GitHub Release after the first frame. If the release tag is newer than the installed version, an update dialog appears. Choosing Update now downloads the APK and opens Android's package installer; the user must confirm installation.
-Publishing an update
-Update `version:` in `pubspec.yaml`, for example `version: 1.0.3+4`.
-Commit and push your changes to `main`.
-Create and push a matching tag, e.g. `git tag v1.0.3 && git push origin v1.0.3`.
-GitHub Actions builds the APK and attaches it to the GitHub Release.
-Important: Every release must use the same Android application ID and the same persistent signing certificate to install over an existing app. Configure a persistent release keystore in GitHub Actions before distributing updates. Android may also ask users to allow installing unknown apps for Ananta OTT.
