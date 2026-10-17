@@ -8,14 +8,15 @@ import 'package:url_launcher/url_launcher.dart';
 /// Checks a remotely hosted JSON manifest and prompts users when a newer
 /// Ananta OTT APK is available.
 ///
-/// Uses the project's public version manifest and direct latest APK asset URL.
+/// Uses the project's public GitHub version manifest and latest release page.
+/// See UPDATE_SETUP.md for publishing the next version.
 class AppUpdateChecker {
   AppUpdateChecker._();
 
   static const String manifestUrl =
       'https://raw.githubusercontent.com/Abidananta/Ananta-Stream-ott/refs/heads/main/version.json';
-  static const String directApkUrl =
-      'https://github.com/Abidananta/Ananta-Stream-ott/releases/latest/download/app-release.apk';
+  static const String releaseUrl =
+      'https://github.com/Abidananta/Ananta-Stream-ott/releases/latest';
 
   static Future<void> checkForUpdate(BuildContext context) async {
     try {
@@ -33,7 +34,7 @@ class AppUpdateChecker {
           .toString();
       final manifestDownloadUrl = (data['downloadUrl'] ?? '').toString().trim();
       final downloadUrl =
-          manifestDownloadUrl.isNotEmpty ? manifestDownloadUrl : directApkUrl;
+          manifestDownloadUrl.isNotEmpty ? manifestDownloadUrl : releaseUrl;
       if (latestVersion.isEmpty || !context.mounted) return;
 
       final packageInfo = await PackageInfo.fromPlatform();
@@ -49,8 +50,8 @@ class AppUpdateChecker {
             child: Text(
               'A new version ($latestVersion) is available.\n\n'
               '$releaseNotes\n\n'
-              'Download the APK directly. When the download finishes, open it '
-              'and follow Android’s installation prompts.',
+              'Open the download page to install the update. Android may ask '
+              'you to confirm installation.',
             ),
           ),
           actions: [
@@ -61,7 +62,8 @@ class AppUpdateChecker {
             FilledButton(
               onPressed: () async {
                 final uri = Uri.tryParse(downloadUrl);
-                if (uri == null || uri.scheme != 'https') {
+                if (uri == null ||
+                    !(uri.scheme == 'https' || uri.scheme == 'http')) {
                   return;
                 }
                 Navigator.of(dialogContext).pop();
