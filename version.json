@@ -1,6 +1,6 @@
 {
-  "version": "1.0.6",
-  "versionCode": 5,
-  "releaseNotes": "Fixed release build errors and improved mobile fullscreen exit orientation.",
-  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/latest/download/app-release.apk"
+  "version": "1.0.5",
+  "versionCode": 6,
+  "releaseNotes": "Added Android mobile Picture-in-Picture support, preserved playback/UI state on return, moved the mobile channel info bar to the bottom, and enabled automatic GitHub Releases APK publishing.",
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/latest"
 }
