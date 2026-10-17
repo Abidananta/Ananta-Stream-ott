@@ -13,7 +13,6 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
 
 const String appName = 'Ananta OTT';
-const MethodChannel _pipChannel = MethodChannel('com.ananta.ott/pip');
 const String playlistUrl =
     'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/refs/heads/main/channels.m3u';
 const String ptvStreamUrl =
