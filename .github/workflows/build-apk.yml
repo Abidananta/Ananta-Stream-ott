@@ -40,6 +40,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           activity = Path('build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt')
           activity.parent.mkdir(parents=True, exist_ok=True)
           activity.write_text(r'''package com.ananta.ott
@@ -64,59 +65,38 @@ jobs:
                                   result.success(true)
                               }
                               "isPictureInPicture" -> {
-                                  result.success(
-                                      Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
-                                      isInPictureInPictureMode
-                                  )
+                                  result.success(isInPictureInPictureMode)
                               }
                               else -> result.notImplemented()
                           }
                       }
               }
 
-              override fun onCreate(savedInstanceState: android.os.Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  updatePipParams()
-              }
-
               override fun onUserLeaveHint() {
                   super.onUserLeaveHint()
-                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                      enterPip()
-                  }
-              }
-
-              private fun updatePipParams() {
-                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-                  val builder = PictureInPictureParams.Builder()
-                      .setAspectRatio(Rational(16, 9))
-
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                      builder.setAutoEnterEnabled(true)
-                  }
-
-                  setPictureInPictureParams(builder.build())
+                  // Android Home/background action: keep the live stream visible
+                  // in PiP instead of destroying/recreating the Flutter page.
+                  enterPip()
               }
 
               private fun enterPip() {
-                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
-                      isFinishing ||
-                      isInPictureInPictureMode) return
-                  try {
-                      val builder = PictureInPictureParams.Builder()
-                          .setAspectRatio(Rational(16, 9))
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                          builder.setAutoEnterEnabled(true)
-                      }
-                      enterPictureInPictureMode(builder.build())
-                  } catch (_: IllegalStateException) {
-                      // Ignore a PiP request rejected during an Activity transition.
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isFinishing) return
+                  val builder = PictureInPictureParams.Builder()
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      builder.setAutoEnterEnabled(true)
+                      // setSeamlessSourceRectHint() is not an Android API.
+                      // Keep the standard PiP source rect API for Android 12+.
+                      builder.setSourceRectHint(
+                          android.graphics.Rect(0, 0, resources.displayMetrics.widthPixels,
+                              (resources.displayMetrics.widthPixels * 9L / 16L).toInt())
+                      )
                   }
+                  builder.setAspectRatio(Rational(16, 9))
+                  enterPictureInPictureMode(builder.build())
               }
           }
           ''')
           PY
-
       - name: Copy app source and configure Android TV icon and manifest
         run: |
           test -f lib/main.dart
