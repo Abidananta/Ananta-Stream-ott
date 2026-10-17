@@ -36,16 +36,17 @@ jobs:
       - name: Generate Android project scaffolding
         run: flutter create --platforms=android --org com.ananta --project-name ott build_app
 
-      - name: Configure native Android PiP Activity
+      - name: Configure native Android mobile PiP Activity
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
           activity = Path('build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt')
           activity.parent.mkdir(parents=True, exist_ok=True)
           activity.write_text(r'''package com.ananta.ott
 
           import android.app.PictureInPictureParams
+          import android.content.pm.PackageManager
+          import android.graphics.Rect
           import android.os.Build
           import android.util.Rational
           import io.flutter.embedding.android.FlutterActivity
@@ -55,17 +56,20 @@ jobs:
           class MainActivity : FlutterActivity() {
               private val channelName = "com.ananta.ott/pip"
 
+              private val isAndroidTv: Boolean
+                  get() = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+
               override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
                   super.configureFlutterEngine(flutterEngine)
                   MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
                       .setMethodCallHandler { call, result ->
                           when (call.method) {
                               "enterPictureInPicture" -> {
-                                  enterPip()
+                                  enterPipIfSupported()
                                   result.success(true)
                               }
                               "isPictureInPicture" -> {
-                                  result.success(isInPictureInPictureMode)
+                                  result.success(Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)
                               }
                               else -> result.notImplemented()
                           }
@@ -74,25 +78,34 @@ jobs:
 
               override fun onUserLeaveHint() {
                   super.onUserLeaveHint()
-                  // Android Home/background action: keep the live stream visible
-                  // in PiP instead of destroying/recreating the Flutter page.
-                  enterPip()
+                  // Phone/tablet Home or app switch: automatically enter PiP.
+                  // Never stop/pause/recreate the Flutter/media_kit player here.
+                  if (!isAndroidTv) enterPipIfSupported()
               }
 
-              private fun enterPip() {
-                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isFinishing) return
+              private fun enterPipIfSupported() {
+                  if (isAndroidTv || isFinishing || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode) return
+
                   val builder = PictureInPictureParams.Builder()
+                      .setAspectRatio(Rational(16, 9))
+
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      // Android 12+: system automatically enters PiP when the user leaves.
                       builder.setAutoEnterEnabled(true)
-                      // setSeamlessSourceRectHint() is not an Android API.
-                      // Keep the standard PiP source rect API for Android 12+.
-                      builder.setSourceRectHint(
-                          android.graphics.Rect(0, 0, resources.displayMetrics.widthPixels,
-                              (resources.displayMetrics.widthPixels * 9L / 16L).toInt())
-                      )
                   }
-                  builder.setAspectRatio(Rational(16, 9))
-                  enterPictureInPictureMode(builder.build())
+
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val width = resources.displayMetrics.widthPixels
+                      val height = (width * 9L / 16L).toInt().coerceAtLeast(1)
+                      builder.setSourceRectHint(Rect(0, 0, width, height))
+                  }
+
+                  try {
+                      enterPictureInPictureMode(builder.build())
+                  } catch (_: IllegalStateException) {
+                      // A transient Activity state can reject PiP. Keep playback alive.
+                  }
               }
           }
           ''')
@@ -192,7 +205,7 @@ jobs:
       - name: Verify application version
         working-directory: build_app
         run: |
-          grep -q "version: 1.0.7+8" pubspec.yaml
+          grep -q "version: 1.0.8+9" pubspec.yaml
 
       - name: Build release APK
         working-directory: build_app
@@ -213,15 +226,16 @@ jobs:
           # GitHub immutable releases cannot have assets deleted/replaced.
           # Create a new release for a new app version and skip publishing
           # when that release already exists (safe workflow re-runs).
-          TAG="v1.0.7"
+          TAG="v1.0.8"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists; immutable release is left unchanged."
             exit 0
           fi
 
-          gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT v1.0.7"             --notes "## Ananta OTT v1.0.7
+          gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT v1.0.8"             --notes "## Ananta OTT v1.0.8
 
-          - Improved Android mobile Picture-in-Picture behavior
-          - Preserves the same channel/player/UI state when returning from PiP
+          - Added automatic Android mobile Picture-in-Picture when minimizing the app
+          - Preserves the same live channel/player/UI state when returning from PiP
+          - Android TV is excluded from phone-style automatic PiP
           - Fixed GitHub Release publishing for immutable releases
           - APK automatically attached to this GitHub Release"             --latest
