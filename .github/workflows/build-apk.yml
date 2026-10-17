@@ -4,10 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    tags:
-      - 'v*'
 
-# GitHub Actions needs write access to create a GitHub Release and upload the APK.
 permissions:
   contents: write
 
@@ -39,6 +36,65 @@ jobs:
       - name: Generate Android project scaffolding
         run: flutter create --platforms=android --org com.ananta --project-name ott build_app
 
+      - name: Configure native Android PiP Activity
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          activity = Path('build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt')
+          activity.parent.mkdir(parents=True, exist_ok=True)
+          activity.write_text(r'''package com.ananta.ott
+
+          import android.app.PictureInPictureParams
+          import android.os.Build
+          import android.util.Rational
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+
+          class MainActivity : FlutterActivity() {
+              private val channelName = "com.ananta.ott/pip"
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+                      .setMethodCallHandler { call, result ->
+                          when (call.method) {
+                              "enterPictureInPicture" -> {
+                                  enterPip()
+                                  result.success(true)
+                              }
+                              "isPictureInPicture" -> {
+                                  result.success(isInPictureInPictureMode)
+                              }
+                              else -> result.notImplemented()
+                          }
+                      }
+              }
+
+              override fun onUserLeaveHint() {
+                  super.onUserLeaveHint()
+                  // Android Home/background action: keep the live stream visible
+                  // in PiP instead of destroying/recreating the Flutter page.
+                  enterPip()
+              }
+
+              private fun enterPip() {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isFinishing) return
+                  val builder = PictureInPictureParams.Builder()
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      builder.setAutoEnterEnabled(true)
+                      builder.setSeamlessSourceRectHint(
+                          android.graphics.Rect(0, 0, resources.displayMetrics.widthPixels,
+                              (resources.displayMetrics.widthPixels * 9L / 16L).toInt())
+                      )
+                  }
+                  builder.setAspectRatio(Rational(16, 9))
+                  enterPictureInPictureMode(builder.build())
+              }
+          }
+          ''')
+          PY
       - name: Copy app source and configure Android TV icon and manifest
         run: |
           test -f lib/main.dart
@@ -95,6 +151,10 @@ jobs:
           if launcher is None and activities:
               launcher = activities[0]
           if launcher is not None:
+              # Keep the Flutter activity alive and enable Android 8+ PiP.
+              launcher.set(ns + 'supportsPictureInPicture', 'true')
+              if int(root.get('android:versionCode', '0') or 0) >= 0:
+                  launcher.set(ns + 'resizeableActivity', 'true')
               has_leanback = any('android.intent.category.LEANBACK_LAUNCHER' in [c.get(ns + 'name') for c in f.findall('category')] for f in launcher.findall('intent-filter'))
               if not has_leanback:
                   filt = ET.SubElement(launcher, 'intent-filter')
@@ -139,11 +199,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Create GitHub Release and upload APK
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish APK to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Ananta OTT ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: v1.0.5
+          name: Ananta OTT v1.0.5
+          body: |
+            ## Ananta OTT v1.0.5
+            - Android mobile Picture-in-Picture when minimizing/home
+            - Restores the same channel/player/UI state when returning
+            - Mobile channel information bar moved to the bottom
+            - APK automatically attached to this GitHub Release
           files: build_app/build/app/outputs/flutter-apk/app-release.apk
+          overwrite_files: true
+          make_latest: true
