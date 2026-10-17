@@ -341,6 +341,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   bool _showFavoritesOnly = false;
   bool _controlsVisible = true;
   bool _fullscreen = false;
+  bool _fullscreenTransitioning = false;
+  bool _fullscreenOnTv = false;
   // TV starts with an unobstructed full-screen player; Enter opens the rail.
   bool _tvSidebarVisible = false;
   bool _tvShowingCategories = false;
@@ -2026,27 +2028,68 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   }
 
   // --------------------------------------------------
-  // FULLSCREEN - FIXED: Horizontal only when entering, vertical only when exiting
+  // FULLSCREEN: landscape video, smooth return to phone portrait.
+  // TVs remain landscape when fullscreen is closed.
   // --------------------------------------------------
   Future<void> _setFullscreen(bool value) async {
-    if (value) {
-      await SystemChrome.setPreferredOrientations([
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    } else {
-      // Restore sensor/system orientation rather than locking every phone to portrait.
-      // Android TV devices can remain in their normal landscape orientation.
-      await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    if (_fullscreenTransitioning || value == _fullscreen) return;
+    _fullscreenTransitioning = true;
+
+    try {
+      if (value) {
+        final media = MediaQuery.maybeOf(context);
+        _fullscreenOnTv = media != null &&
+            media.size.width >= 850 &&
+            media.size.width > media.size.height;
+
+        if (mounted) {
+          setState(() {
+            _fullscreen = true;
+            _controlsVisible = true;
+          });
+        }
+        await SystemChrome.setPreferredOrientations(const [
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+        await SystemChrome.setEnabledSystemUIMode(
+          SystemUiMode.immersiveSticky,
+        );
+      } else {
+        // Switch back to the normal player layout immediately. Android then
+        // animates the physical rotation instead of keeping the fullscreen
+        // widget until the orientation Future completes.
+        if (mounted) {
+          setState(() {
+            _fullscreen = false;
+            _controlsVisible = true;
+          });
+        }
+
+        if (_fullscreenOnTv) {
+          await SystemChrome.setPreferredOrientations(const [
+            DeviceOrientation.landscapeLeft,
+            DeviceOrientation.landscapeRight,
+          ]);
+        } else {
+          await SystemChrome.setPreferredOrientations(const [
+            DeviceOrientation.portraitUp,
+          ]);
+        }
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      }
+
+      if (mounted) {
+        setState(() {
+          _controlsVisible = true;
+        });
+      }
+      _scheduleControlsHide();
+    } catch (error) {
+      debugPrint('Fullscreen/orientation transition error: $error');
+    } finally {
+      _fullscreenTransitioning = false;
     }
-    if (!mounted) return;
-    setState(() {
-      _fullscreen = value;
-      _controlsVisible = true;
-    });
-    _scheduleControlsHide();
   }
 
   Future<bool> _handleBack() async {
