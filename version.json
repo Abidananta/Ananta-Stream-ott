@@ -1,6 +1,6 @@
 {
-  "version": "1.0.5",
-  "versionCode": 6,
-  "releaseNotes": "Automatic Android Picture-in-Picture, bottom channel information card, and longer TV info display.",
+  "version": "1.0.6",
+  "versionCode": 7,
+  "releaseNotes": "Fixed Android PiP GitHub Actions build step.",
   "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/latest/download/app-release.apk"
 }
