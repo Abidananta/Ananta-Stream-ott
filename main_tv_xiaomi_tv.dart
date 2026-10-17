@@ -780,20 +780,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
               leading: CircleAvatar(
-                radius: 30,
+                radius: 18,
                 backgroundColor: accentColor.withOpacity(0.16),
-                child: _logoForChannel(channel).isEmpty
-                    ? const Icon(Icons.live_tv, color: accentColor, size: 28)
-                    : Padding(
-                        padding: const EdgeInsets.all(2),
-                        child: Image(
-                          image: CachedNetworkImageProvider(_logoForChannel(channel)),
-                          fit: BoxFit.contain,
-                          width: 56,
-                          height: 56,
-                          errorBuilder: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor, size: 28),
-                        ),
-                      ),
+                backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
+                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 18) : null,
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
@@ -2001,20 +1991,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           leading: CircleAvatar(
-            radius: 30,
+            radius: 21,
             backgroundColor: accentColor.withOpacity(0.17),
+            backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
             child: _logoForChannel(channel).isEmpty
-                ? const Icon(Icons.live_tv, color: accentColor, size: 28)
-                : Padding(
-                    padding: const EdgeInsets.all(2),
-                    child: Image(
-                      image: CachedNetworkImageProvider(_logoForChannel(channel)),
-                      fit: BoxFit.contain,
-                      width: 56,
-                      height: 56,
-                      errorBuilder: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor, size: 28),
-                    ),
-                  ),
+                ? const Icon(Icons.live_tv, color: accentColor, size: 21)
+                : null,
           ),
           title: Text(
             channel.name,
