@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:flutter/foundation.dart';
@@ -196,6 +197,7 @@ class AnantaPlayerController {
   }
   Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
   Future<void> play() => _engine.play();
+  Future<void> stop() => _engine.stop();
 
   // Wait until libmpv reports real video dimensions before committing a new
   // channel to the UI. Opening a media item is not the same as having a frame
@@ -329,7 +331,7 @@ class AnantaHomePage extends StatefulWidget {
   State<AnantaHomePage> createState() => _AnantaHomePageState();
 }
 
-class _AnantaHomePageState extends State<AnantaHomePage> {
+class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
@@ -379,6 +381,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   final ScrollController _tvEpgScrollController = ScrollController();
   int _playlistRequestId = 0;
   int _playRequestId = 0;
+  bool _appInBackground = false;
+  bool _shuttingDownPlayback = false;
+  Directory? _logoDirectory;
+  final Map<String, String> _localLogoPaths = {};
   bool _updateCheckRunning = false;
   bool _updateDialogVisible = false;
   bool _updateDownloading = false;
@@ -1434,820 +1440,66 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     return result;
   }
 
-  @override
-  void initState() {
-    super.initState();
-    _loadFavorites();
-    _loadPlaylist();
-    _initializeEpg();
-    // Keep the TV player key handler focused from the first frame so physical
-    // Android TV remotes can deliver D-pad events even before the first tap.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _focusTvPlayer();
-      // Check after first frame so GitHub latency never blocks startup.
-      unawaited(_checkForAppUpdate());
-    });
-    _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
+
+  Future<void> _initializeLocalLogoCache() async {
+    try {
+      final base = await getApplicationSupportDirectory();
+      final folder = Directory('${base.path}/AnantaOTT/logos');
+      await folder.create(recursive: true);
+      _logoDirectory = folder;
+      final indexFile = File('${base.path}/AnantaOTT/logo_index.json');
+      if (await indexFile.exists()) {
+        final decoded = jsonDecode(await indexFile.readAsString());
+        if (decoded is Map) {
+          for (final entry in decoded.entries) {
+            final path = entry.value.toString();
+            if (await File(path).exists()) _localLogoPaths[entry.key.toString()] = path;
+          }
+        }
+      }
       if (mounted) setState(() {});
-    });
-    _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
-    // Recover a stream that stalls after it initially starts; allow six retries.
-    _playbackHealthTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      if (!mounted || _connecting || _selectedChannel == null) return;
-      final player = _player;
-      if (player == null) return;
-      final value = player.value;
-      if (value.hasError) {
-        if (_runtimeRetryCount < 6) {
-          _runtimeRetryCount++;
-          _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
-        }
-        return;
+      unawaited(_downloadMissingLogos());
+    } catch (error) {
+      debugPrint('Local logo cache initialization failed: $error');
+    }
+  }
+
+  ImageProvider<Object> _logoImageProvider(String url) {
+    final local = _localLogoPaths[url];
+    if (local != null && File(local).existsSync()) return FileImage(File(local));
+    return CachedNetworkImageProvider(url);
+  }
+
+  Future<void> _downloadMissingLogos() async {
+    final folder = _logoDirectory;
+    if (folder == null) return;
+    final urls = _channels.map((channel) => channel.logo).where((url) => url.startsWith('http')).toSet();
+    for (final url in urls) {
+      if (_localLogoPaths.containsKey(url)) continue;
+      try {
+        final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 8));
+        if (response.statusCode != 200 || response.bodyBytes.isEmpty) continue;
+        final filename = '${url.hashCode.abs()}.img';
+        final file = File('${folder.path}/$filename');
+        await file.writeAsBytes(response.bodyBytes, flush: true);
+        _localLogoPaths[url] = file.path;
+      } catch (error) {
+        debugPrint('Logo cache download skipped: $error');
       }
-      if (value.isBuffering) {
-        _bufferingStartedAt ??= DateTime.now();
-        if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24) && _runtimeRetryCount < 6) {
-          _runtimeRetryCount++;
-          _bufferingStartedAt = null;
-          _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
-        }
-      } else {
-        _bufferingStartedAt = null;
-        _runtimeRetryCount = 0;
-      }
-    });
-  }
-
-  // Xiaomi Mi Box / Android TV remote handling. Focus and index are managed
-  // explicitly, and KeyRepeatEvent is supported so held D-pad directions browse
-  // long channel lists smoothly rather than moving only one row per press.
-  void _focusTvChannel(int index, {bool requestFocus = true}) {
-    final channels = _visibleChannels;
-    if (channels.isEmpty) return;
-    final safeIndex = index.clamp(0, channels.length - 1).toInt();
-    setState(() {
-      _tvFocusedChannelIndex = safeIndex;
-      _tvSidebarVisible = true;
-      _tvEpgVisible = false;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (!mounted || !_tvChannelScrollController.hasClients) return;
-      // Scroll first so ListView builds the destination row before requesting
-      // its FocusNode. Requesting focus before this point fails for off-screen
-      // rows and makes UP/DOWN appear to stop working on Android TV.
-      // Use an immediate scroll for D-pad repeat events. Queuing an animation
-      // for every repeated key caused focus to lag behind the remote on Mi Box.
-      final target = (safeIndex * 96.0).clamp(
-        0.0,
-        _tvChannelScrollController.position.maxScrollExtent,
-      ).toDouble();
-      if ((_tvChannelScrollController.offset - target).abs() > 1) {
-        _tvChannelScrollController.jumpTo(target);
-      }
-      await WidgetsBinding.instance.endOfFrame;
-      if (!mounted || !requestFocus) return;
-      final node = _tvChannelFocusNodes[channels[safeIndex].url];
-      if (node != null && node.canRequestFocus) node.requestFocus();
-    });
-  }
-
-  void _focusTvPlayer() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_tvPlayerFocusNode.canRequestFocus) return;
-      _tvPlayerFocusNode.requestFocus();
-    });
-  }
-
-  void _focusTvCategory(int index) {
-    final categories = _categories;
-    if (categories.isEmpty) return;
-    setState(() {
-      _tvSidebarVisible = true;
-      _tvShowingCategories = true;
-      _tvFocusedCategoryIndex = index.clamp(0, categories.length - 1).toInt();
-    });
-    FocusManager.instance.primaryFocus?.unfocus();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_tvCategoryScrollController.hasClients) return;
-      final target = (_tvFocusedCategoryIndex * 58.0).clamp(
-        0.0, _tvCategoryScrollController.position.maxScrollExtent,
-      ).toDouble();
-      if ((_tvCategoryScrollController.offset - target).abs() > 1) {
-        _tvCategoryScrollController.jumpTo(target);
-      }
-    });
-    _focusTvPlayer();
-  }
-
-  void _moveTvCategory(int delta) {
-    final categories = _categories;
-    if (categories.isEmpty) return;
-    setState(() {
-      _tvFocusedCategoryIndex =
-          (_tvFocusedCategoryIndex + delta).clamp(0, categories.length - 1).toInt();
-    });
-    // Keep the currently focused player key handler active while browsing;
-    // do not unfocus/refocus on every repeated D-pad event.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_tvCategoryScrollController.hasClients) return;
-      final target = (_tvFocusedCategoryIndex * 58.0).clamp(
-        0.0, _tvCategoryScrollController.position.maxScrollExtent,
-      ).toDouble();
-      if ((_tvCategoryScrollController.offset - target).abs() > 1) {
-        _tvCategoryScrollController.jumpTo(target);
-      }
-    });
-  }
-
-  void _showTvChannels({int? index}) {
-    if (!mounted) return;
-    final channels = _visibleChannels;
-    final safeIndex = channels.isEmpty
-        ? 0
-        : (index ?? _tvFocusedChannelIndex).clamp(0, channels.length - 1).toInt();
-    // One state update only: the old implementation called _focusTvChannel,
-    // which performed a second setState and another scroll/focus pass on every
-    // Enter press. On low-memory TV boxes that made the live video stutter.
-    setState(() {
-      _tvShowingCategories = false;
-      _tvSidebarVisible = true;
-      _tvEpgVisible = false;
-      _tvEpgSelectionMode = false;
-      _tvFocusedChannelIndex = safeIndex;
-    });
-    FocusManager.instance.primaryFocus?.unfocus();
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (!mounted || !_tvChannelScrollController.hasClients || channels.isEmpty) return;
-      final maxExtent = _tvChannelScrollController.position.maxScrollExtent;
-      final target = (safeIndex * 96.0).clamp(0.0, maxExtent).toDouble();
-      if ((_tvChannelScrollController.offset - target).abs() > 1) {
-        _tvChannelScrollController.jumpTo(target);
-      }
-      await WidgetsBinding.instance.endOfFrame;
-      if (!mounted) return;
-      final focus = _tvChannelFocusNodes[channels[safeIndex].url];
-      if (focus != null && focus.canRequestFocus) focus.requestFocus();
-    });
-  }
-
-  void _showChannelInfoFor10Seconds() {
-    _channelInfoTimer?.cancel();
-    if (!mounted) return;
-    setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
-      if (mounted) setState(() => _channelInfoVisible = false);
-    });
-  }
-
-  void _moveTvEpgSelection(int delta, Channel channel) {
-    final schedule = _epgScheduleForChannel(channel);
-    if (schedule.isEmpty) return;
-    _tvFocusedEpgIndex = (_tvFocusedEpgIndex + delta).clamp(0, schedule.length - 1).toInt();
-    _scrollTvEpgToIndex(_tvFocusedEpgIndex);
+    }
+    try {
+      final base = await getApplicationSupportDirectory();
+      final indexFile = File('${base.path}/AnantaOTT/logo_index.json');
+      await indexFile.writeAsString(jsonEncode(_localLogoPaths), flush: true);
+    } catch (_) {}
     if (mounted) setState(() {});
   }
 
-  void _scrollTvEpgToIndex(int index) {
-    if (!_tvEpgScrollController.hasClients) return;
-    final position = _tvEpgScrollController.position;
-    // Guide rows have variable height; this estimate keeps keyboard selection
-    // near the viewport while ListView remains the source of truth for scrolling.
-    final target = (index * 118.0).clamp(0.0, position.maxScrollExtent).toDouble();
-    _tvEpgScrollController.animateTo(target,
-        duration: const Duration(milliseconds: 110), curve: Curves.easeOut);
-  }
-
-  void _scrollTvEpg(int delta) {
-    if (!_tvEpgScrollController.hasClients) return;
-    final position = _tvEpgScrollController.position;
-    final target = (_tvEpgScrollController.offset + delta * 150.0)
-        .clamp(0.0, position.maxScrollExtent).toDouble();
-    _tvEpgScrollController.animateTo(target,
-        duration: const Duration(milliseconds: 120), curve: Curves.easeOut);
-  }
-
-  KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-    final primaryContext = FocusManager.instance.primaryFocus?.context;
-    final key = event.logicalKey;
-    final isUpKey = key == LogicalKeyboardKey.arrowUp;
-    final isDownKey = key == LogicalKeyboardKey.arrowDown;
-    final isConfirmKey = key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.gameButtonA;
-    // Some TV remotes emit confirm-key repeat events when the button is held.
-    // Do not repeatedly rebuild the sidebar or issue duplicate playback requests.
-    if (isConfirmKey && event is KeyRepeatEvent) return KeyEventResult.handled;
-    final channels = _visibleChannels;
-    final categories = _categories;
-    final editingSearch = primaryContext?.widget is EditableText;
-
-    // Search remains usable with the TV keyboard. D-pad UP opens categories;
-    // DOWN moves into results, avoiding a focus trap inside the text field.
-    if (editingSearch) {
-      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
-          key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
-        FocusManager.instance.primaryFocus?.unfocus();
-        _showTvChannels(index: 0);
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.arrowDown) {
-        FocusManager.instance.primaryFocus?.unfocus();
-        _showTvChannels(index: 0);
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.arrowUp) {
-        _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
-        return KeyEventResult.handled;
-      }
-      if (key != LogicalKeyboardKey.escape && key != LogicalKeyboardKey.browserBack) {
-        return KeyEventResult.ignored;
-      }
-    }
-
-    if (isUpKey || isDownKey) {
-      final delta = isDownKey ? 1 : -1;
-      if (_tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories) {
-        final preview = _tvEpgPreviewChannel(channels);
-        if (_tvEpgSelectionMode && preview != null) {
-          _moveTvEpgSelection(delta, preview);
-        } else {
-          _scrollTvEpg(delta);
-        }
-        return KeyEventResult.handled;
-      }
-      if (!_tvSidebarVisible && isUpKey) {
-        if (_selectedChannel != null) _showChannelInfoFor10Seconds();
-        // Reclaim focus after the remote event so subsequent D-pad presses
-        // continue to reach the player handler rather than a stale overlay.
-        _focusTvPlayer();
-        return KeyEventResult.handled;
-      }
-      if (_tvShowingCategories) {
-        _moveTvCategory(delta);
-        return KeyEventResult.handled;
-      }
-      if (channels.isEmpty) return KeyEventResult.handled;
-      if (!_tvSidebarVisible) {
-        // The hidden rail is deliberately inert. Only Enter/Select may open it;
-        // directional keys must never zap or reveal channels unexpectedly.
-        return KeyEventResult.handled;
-      }
-      final currentFocus = FocusManager.instance.primaryFocus;
-      if (currentFocus == _tvSearchFocusNode) {
-        FocusManager.instance.primaryFocus?.unfocus();
-        _showTvChannels(index: 0);
-      } else {
-        _focusTvChannel((_tvFocusedChannelIndex + delta).clamp(0, channels.length - 1).toInt());
-      }
-      return KeyEventResult.handled;
-    }
-
-    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
-      if (!_tvSidebarVisible) {
-        final current = channels.indexWhere((c) => c.url == _selectedChannel?.url);
-        _showTvChannels(index: current >= 0 ? current : _tvFocusedChannelIndex);
-      } else if (_tvSidebarVisible && _tvEpgVisible) {
-        // Guide browsing is a separate remote mode. Enter must not zap the
-        // channel while the 3-day EPG selection rail is active.
-        return KeyEventResult.handled;
-      } else if (_tvShowingCategories) {
-        if (categories.isNotEmpty) {
-          final category = categories[_tvFocusedCategoryIndex.clamp(0, categories.length - 1)];
-          setState(() {
-            _selectedCategory = category;
-            _tvShowingCategories = false;
-            _tvFocusedChannelIndex = 0;
-          });
-          _searchController.clear();
-          _searchQuery = '';
-          _showTvChannels(index: 0);
-        }
-      } else if (channels.isNotEmpty) {
-        final index = _tvFocusedChannelIndex.clamp(0, channels.length - 1).toInt();
-        _playChannel(channels[index]);
-      }
-      return KeyEventResult.handled;
-    }
-
-    if (key == LogicalKeyboardKey.arrowLeft) {
-      if (_tvSidebarVisible && !_tvShowingCategories) {
-        setState(() { _tvEpgVisible = false; _tvEpgSelectionMode = false; });
-        _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
-      } else if (_tvShowingCategories) {
-        _showTvChannels(index: _tvFocusedChannelIndex);
-      } else {
-        // Hidden sidebar: ignore Left. Do not alter channel or player controls.
-      }
-      return KeyEventResult.handled;
-    }
-
-    if (key == LogicalKeyboardKey.arrowRight) {
-      if (_tvShowingCategories) {
-        _showTvChannels(index: _tvFocusedChannelIndex);
-      } else if (_tvSidebarVisible && !_tvEpgVisible) {
-        // First Right opens the 3-day guide without interrupting playback.
-        setState(() { _tvEpgVisible = true; _tvEpgSelectionMode = true; _tvFocusedEpgIndex = 0; _tvEpgSelectedDayOffset = 0; });
-      } else if (_tvSidebarVisible && _tvEpgVisible) {
-        // Second Right enables the guide selection rail; Up/Down now browse
-        // every programme rather than moving channel focus.
-        setState(() => _tvEpgSelectionMode = !_tvEpgSelectionMode);
-      } else {
-        // Hidden sidebar: ignore Right as well; Enter is the only opener.
-      }
-      return KeyEventResult.handled;
-    }
-
-    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.browserBack) {
-      if (_tvShowingCategories) {
-        _showTvChannels(index: _tvFocusedChannelIndex);
-        return KeyEventResult.handled;
-      }
-      if (_tvSidebarVisible) {
-        setState(() { _tvSidebarVisible = false; _tvEpgVisible = false; _tvEpgSelectionMode = false; });
-        FocusManager.instance.primaryFocus?.unfocus();
-        _focusTvPlayer();
-        return KeyEventResult.handled;
-      }
-    }
-    return KeyEventResult.ignored;
-  }
-
-  KeyEventResult _handleChannelTileKey(FocusNode node, KeyEvent event, int index) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
-    final key = event.logicalKey;
-    final channels = _visibleChannels;
-
-    // A tile can retain focus after the overlay is hidden. Never allow that
-    // stale tile focus to select/zap a channel while the sidebar is invisible.
-    // Enter's first action in this state is ONLY to reopen the sidebar.
-    if (!_tvSidebarVisible) {
-      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
-          key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
-        _showTvChannels(index: _tvFocusedChannelIndex);
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown ||
-          key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-
-    if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
-      final delta = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
-      if (_tvEpgVisible) {
-        final preview = _tvEpgPreviewChannel(channels);
-        if (_tvEpgSelectionMode && preview != null) {
-          _moveTvEpgSelection(delta, preview);
-        } else {
-          _scrollTvEpg(delta);
-        }
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.arrowUp && index == 0) {
-        _tvSearchFocusNode.requestFocus();
-        return KeyEventResult.handled;
-      }
-      _focusTvChannel((index + delta).clamp(0, channels.length - 1).toInt());
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter || key == LogicalKeyboardKey.gameButtonA) {
-      if (_tvEpgVisible) return KeyEventResult.handled;
-      if (index >= 0 && index < channels.length) _playChannel(channels[index]);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-      return _handleRemoteKey(node, event);
-    }
-    return KeyEventResult.ignored;
-  }
-
-  // Android TV keeps the video edge-to-edge. The channel rail is an overlay,
-  // so showing it never shrinks the player; selecting/zapping hides it immediately.
-  Widget _buildTvLayout(List<Channel> channels) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Positioned.fill(
-          child: RepaintBoundary(
-            child: Focus(
-              focusNode: _tvPlayerFocusNode,
-              autofocus: true,
-              onKeyEvent: _handleRemoteKey,
-              child: _buildPlayer(fullscreen: true),
-            ),
-          ),
-        ),
-        AnimatedPositioned(
-          duration: const Duration(milliseconds: 120),
-          curve: Curves.easeOut,
-          top: 0,
-          bottom: 0,
-          left: _tvSidebarVisible ? 0 : -330,
-          width: 310,
-          child: IgnorePointer(
-            ignoring: !_tvSidebarVisible,
-            child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 100),
-              opacity: _tvSidebarVisible ? 1 : 0,
-              child: RepaintBoundary(
-                child: ClipRect(
-                // A translucent panel is cheaper to render than a live blur
-                // on lower-powered TV boxes while keeping video visible.
-                child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(0xE6101020),
-                      border: Border(
-                        right: BorderSide(color: Colors.white.withOpacity(0.12)),
-                      ),
-                    ),
-                    child: SafeArea(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const Padding(
-                            padding: EdgeInsets.fromLTRB(18, 12, 12, 8),
-                            child: Row(
-                              children: [
-                                Icon(Icons.blur_on, color: accentColor, size: 26),
-                                SizedBox(width: 8),
-                                Expanded(child: Text('ANANTA OTT', style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 1.0,
-                                  fontSize: 16,
-                                ))),
-                              ],
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-                            child: TextField(
-                              focusNode: _tvSearchFocusNode,
-                              controller: _searchController,
-                              textInputAction: TextInputAction.search,
-                              onSubmitted: (_) {
-                                FocusScope.of(context).unfocus();
-                                if (_visibleChannels.isNotEmpty) {
-                                  FocusManager.instance.primaryFocus?.unfocus();
-                                  _showTvChannels(index: 0);
-                                }
-                              },
-                              onChanged: (value) {
-                                setState(() {
-                                  _searchQuery = value;
-                                  _tvFocusedChannelIndex = 0;
-                                  _tvShowingCategories = false;
-                                });
-                              },
-                              style: const TextStyle(fontSize: 14),
-                              decoration: InputDecoration(
-                                hintText: 'Search channels',
-                                prefixIcon: const Icon(Icons.search, size: 20),
-                                suffixIcon: _searchQuery.isEmpty ? null : IconButton(
-                                  tooltip: 'Clear search',
-                                  onPressed: () {
-                                    _searchController.clear();
-                                    setState(() {
-                                      _searchQuery = '';
-                                      _tvFocusedChannelIndex = 0;
-                                    });
-                                  },
-                                  icon: const Icon(Icons.clear, size: 18),
-                                ),
-                                filled: true,
-                                fillColor: Colors.white.withOpacity(0.07),
-                                contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(color: Colors.white.withOpacity(0.10)),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(color: Colors.white.withOpacity(0.10)),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: const BorderSide(color: accentColor, width: 1.5),
-                                ),
-                              ),
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            child: Row(
-                              children: [
-                                Expanded(child: Text(_tvShowingCategories ? 'CATEGORIES' : 'CHANNELS', style: const TextStyle(
-                                  color: Colors.white70, fontSize: 11,
-                                  fontWeight: FontWeight.bold, letterSpacing: 1.2,
-                                ))),
-                                Text(_tvShowingCategories ? '${_categories.length}' : '${channels.length}', style: const TextStyle(
-                                  color: Colors.white54, fontSize: 11,
-                                )),
-                                IconButton(
-                                  tooltip: _tvShowingCategories ? 'Show channels' : 'Browse categories',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: () {
-                                    if (_tvShowingCategories) { _showTvChannels(index: _tvFocusedChannelIndex); }
-                                    else { _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, _categories.length - 1).toInt()); }
-                                  },
-                                  icon: Icon(_tvShowingCategories ? Icons.live_tv : Icons.category_outlined, color: accentColor, size: 19),
-                                ),
-                                IconButton(
-                                  tooltip: _showFavoritesOnly ? 'Show all channels' : 'Show favorites',
-                                  visualDensity: VisualDensity.compact,
-                                  onPressed: () => setState(() => _showFavoritesOnly = !_showFavoritesOnly),
-                                  icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border,
-                                    color: _showFavoritesOnly ? Colors.pinkAccent : Colors.white70, size: 19),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Expanded(
-                            child: _tvShowingCategories
-                                ? ListView.builder(
-                                    controller: _tvCategoryScrollController,
-                                    padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-                                    itemCount: _categories.length,
-                                    itemExtent: 58,
-                                    itemBuilder: (context, index) {
-                                      final category = _categories[index];
-                                      final focused = index == _tvFocusedCategoryIndex;
-                                      final selected = category == _selectedCategory;
-                                      final count = category == 'All'
-                                          ? _channels.length
-                                          : _channels.where((c) => c.group == category).length;
-                                      return Padding(
-                                        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
-                                        child: AnimatedContainer(
-                                          duration: const Duration(milliseconds: 100),
-                                          decoration: BoxDecoration(
-                                            color: focused ? accentColor.withOpacity(0.34) : Colors.white.withOpacity(0.045),
-                                            borderRadius: BorderRadius.circular(12),
-                                            border: Border.all(color: focused ? accentColor : (selected ? accentColor.withOpacity(0.55) : Colors.white.withOpacity(0.08)), width: focused ? 2 : 1),
-                                          ),
-                                          child: ListTile(
-                                            dense: true,
-                                            leading: Icon(category == 'All' ? Icons.apps_rounded : Icons.folder_outlined, color: selected ? accentColor : Colors.white70, size: 20),
-                                            title: Text(category, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.normal)),
-                                            trailing: Text('$count', style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                                            onTap: () {
-                                              setState(() {
-                                                _selectedCategory = category;
-                                                _tvFocusedCategoryIndex = index;
-                                                _tvShowingCategories = false;
-                                                _tvFocusedChannelIndex = 0;
-                                              });
-                                              _searchController.clear();
-                                              _searchQuery = '';
-                                              _showTvChannels(index: 0);
-                                            },
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  )
-                                : channels.isEmpty
-                                    ? const Center(child: Text('No channels found', style: TextStyle(color: Colors.white60)))
-                                    : ListView.builder(
-                                        controller: _tvChannelScrollController,
-                                        padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-                                        itemCount: channels.length,
-                                        itemExtent: 96,
-                                        itemBuilder: (context, index) => _buildTvChannelTile(channels[index], index),
-                                      ),
-                          ),
-                        ],
-                      ),
-                    ),
-                ),
-              ),
-              ),
-            ),
-          ),
-        ),
-        AnimatedPositioned(
-          duration: const Duration(milliseconds: 110),
-          curve: Curves.easeOut,
-          top: 0,
-          bottom: 0,
-          left: (_tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories) ? 310 : -360,
-          width: 350,
-          // Guide is an overlay beside the rail; it never resizes the video.
-          child: IgnorePointer(
-            ignoring: !_tvSidebarVisible || !_tvEpgVisible || _tvShowingCategories,
-            child: AnimatedOpacity(
-            duration: const Duration(milliseconds: 90),
-            opacity: _tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories ? 1 : 0,
-            child: Builder(builder: (context) {
-              final preview = _tvEpgPreviewChannel(channels);
-              return preview == null ? const SizedBox.shrink() : _buildTvEpgPanel(preview);
-            }),
-          ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildTvChannelTile(Channel channel, int index) {
-    final selected = _selectedChannel?.url == channel.url;
-    final favorite = _favorites.contains(channel.url);
-    final focusNode = _tvChannelFocusNodes.putIfAbsent(
-      channel.url, () => FocusNode(debugLabel: 'channel-${channel.name}'),
-    );
-    final focusedByIndex = index == _tvFocusedChannelIndex;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
-      child: Focus(
-        focusNode: focusNode,
-        autofocus: focusedByIndex,
-        onFocusChange: (hasFocus) {
-          if (hasFocus && mounted && _tvFocusedChannelIndex != index) {
-            setState(() => _tvFocusedChannelIndex = index);
-          }
-        },
-        onKeyEvent: (node, event) => _handleChannelTileKey(node, event, index),
-        child: Builder(builder: (context) {
-          final focused = Focus.of(context).hasFocus || focusedByIndex;
-          return AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            decoration: BoxDecoration(
-              color: focused
-                  ? accentColor.withOpacity(0.34)
-                  : selected ? Colors.white.withOpacity(0.13) : Colors.white.withOpacity(0.035),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: focused ? accentColor : Colors.white.withOpacity(0.07),
-                width: focused ? 2 : 1,
-              ),
-            ),
-            child: ListTile(
-              focusColor: Colors.transparent,
-              hoverColor: Colors.transparent,
-              dense: false,
-              minVerticalPadding: 5,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: CircleAvatar(
-                radius: 30,
-                backgroundColor: accentColor.withOpacity(0.16),
-                backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
-                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
-              ),
-              title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
-              subtitle: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(_epgLabel(channel), maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: _epgForChannel(channel) == null ? Colors.white38 : const Color(0xFFC9BEFF), fontSize: 10, fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 4),
-                  ClipRRect(borderRadius: BorderRadius.circular(3), child: LinearProgressIndicator(
-                    value: _epgProgress(_epgForChannel(channel)), minHeight: 3,
-                    backgroundColor: Colors.white12,
-                    valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
-                  )),
-                  const SizedBox(height: 3),
-                  Text(channel.group, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white54, fontSize: 10)),
-                ],
-              ),
-              trailing: Icon(favorite ? Icons.favorite : Icons.chevron_right,
-                color: favorite ? Colors.pinkAccent : Colors.white38, size: 18),
-              onTap: () => _playChannel(channel),
-            ),
-          );
-        }),
-      ),
-    );
-  }
-
-  // --------------------------------------------------
-  // GLASS EFFECT
-  // --------------------------------------------------
-  Widget _glass({
-    required Widget child,
-    EdgeInsetsGeometry padding = const EdgeInsets.all(10),
-    double radius = 16,
-    Color color = glassColor,
-  }) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      // Keep the glass appearance with alpha compositing instead of a costly
-      // per-card blur; this is significantly lighter on Mi Box hardware.
-      child: Container(
-        padding: padding,
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.82),
-          borderRadius: BorderRadius.circular(radius),
-          border: Border.all(color: Colors.white.withOpacity(0.10)),
-        ),
-        child: child,
-      ),
-    );
-  }
-
-  // --------------------------------------------------
-  // FAVORITES
-  // --------------------------------------------------
-  Future<void> _loadFavorites() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (!mounted) return;
-      setState(() {
-        _favorites =
-            (prefs.getStringList('ananta_favorites') ?? []).toSet();
-      });
-    } catch (e) {
-      debugPrint('Favorites error: $e');
-    }
-  }
-
-  Future<void> _saveFavorites() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(
-        'ananta_favorites',
-        _favorites.toList(),
-      );
-    } catch (e) {
-      debugPrint('Saving favorites failed: $e');
-    }
-  }
-
-  Future<void> _toggleFavorite(Channel channel) async {
-    setState(() {
-      if (_favorites.contains(channel.url)) {
-        _favorites.remove(channel.url);
-      } else {
-        _favorites.add(channel.url);
-      }
-    });
-    await _saveFavorites();
-  }
-
-  // --------------------------------------------------
-  // M3U PARSER
-  // --------------------------------------------------
-  String _attribute(String line, String attribute) {
-    final pattern = RegExp(
-      '$attribute\\s*=\\s*["\\x27]([^"\\x27]*)',
-      caseSensitive: false,
-    );
-    return pattern.firstMatch(line)?.group(1) ?? '';
-  }
-
-  List<Channel> _parseM3u(String content) {
-    final result = <Channel>[];
-    final lines = content.split(RegExp(r'\r?\n'));
-    String? name;
-    String group = 'Live TV';
-    String logo = '';
-    String tvgId = '';
-    String tvgName = '';
-    for (final rawLine in lines) {
-      final line = rawLine.trim();
-      if (line.isEmpty) continue;
-      if (line.startsWith('#EXTINF')) {
-        final comma = line.lastIndexOf(',');
-        name = comma >= 0
-            ? line.substring(comma + 1).trim()
-            : 'Unknown channel';
-        group = _attribute(line, 'group-title');
-        logo = _attribute(line, 'tvg-logo');
-        tvgId = _attribute(line, 'tvg-id');
-        tvgName = _attribute(line, 'tvg-name');
-        if (group.isEmpty) group = 'Live TV';
-      } else if (!line.startsWith('#') && name != null) {
-        final uri = Uri.tryParse(line);
-        if (uri != null &&
-            (uri.scheme == 'http' || uri.scheme == 'https') &&
-            uri.host.isNotEmpty) {
-          result.add(
-            Channel(
-              name: name,
-              url: line,
-              group: group,
-              logo: logo,
-              tvgId: tvgId,
-              tvgName: tvgName,
-            ),
-          );
-        }
-        name = null;
-        group = 'Live TV';
-        logo = '';
-        tvgId = '';
-        tvgName = '';
-      }
-    }
-    return result;
+  String _epgLabelForProgram(EpgProgram program) {
+    final now = DateTime.now().toUtc();
+    if (program.isAiringAt(now)) return 'Now · ${_formatEpgTime(program.stop)}';
+    if (program.start.isAfter(now)) return _formatEpgTime(program.start);
+    return 'Finished';
   }
 
   // --------------------------------------------------
@@ -3521,6 +2773,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   // --------------------------------------------------
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controlsTimer?.cancel();
     _channelInfoTimer?.cancel();
     _epgClock?.cancel();
