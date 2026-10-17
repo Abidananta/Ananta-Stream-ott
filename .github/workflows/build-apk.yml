@@ -100,38 +100,8 @@ jobs:
                   filt = ET.SubElement(launcher, 'intent-filter')
                   action = ET.SubElement(filt, 'action'); action.set(ns + 'name', 'android.intent.action.MAIN')
                   category = ET.SubElement(filt, 'category'); category.set(ns + 'name', 'android.intent.category.LEANBACK_LAUNCHER')
-          # Enable Android Picture-in-Picture for the Flutter activity.
-          if launcher is not None:
-              launcher.set(ns + 'supportsPictureInPicture', 'true')
-              launcher.set(ns + 'resizeableActivity', 'true')
           tree.write(manifest, encoding='utf-8', xml_declaration=True)
           PY
-          python3 - <<'PIP'
-          from pathlib import Path
-          import re
-          kotlin_files = list(Path('build_app/android/app/src/main/kotlin').rglob('MainActivity.kt'))
-          if not kotlin_files:
-              raise SystemExit('Generated MainActivity.kt not found')
-          p = kotlin_files[0]
-          s = p.read_text()
-          if 'onUserLeaveHint()' not in s:
-              method = '''
-              override fun onUserLeaveHint() {
-                  super.onUserLeaveHint()
-                  if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                      val params = android.app.PictureInPictureParams.Builder()
-                          .setAspectRatio(android.util.Rational(16, 9))
-                          .build()
-                      enterPictureInPictureMode(params)
-                  }
-              }
-              '''
-              pos = s.rfind('}')
-              if pos < 0:
-                  raise SystemExit('Could not locate MainActivity class end')
-              s = s[:pos] + method + '\n' + s[pos:]
-              p.write_text(s)
-          PIP
 
       - name: Configure transparent launch window
         run: |
