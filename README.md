@@ -15,11 +15,10 @@ Audio compatibility update
 Playback is implemented with media_kit/libmpv rather than Flutter video_player. The bundled native playback libraries provide broader codec support, intended to address MPEG Audio Layer 1/2 (MPGA/MP2) streams. This source has not been compiled or device-tested in this environment; verify the GitHub Actions build and test on the target Android TV device.
 
 In-app update system (GitHub Releases)
-The app checks the latest stable GitHub Release after the first frame, so this check does not delay startup. If a release tag is newer than the installed app version, it shows an update dialog, downloads the first `.apk` asset, then opens Android's package installer. Android may require the user to allow “Install unknown apps” for Ananta OTT; installation still requires user confirmation.
-Publishing a release
-Keep `version:` in `pubspec.yaml` aligned with the release version. For example, `version: 1.0.3+4` should be published with tag `v1.0.3`.
-Commit and push the source changes to `main`.
-Create and push a version tag, e.g. `git tag v1.0.3 && git push origin v1.0.3`.
-The `Build Ananta OTT APK` workflow builds the APK and attaches it to the GitHub Release for that tag. The updater downloads the APK asset from the latest stable release.
-Important signing requirement: Android only installs an update over an existing app when both APKs have the same application ID and signing certificate. The current workflow generates Android scaffolding during CI; do not expect APKs built with different ephemeral signing keys to update over each other. Before distributing to users, configure one persistent release keystore in GitHub Actions secrets and use it for every release. If users already installed a differently signed APK, they may need to uninstall it once before installing the consistently signed release (uninstalling removes local app data).
-The update check requires internet access and a public GitHub repository/release. The repository configured in `githubReleasesApi` is `Abidananta/Ananta-Stream-ott`; change that constant if the releases are hosted in a different repository.
+The app checks the latest stable GitHub Release after the first frame. If the release tag is newer than the installed version, an update dialog appears. Choosing Update now downloads the APK and opens Android's package installer; the user must confirm installation.
+Publishing an update
+Update `version:` in `pubspec.yaml`, for example `version: 1.0.3+4`.
+Commit and push your changes to `main`.
+Create and push a matching tag, e.g. `git tag v1.0.3 && git push origin v1.0.3`.
+GitHub Actions builds the APK and attaches it to the GitHub Release.
+Important: Every release must use the same Android application ID and the same persistent signing certificate to install over an existing app. Configure a persistent release keystore in GitHub Actions before distributing updates. Android may also ask users to allow installing unknown apps for Ananta OTT.
