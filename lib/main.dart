@@ -2239,7 +2239,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             if (_controlsVisible) ...[
               if (!tvMode)
                 Positioned(
-                bottom: 8,
+                bottom: initialized ? 54 : 10,
                 left: 10,
                 right: 10,
                 child: _glass(
@@ -2284,11 +2284,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 ),
               ),
               if (initialized)
-                Align(
-                  alignment: tvMode ? Alignment.center : Alignment.bottomCenter,
-                  child: Padding(
-                    padding: EdgeInsets.only(bottom: tvMode ? 0 : 58),
-                    child: _glass(
+                Center(
+                  child: _glass(
                     radius: 28,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 4,
@@ -2342,7 +2339,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           ),
                         ),
                       ],
-                    ),
                     ),
                   ),
                 ),
