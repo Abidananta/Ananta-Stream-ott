@@ -109,14 +109,15 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import xml.etree.ElementTree as ET
+          import re
 
           android_dir = Path('build_app/android/app/src/main')
           manifest = android_dir / 'AndroidManifest.xml'
           ET.register_namespace('android', 'http://schemas.android.com/apk/res/android')
           ns = '{http://schemas.android.com/apk/res/android}'
           tree = ET.parse(manifest)
-          root = tree.getroot()
-          app = root.find('application')
+          manifest_root = tree.getroot()
+          app = manifest_root.find('application')
           if app is None:
               raise SystemExit('AndroidManifest.xml has no application element')
 
@@ -132,28 +133,36 @@ jobs:
                   break
           if launcher is None:
               raise SystemExit('Could not find launcher activity for PiP setup')
+
           launcher.set(ns + 'supportsPictureInPicture', 'true')
           launcher.set(ns + 'resizeableActivity', 'true')
-          changes = launcher.get(ns + 'configChanges', '')
-          needed = ['screenSize', 'smallestScreenSize', 'screenLayout', 'orientation']
-          values = set(changes.split('|')) if changes else set()
-          values.update(needed)
-          launcher.set(ns + 'configChanges', '|'.join(sorted(values)))
+          needed = {'screenSize', 'smallestScreenSize', 'screenLayout', 'orientation'}
+          existing = set(filter(None, launcher.get(ns + 'configChanges', '').split('|')))
+          launcher.set(ns + 'configChanges', '|'.join(sorted(existing | needed)))
           tree.write(manifest, encoding='utf-8', xml_declaration=True)
 
-          # Add native PiP entry when the user leaves the app (Home / app switch).
+          # Flutter templates can generate an empty Kotlin class without braces.
           kotlin_files = list((android_dir / 'kotlin').rglob('MainActivity.kt'))
           if not kotlin_files:
               raise SystemExit('MainActivity.kt not found in generated Android project')
           activity = kotlin_files[0]
           source = activity.read_text()
           if 'override fun onUserLeaveHint()' not in source:
-              source = source.replace(
-                  'package com.ananta.ott',
-                  'package com.ananta.ott\n\nimport android.app.PictureInPictureParams\nimport android.os.Build\nimport android.util.Rational'
-              )
+              imports = [
+                  'import android.app.PictureInPictureParams',
+                  'import android.os.Build',
+                  'import android.util.Rational',
+              ]
+              package_match = re.search(r'(?m)^package\s+[\w.]+\s*$', source)
+              if package_match:
+                  insert_at = package_match.end()
+                  source = source[:insert_at] + '\n\n' + '\n'.join(
+                      item for item in imports if item not in source
+                  ) + source[insert_at:]
+              else:
+                  source = '\n'.join(imports) + '\n' + source
+
               method = '''
-              // Enter Android Picture-in-Picture when the user presses Home or switches apps.
               override fun onUserLeaveHint() {
                   super.onUserLeaveHint()
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -163,16 +172,27 @@ jobs:
                               .build()
                           enterPictureInPictureMode(params)
                       } catch (_: Exception) {
-                          // PiP is unavailable on some devices; keep normal background behavior.
+                          // PiP is not available on every device.
                       }
                   }
               }
               '''
-              # Insert the override inside MainActivity, immediately before its final brace.
-              closing = source.rfind('}')
-              if closing < 0:
-                  raise SystemExit('Could not find end of MainActivity class')
-              source = source[:closing] + method + '\n' + source[closing:]
+
+              # Handle both `class MainActivity : FlutterActivity()` and a class
+              # declaration that already has a body.
+              class_match = re.search(
+                  r'class\s+MainActivity\s*:\s*FlutterActivity\s*\(\s*\)\s*(\{)?',
+                  source
+              )
+              if not class_match:
+                  raise SystemExit('Could not find MainActivity : FlutterActivity() declaration')
+              if class_match.group(1):
+                  closing = source.rfind('}')
+                  if closing <= class_match.end():
+                      raise SystemExit('Could not find MainActivity class closing brace')
+                  source = source[:closing] + method + '\n' + source[closing:]
+              else:
+                  source = source[:class_match.end()] + ' {\n' + method + '\n}\n' + source[class_match.end():]
               activity.write_text(source)
           PY
 
