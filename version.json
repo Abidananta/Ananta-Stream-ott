@@ -1,6 +1,6 @@
 {
-  "version": "1.0.7",
-  "versionCode": 8,
-  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.0.7/app-release.apk",
-  "releaseNotes": "Fixed Android mobile Picture-in-Picture entry/return behavior, preserved the active channel and player state, and hardened Android release package/signing configuration for in-place updates."
+  "version": "1.0.6",
+  "versionCode": 7,
+  "releaseNotes": "Improved mobile player spacing, moved channel information to the bottom with a clear gap below controls, added reliable Android mobile Picture-in-Picture behavior, and preserved the same player/channel UI state when returning from PiP.",
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.0.6/app-release.apk"
 }
