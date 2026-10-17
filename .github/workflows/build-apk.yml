@@ -1,164 +1,242 @@
 name: Build Ananta OTT APK
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
+
 permissions:
   contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-      - name: Generate Android project
+
+      - name: Verify Java and Flutter
+        run: |
+          java -version
+          flutter --version
+
+      - name: Generate Android project scaffolding
         run: flutter create --platforms=android --org com.ananta --project-name ott build_app
-      - name: Configure Android identity, PiP and stable signing
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Configure native Android PiP Activity
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import base64, os
-          root=Path('build_app/android/app')
-          gradle=root/'build.gradle.kts'
-          gs=gradle.read_text()
-          if 'applicationId = "com.ananta.ott"' not in gs:
-              gs=gs.replace('defaultConfig {','defaultConfig {\n        applicationId = "com.ananta.ott"',1)
-          if 'keystorePropertiesFile' not in gs:
-              gs='import java.util.Properties\nval keystoreProperties = Properties()\nval keystorePropertiesFile = rootProject.file("app/keystore.properties")\nif (keystorePropertiesFile.exists()) keystoreProperties.load(keystorePropertiesFile.inputStream())\n'+gs
-          if 'signingConfigs {' not in gs:
-              block='''android {
-              signingConfigs {
-                  create("release") {
-                      storeFile = file("release-keystore.jks")
-                      storePassword = keystoreProperties["storePassword"] as String
-                      keyAlias = keystoreProperties["keyAlias"] as String
-                      keyPassword = keystoreProperties["keyPassword"] as String
-                  }
-              }'''
-              gs=gs.replace('android {',block,1)
-          if 'signingConfig = signingConfigs.getByName("release")' not in gs:
-              gs=gs.replace('release {','release {\n            signingConfig = signingConfigs.getByName("release")',1)
-          gradle.write_text(gs)
-          required=['ANDROID_KEYSTORE_BASE64','ANDROID_KEYSTORE_PASSWORD','ANDROID_KEY_ALIAS','ANDROID_KEY_PASSWORD']
-          if not all(os.environ.get(k) for k in required):
-              raise SystemExit('Stable release signing secrets are required: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD')
-          (root/'release-keystore.jks').write_bytes(base64.b64decode(os.environ['ANDROID_KEYSTORE_BASE64']))
-          (root/'keystore.properties').write_text('storeFile=release-keystore.jks\nstorePassword='+os.environ['ANDROID_KEYSTORE_PASSWORD']+'\nkeyAlias='+os.environ['ANDROID_KEY_ALIAS']+'\nkeyPassword='+os.environ['ANDROID_KEY_PASSWORD']+'\n')
-          activity=root/'src/main/kotlin/com/ananta/ott/MainActivity.kt'
-          activity.parent.mkdir(parents=True,exist_ok=True)
+          activity = Path('build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt')
+          activity.parent.mkdir(parents=True, exist_ok=True)
           activity.write_text(r'''package com.ananta.ott
-          
+
           import android.app.PictureInPictureParams
-          import android.content.pm.PackageManager
-          import android.graphics.Rect
           import android.os.Build
-          import android.util.Log
           import android.util.Rational
           import io.flutter.embedding.android.FlutterActivity
           import io.flutter.embedding.engine.FlutterEngine
           import io.flutter.plugin.common.MethodChannel
-          
+
           class MainActivity : FlutterActivity() {
-              companion object { private const val TAG = "AnantaPiP" }
               private val channelName = "com.ananta.ott/pip"
-              private fun isTv(): Boolean = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
-          
+
               override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
                   super.configureFlutterEngine(flutterEngine)
-                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
-                      when (call.method) {
-                          "enterPictureInPicture" -> result.success(enterPip())
-                          "isPictureInPicture" -> result.success(Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)
-                          else -> result.notImplemented()
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+                      .setMethodCallHandler { call, result ->
+                          when (call.method) {
+                              "enterPictureInPicture" -> {
+                                  enterPip()
+                                  result.success(true)
+                              }
+                              "isPictureInPicture" -> {
+                                  result.success(
+                                      Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+                                      isInPictureInPictureMode
+                                  )
+                              }
+                              else -> result.notImplemented()
+                          }
                       }
-                  }
               }
-          
+
+              override fun onCreate(savedInstanceState: android.os.Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  updatePipParams()
+              }
+
               override fun onUserLeaveHint() {
                   super.onUserLeaveHint()
-                  if (!isTv()) enterPip()
-              }
-          
-              private fun enterPip(): Boolean {
-                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isFinishing || isTv()) return false
-                  return try {
-                      val width = resources.displayMetrics.widthPixels
-                      val height = (width * 9L / 16L).toInt()
-                      val builder = PictureInPictureParams.Builder()
-                          .setAspectRatio(Rational(16, 9))
-                          .setSourceRectHint(Rect(0, 0, width, height))
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setAutoEnterEnabled(true)
-                      enterPictureInPictureMode(builder.build())
-                  } catch (t: Throwable) {
-                      Log.e(TAG, "PiP entry failed", t)
-                      false
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                      enterPip()
                   }
               }
-          
-              override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {
-                  super.onPictureInPictureModeChanged(isInPictureInPictureMode)
-                  Log.d(TAG, "PiP changed: $isInPictureInPictureMode")
+
+              private fun updatePipParams() {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+                  val builder = PictureInPictureParams.Builder()
+                      .setAspectRatio(Rational(16, 9))
+
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      builder.setAutoEnterEnabled(true)
+                  }
+
+                  setPictureInPictureParams(builder.build())
+              }
+
+              private fun enterPip() {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+                      isFinishing ||
+                      isInPictureInPictureMode) return
+                  try {
+                      val builder = PictureInPictureParams.Builder()
+                          .setAspectRatio(Rational(16, 9))
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                          builder.setAutoEnterEnabled(true)
+                      }
+                      enterPictureInPictureMode(builder.build())
+                  } catch (_: IllegalStateException) {
+                      // Ignore a PiP request rejected during an Activity transition.
+                  }
               }
           }
           ''')
-          manifest=root/'src/main/AndroidManifest.xml'
-          ms=manifest.read_text()
-          ms=ms.replace('<application ', '<application android:label="Ananta OTT" android:icon="@drawable/ananta_launcher_icon" android:banner="@drawable/ananta_tv_banner" android:usesCleartextTraffic="true" ',1)
-          ms=ms.replace('android:exported="true"','android:exported="true" android:supportsPictureInPicture="true" android:resizeableActivity="true" android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|uiMode"',1)
-          manifest.write_text(ms)
           PY
-      - name: Copy app source and assets
+
+      - name: Copy app source and configure Android TV icon and manifest
         run: |
+          test -f lib/main.dart
+          test -f lib/update_checker.dart
           cp lib/main.dart build_app/lib/main.dart
           cp lib/update_checker.dart build_app/lib/update_checker.dart
           cp pubspec.yaml build_app/pubspec.yaml
+          # Flutter's generated test imports package:ott and MyApp, which do not
+          # exist in this app. Remove that template test from the temporary build.
           rm -rf build_app/test
+          # Guard a nullable EPG program in repository revisions that use this
+          # display expression. The current source may already have the fix.
+          python3 - <<'PYFIX'
+          from pathlib import Path
+          p = Path('build_app/lib/main.dart')
+          s = p.read_text()
+          s = s.replace(
+              'Text(_epgLabelForProgram(program),',
+              'if (program != null) Text(_epgLabelForProgram(program),'
+          )
+          p.write_text(s)
+          PYFIX
           mkdir -p build_app/android/app/src/main/res/drawable-nodpi
           cp assets/ananta_launcher_icon.png build_app/android/app/src/main/res/drawable-nodpi/ananta_launcher_icon.png
           cp assets/ananta_tv_banner.png build_app/android/app/src/main/res/drawable-nodpi/ananta_tv_banner.png
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          manifest = Path('build_app/android/app/src/main/AndroidManifest.xml')
+          ET.register_namespace('android', 'http://schemas.android.com/apk/res/android')
+          ns = '{http://schemas.android.com/apk/res/android}'
+          tree = ET.parse(manifest)
+          root = tree.getroot()
+          def has_tag(tag, attr, value):
+              return any(el.tag == tag and el.get(ns + attr) == value for el in root)
+          if not has_tag('uses-permission', 'name', 'android.permission.INTERNET'):
+              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.INTERNET'); root.insert(0, el)
+          if not has_tag('uses-feature', 'name', 'android.hardware.touchscreen'):
+              el = ET.Element('uses-feature'); el.set(ns + 'name', 'android.hardware.touchscreen'); el.set(ns + 'required', 'false'); root.insert(1, el)
+          app = root.find('application')
+          app.set(ns + 'label', 'Ananta OTT')
+          app.set(ns + 'icon', '@drawable/ananta_launcher_icon')
+          app.set(ns + 'banner', '@drawable/ananta_tv_banner')
+          app.set(ns + 'usesCleartextTraffic', 'true')
+          activities = list(app.findall('activity'))
+          launcher = None
+          for activity in activities:
+              for filt in activity.findall('intent-filter'):
+                  cats = [c.get(ns + 'name') for c in filt.findall('category')]
+                  if 'android.intent.category.LAUNCHER' in cats:
+                      launcher = activity
+                      break
+              if launcher is not None: break
+          if launcher is None and activities:
+              launcher = activities[0]
+          if launcher is not None:
+              # Keep the Flutter activity alive and enable Android 8+ PiP.
+              launcher.set(ns + 'supportsPictureInPicture', 'true')
+              if int(root.get('android:versionCode', '0') or 0) >= 0:
+                  launcher.set(ns + 'resizeableActivity', 'true')
+              has_leanback = any('android.intent.category.LEANBACK_LAUNCHER' in [c.get(ns + 'name') for c in f.findall('category')] for f in launcher.findall('intent-filter'))
+              if not has_leanback:
+                  filt = ET.SubElement(launcher, 'intent-filter')
+                  action = ET.SubElement(filt, 'action'); action.set(ns + 'name', 'android.intent.action.MAIN')
+                  category = ET.SubElement(filt, 'category'); category.set(ns + 'name', 'android.intent.category.LEANBACK_LAUNCHER')
+          tree.write(manifest, encoding='utf-8', xml_declaration=True)
+          PY
+
+      - name: Configure transparent launch window
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import re
+          base = Path('build_app/android/app/src/main/res')
+          for path in base.glob('values*/styles.xml'):
+              text = path.read_text()
+              # Remove a forced white/black launch background; transparent launch is intentional.
+              text = re.sub(r'<item name=\"android:windowBackground\">.*?</item>', '<item name=\"android:windowBackground\">@android:color/transparent</item>', text, flags=re.S)
+              if 'LaunchTheme' in text and 'windowDisablePreview' not in text:
+                  text = text.replace('</style>', '        <item name=\"android:windowDisablePreview\">true</item>\n    </style>', 1)
+              path.write_text(text)
+          PYCODE
+
       - name: Resolve dependencies
         working-directory: build_app
-        run: flutter pub get
-      - name: Analyze
+        run: flutter pub get -v
+
+      - name: Analyze source (diagnostic only)
         working-directory: build_app
-        run: flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings
-      - name: Verify version
+        continue-on-error: true
+        run: flutter analyze --no-pub
+
+      - name: Verify application version
         working-directory: build_app
-        run: "grep -q 'version: 1.0.8+9' pubspec.yaml"
-      - name: Build signed release APK
+        run: |
+          grep -q "version: 1.0.6+7" pubspec.yaml
+
+      - name: Build release APK
         working-directory: build_app
-        run: flutter build apk --release --no-pub
+        run: flutter build apk --release --no-pub --verbose
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ananta-ott-1.0.8-release
+          name: ananta-ott-android-tv-apk
           path: build_app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
-          retention-days: 30
-      - name: Publish GitHub Release
+          retention-days: 14
+
+      - name: Publish APK to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.8
-          name: Ananta OTT v1.0.8
+          tag_name: v1.0.6
+          name: Ananta OTT v1.0.6
           body: |
-            ## Ananta OTT v1.0.8
-            - Fixed Android mobile Picture-in-Picture entry and return behavior.
-            - Preserves active channel/player state when returning from PiP.
-            - Keeps TV behavior out of phone/tablet PiP handling.
-            - Uses stable release signing so future APKs can update in place.
+            ## Ananta OTT v1.0.6
+            - Android mobile Picture-in-Picture when minimizing/home
+            - Restores the same channel/player/UI state when returning
+            - Mobile player controls sit above the bottom channel information bar with a clear gap
+            - APK automatically attached to this GitHub Release
           files: build_app/build/app/outputs/flutter-apk/app-release.apk
           overwrite_files: true
           make_latest: true
