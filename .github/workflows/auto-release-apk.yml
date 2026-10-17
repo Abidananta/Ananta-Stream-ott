@@ -1,0 +1,342 @@
+name: Ananta OTT - Auto Build and Release APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Avoid two builds trying to publish the same run sequence simultaneously.
+concurrency:
+  group: ananta-ott-auto-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build APK and publish GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Verify toolchain
+        run: |
+          java -version
+          flutter --version
+          git --version
+
+      - name: Prepare automatic version metadata
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          pubspec = Path('pubspec.yaml')
+          manifest = Path('version.json')
+          if not pubspec.is_file():
+              raise SystemExit('ERROR: pubspec.yaml not found in repository root')
+          if not manifest.is_file():
+              raise SystemExit('ERROR: version.json not found in repository root')
+
+          text = pubspec.read_text()
+          match = re.search(r'(?m)^version:\s*[\'\"]?(\d+\.\d+\.\d+)(?:\+\d+)?[\'\"]?\s*$', text)
+          if not match:
+              raise SystemExit('ERROR: expected version like 1.0.6+7 in pubspec.yaml')
+
+          app_version = match.group(1)
+          data = json.loads(manifest.read_text())
+          previous_code = int(data.get('versionCode', 0) or 0)
+          run_number = int(os.environ.get('RUN_NUMBER', '0'))
+          if run_number < 1:
+              raise SystemExit('ERROR: GitHub Actions run number is missing or invalid')
+          build_number = max(run_number, previous_code + 1)
+          new_version = f'{app_version}+{build_number}'
+          text = re.sub(r'(?m)^version:.*$', f'version: {new_version}', text, count=1)
+          pubspec.write_text(text)
+
+          data['version'] = app_version
+          data['versionCode'] = build_number
+          data['releaseNotes'] = f'Automatic build {build_number}. Bug fixes and improvements.'
+          data['downloadUrl'] = 'https://github.com/Abidananta/Ananta-Stream-ott/releases/latest/download/app-release.apk'
+          manifest.write_text(json.dumps(data, indent=2) + '\n')
+
+          with open(os.environ['GITHUB_ENV'], 'a') as env_file:
+              env_file.write(f'APP_BUILD_NUMBER={build_number}\n')
+          print(f'Prepared app version: {new_version}')
+          print(f'Update manifest versionCode: {build_number}')
+          PY
+
+      - name: Select full Android project or generate fallback scaffold
+        shell: bash
+        run: |
+          if [[ -d android && -f pubspec.yaml && -f android/app/src/main/AndroidManifest.xml ]]; then
+            echo "Using the existing Android source in repository root."
+            echo "BUILD_DIR=." >> "$GITHUB_ENV"
+          else
+            echo "No complete android/ directory found; generating Flutter Android scaffold."
+            flutter create --platforms=android --org com.ananta --project-name ott build_app
+            test -f lib/main.dart
+            test -f lib/update_checker.dart
+            cp lib/main.dart build_app/lib/main.dart
+            cp lib/update_checker.dart build_app/lib/update_checker.dart
+            cp pubspec.yaml build_app/pubspec.yaml
+            if [[ -d assets ]]; then cp -R assets build_app/assets; fi
+            rm -rf build_app/test
+            echo "BUILD_DIR=build_app" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure app label, TV launcher, permissions and icons
+        env:
+          BUILD_DIR: ${{ env.BUILD_DIR }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import shutil
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          base = Path(os.environ['BUILD_DIR'])
+          android_dir = base / 'android' / 'app' / 'src' / 'main'
+          manifest = android_dir / 'AndroidManifest.xml'
+          if not manifest.is_file():
+              raise SystemExit(f'AndroidManifest.xml not found: {manifest}')
+
+          assets = Path('assets')
+          res = android_dir / 'res' / 'drawable-nodpi'
+          res.mkdir(parents=True, exist_ok=True)
+          for name in ('ananta_launcher_icon.png', 'ananta_tv_banner.png'):
+              source = assets / name
+              if source.is_file():
+                  shutil.copy2(source, res / name)
+
+          ET.register_namespace('android', 'http://schemas.android.com/apk/res/android')
+          ns = '{http://schemas.android.com/apk/res/android}'
+          tree = ET.parse(manifest)
+          root = tree.getroot()
+
+          def add_root_element(tag, name, extra=None):
+              for element in root.findall(tag):
+                  if element.get(ns + 'name') == name:
+                      return
+              element = ET.Element(tag)
+              element.set(ns + 'name', name)
+              for key, value in (extra or {}).items():
+                  element.set(ns + key, value)
+              root.insert(0, element)
+
+          add_root_element('uses-permission', 'android.permission.INTERNET')
+          add_root_element('uses-feature', 'android.hardware.touchscreen', {'required': 'false'})
+
+          app = root.find('application')
+          if app is None:
+              raise SystemExit('Manifest has no application element')
+          app.set(ns + 'label', 'Ananta OTT')
+          app.set(ns + 'usesCleartextTraffic', 'true')
+          if (res / 'ananta_launcher_icon.png').is_file():
+              app.set(ns + 'icon', '@drawable/ananta_launcher_icon')
+          if (res / 'ananta_tv_banner.png').is_file():
+              app.set(ns + 'banner', '@drawable/ananta_tv_banner')
+
+          activities = list(app.findall('activity'))
+          launcher = None
+          for activity in activities:
+              for filt in activity.findall('intent-filter'):
+                  actions = [item.get(ns + 'name') for item in filt.findall('action')]
+                  categories = [item.get(ns + 'name') for item in filt.findall('category')]
+                  if 'android.intent.action.MAIN' in actions and 'android.intent.category.LAUNCHER' in categories:
+                      launcher = activity
+                      break
+              if launcher is not None:
+                  break
+          if launcher is None and activities:
+              launcher = activities[0]
+          if launcher is not None:
+              launcher.set(ns + 'supportsPictureInPicture', 'true')
+              launcher.set(ns + 'resizeableActivity', 'true')
+              required_changes = {'screenSize', 'smallestScreenSize', 'screenLayout', 'orientation'}
+              current = set(filter(None, launcher.get(ns + 'configChanges', '').split('|')))
+              launcher.set(ns + 'configChanges', '|'.join(sorted(current | required_changes)))
+              has_leanback = any(
+                  'android.intent.category.LEANBACK_LAUNCHER' in [c.get(ns + 'name') for c in f.findall('category')]
+                  for f in launcher.findall('intent-filter')
+              )
+              if not has_leanback:
+                  filt = ET.SubElement(launcher, 'intent-filter')
+                  action = ET.SubElement(filt, 'action')
+                  action.set(ns + 'name', 'android.intent.action.MAIN')
+                  category = ET.SubElement(filt, 'category')
+                  category.set(ns + 'name', 'android.intent.category.LEANBACK_LAUNCHER')
+          tree.write(manifest, encoding='utf-8', xml_declaration=True)
+          print(f'Configured {manifest}')
+          PY
+
+      - name: Enable Picture-in-Picture in MainActivity when possible
+        env:
+          BUILD_DIR: ${{ env.BUILD_DIR }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          android_dir = Path(os.environ['BUILD_DIR']) / 'android' / 'app' / 'src' / 'main'
+          candidates = list((android_dir / 'kotlin').rglob('MainActivity.kt')) + list((android_dir / 'java').rglob('MainActivity.kt'))
+          if not candidates:
+              print('No MainActivity.kt found; manifest PiP support remains configured.')
+              raise SystemExit(0)
+
+          path = candidates[0]
+          source = path.read_text()
+          if 'override fun onUserLeaveHint()' in source:
+              print('PiP callback already exists; leaving MainActivity unchanged.')
+              raise SystemExit(0)
+
+          match = re.search(r'class\s+MainActivity\s*:\s*FlutterActivity\s*\(\s*\)\s*(\{)?', source)
+          if not match:
+              print('MainActivity is custom or uses a different superclass; not modifying it automatically.')
+              raise SystemExit(0)
+
+          imports = [
+              'import android.app.PictureInPictureParams',
+              'import android.os.Build',
+              'import android.util.Rational',
+          ]
+          package_match = re.search(r'(?m)^package\s+[\w.]+\s*$', source)
+          insertion = package_match.end() if package_match else 0
+          missing = [item for item in imports if item not in source]
+          if missing:
+              source = source[:insertion] + ('\n\n' if insertion else '') + '\n'.join(missing) + '\n' + source[insertion:]
+              match = re.search(r'class\s+MainActivity\s*:\s*FlutterActivity\s*\(\s*\)\s*(\{)?', source)
+
+          method = '''
+          override fun onUserLeaveHint() {
+              super.onUserLeaveHint()
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                  try {
+                      val params = PictureInPictureParams.Builder()
+                          .setAspectRatio(Rational(16, 9))
+                          .build()
+                      enterPictureInPictureMode(params)
+                  } catch (_: Exception) {
+                      // PiP is not supported on every Android device.
+                  }
+              }
+          }
+          '''
+          if match.group(1):
+              closing = source.rfind('}')
+              if closing <= match.end():
+                  raise SystemExit('Could not find MainActivity closing brace')
+              source = source[:closing] + method + '\n' + source[closing:]
+          else:
+              source = source[:match.end()] + ' {\n' + method + '\n}\n' + source[match.end():]
+          path.write_text(source)
+          print(f'Enabled PiP callback in {path}')
+          PY
+
+      - name: Configure transparent launch window
+        env:
+          BUILD_DIR: ${{ env.BUILD_DIR }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          base = Path(os.environ['BUILD_DIR']) / 'android' / 'app' / 'src' / 'main' / 'res'
+          for path in base.glob('values*/styles.xml'):
+              text = path.read_text()
+              text = re.sub(r'<item name="android:windowBackground">.*?</item>', '<item name="android:windowBackground">@android:color/transparent</item>', text, flags=re.S)
+              if 'LaunchTheme' in text and 'windowDisablePreview' not in text:
+                  text = text.replace('</style>', '        <item name="android:windowDisablePreview">true</item>\n    </style>', 1)
+              path.write_text(text)
+          PY
+
+      - name: Resolve Flutter dependencies
+        working-directory: ${{ env.BUILD_DIR }}
+        run: flutter pub get
+
+      - name: Analyze Flutter source (diagnostic)
+        working-directory: ${{ env.BUILD_DIR }}
+        continue-on-error: true
+        run: flutter analyze --no-pub
+
+      - name: Build release APK
+        working-directory: ${{ env.BUILD_DIR }}
+        run: flutter build apk --release --no-pub
+
+      - name: Prepare APK and checksum
+        env:
+          BUILD_DIR: ${{ env.BUILD_DIR }}
+        run: |
+          mkdir -p release-files
+          cp "$BUILD_DIR/build/app/outputs/flutter-apk/app-release.apk" release-files/app-release.apk
+          sha256sum release-files/app-release.apk > release-files/app-release.apk.sha256
+          ls -lh release-files/
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ananta-ott-apk-${{ github.run_number }}
+          path: release-files/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release and upload APK
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Ananta OTT Build ${{ github.run_number }}
+          tag_name: auto-build-${{ github.run_id }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            Automated Ananta OTT APK build.
+
+            - App version: from `pubspec.yaml`
+            - Android build number: ${{ env.APP_BUILD_NUMBER }}
+            - Workflow run: ${{ github.run_number }}
+            - Source commit: ${{ github.sha }}
+            - Branch: ${{ github.ref_name }}
+          files: |
+            release-files/app-release.apk
+            release-files/app-release.apk.sha256
+          make_latest: true
+          fail_on_unmatched_files: true
+
+      - name: Commit updated app version metadata to main
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_NUMBER: ${{ env.APP_BUILD_NUMBER }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add version.json
+          if git diff --cached --quiet; then
+            echo "Version metadata did not change; nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore(release): update app version for build ${BUILD_NUMBER}"
+          git push origin HEAD:main
