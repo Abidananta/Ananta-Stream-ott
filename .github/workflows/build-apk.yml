@@ -84,7 +84,9 @@ jobs:
                   val builder = PictureInPictureParams.Builder()
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                       builder.setAutoEnterEnabled(true)
-                      builder.setSeamlessSourceRectHint(
+                      // setSeamlessSourceRectHint() is not an Android API.
+                      // Keep the standard PiP source rect API for Android 12+.
+                      builder.setSourceRectHint(
                           android.graphics.Rect(0, 0, resources.displayMetrics.widthPixels,
                               (resources.displayMetrics.widthPixels * 9L / 16L).toInt())
                       )
