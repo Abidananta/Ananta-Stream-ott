@@ -4,9 +4,10 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ['v*']
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -33,39 +34,6 @@ jobs:
           java -version
           flutter --version
 
-      - name: Set up Android SDK command-line tools
-        uses: android-actions/setup-android@v3
-
-      - name: Prepare Android SDK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          if [ -z "$SDK_ROOT" ]; then
-            echo "::error::ANDROID_HOME and ANDROID_SDK_ROOT are both unset after Android SDK setup."
-            env | grep -E 'ANDROID|JAVA_HOME' || true
-            exit 1
-          fi
-          echo "Android SDK root: $SDK_ROOT"
-          SDKMANAGER="$(command -v sdkmanager || true)"
-          if [ -z "$SDKMANAGER" ] && [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          fi
-          if [ -z "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -print -quit 2>/dev/null || true)"
-          fi
-          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager is missing even after android-actions/setup-android."
-            find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print 2>/dev/null || true
-            exit 1
-          fi
-          echo "Using sdkmanager: $SDKMANAGER"
-          set +o pipefail
-          yes | "$SDKMANAGER" --licenses >/dev/null
-          set -o pipefail
-          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
-          "$SDKMANAGER" --list_installed
-
       - name: Generate Android project scaffolding
         run: flutter create --platforms=android --org com.ananta --project-name ott build_app
 
@@ -88,6 +56,8 @@ jobs:
               return any(el.tag == tag and el.get(ns + attr) == value for el in root)
           if not has_tag('uses-permission', 'name', 'android.permission.INTERNET'):
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.INTERNET'); root.insert(0, el)
+          if not has_tag('uses-permission', 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'):
+              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'); root.insert(1, el)
           if not has_tag('uses-feature', 'name', 'android.hardware.touchscreen'):
               el = ET.Element('uses-feature'); el.set(ns + 'name', 'android.hardware.touchscreen'); el.set(ns + 'required', 'false'); root.insert(1, el)
           app = root.find('application')
@@ -150,3 +120,12 @@ jobs:
           path: build_app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish APK to GitHub Release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Ananta OTT ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: build_app/build/app/outputs/flutter-apk/app-release.apk
