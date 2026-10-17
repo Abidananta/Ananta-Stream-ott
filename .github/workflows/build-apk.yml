@@ -38,9 +38,26 @@ jobs:
 
       - name: Copy app source and configure Android TV icon and manifest
         run: |
+          test -f lib/main.dart
+          test -f lib/update_checker.dart
           cp lib/main.dart build_app/lib/main.dart
           cp lib/update_checker.dart build_app/lib/update_checker.dart
           cp pubspec.yaml build_app/pubspec.yaml
+          # Flutter's generated test imports package:ott and MyApp, which do not
+          # exist in this app. Remove that template test from the temporary build.
+          rm -rf build_app/test
+          # Guard a nullable EPG program in repository revisions that use this
+          # display expression. The current source may already have the fix.
+          python3 - <<'PYFIX'
+          from pathlib import Path
+          p = Path('build_app/lib/main.dart')
+          s = p.read_text()
+          s = s.replace(
+              'Text(_epgLabelForProgram(program),',
+              'if (program != null) Text(_epgLabelForProgram(program),'
+          )
+          p.write_text(s)
+          PYFIX
           mkdir -p build_app/android/app/src/main/res/drawable-nodpi
           cp assets/ananta_launcher_icon.png build_app/android/app/src/main/res/drawable-nodpi/ananta_launcher_icon.png
           cp assets/ananta_tv_banner.png build_app/android/app/src/main/res/drawable-nodpi/ananta_tv_banner.png
