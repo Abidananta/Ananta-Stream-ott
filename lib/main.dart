@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,6 +24,11 @@ const List<String> epgSourceUrls = [
   'https://avkb.short.gy/jioepg.xml.gz',
   'https://avkb.short.gy/epg.xml.gz',
 ];
+
+// GitHub Releases is the source of truth for in-app updates. Publish a release
+// with an APK asset (e.g. app-release.apk) and a semantic version tag (v1.0.3).
+const String githubReleasesApi =
+    'https://api.github.com/repos/Abidananta/Ananta-Stream-ott/releases/latest';
 
 const Color accentColor = Color(0xFF9B87FF);
 const Color backgroundColor = Color(0xFF090914);
@@ -167,7 +174,6 @@ class AnantaPlayerController {
       debugPrint('Ananta video-height stream error: $error');
     });
     _errorSubscription = _engine.stream.error.listen((value) {
-      if (value.trim().isNotEmpty) _error = value;
       debugPrint('Ananta media engine error for $uri: $value');
     }, onError: (Object error) {
       debugPrint('Ananta media error stream failure: $error');
@@ -382,6 +388,204 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   bool _logoDownloadRunning = false;
   bool _appInBackground = false;
   bool _shuttingDownPlayback = false;
+  bool _updateCheckRunning = false;
+  bool _updateDialogVisible = false;
+  bool _updateDownloading = false;
+  double _updateDownloadProgress = 0;
+
+  int _versionCompare(String a, String b) {
+    List<int> parts(String value) {
+      final cleaned = value.trim().replaceFirst(RegExp(r'^[vV]'), '').split('+').first;
+      return cleaned.split('.').map((part) {
+        final match = RegExp(r'^\d+').firstMatch(part.trim());
+        return match == null ? 0 : int.tryParse(match.group(0)!) ?? 0;
+      }).toList();
+    }
+    final left = parts(a);
+    final right = parts(b);
+    final count = left.length > right.length ? left.length : right.length;
+    for (var i = 0; i < count; i++) {
+      final x = i < left.length ? left[i] : 0;
+      final y = i < right.length ? right[i] : 0;
+      if (x != y) return x.compareTo(y);
+    }
+    return 0;
+  }
+
+  Future<void> _checkForAppUpdate() async {
+    if (_updateCheckRunning || !mounted) return;
+    _updateCheckRunning = true;
+    try {
+      final response = await http.get(
+        Uri.parse(githubReleasesApi),
+        headers: const {
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'AnantaOTT-Updater',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      ).timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) {
+        debugPrint('Ananta updater: GitHub returned ${response.statusCode}');
+        return;
+      }
+      final data = jsonDecode(response.body);
+      if (data is! Map<String, dynamic> || data['draft'] == true || data['prerelease'] == true) return;
+      final tag = (data['tag_name'] ?? '').toString().trim();
+      final assets = data['assets'];
+      if (tag.isEmpty || assets is! List) return;
+      final apk = assets.whereType<Map>().cast<Map>().firstWhere(
+        (asset) {
+          final name = (asset['name'] ?? '').toString().toLowerCase();
+          final url = (asset['browser_download_url'] ?? '').toString();
+          return name.endsWith('.apk') && url.startsWith('https://');
+        },
+        orElse: () => <String, dynamic>{},
+      );
+      final downloadUrl = (apk['browser_download_url'] ?? '').toString();
+      if (downloadUrl.isEmpty) {
+        debugPrint('Ananta updater: latest release has no APK asset');
+        return;
+      }
+      final info = await PackageInfo.fromPlatform();
+      final installed = info.version;
+      final releaseVersion = tag.replaceFirst(RegExp(r'^[vV]'), '');
+      if (_versionCompare(releaseVersion, installed) <= 0 || !mounted || _updateDialogVisible) return;
+      final notes = (data['body'] ?? '').toString().trim();
+      final releaseName = (data['name'] ?? tag).toString();
+      _updateDialogVisible = true;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: true,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Ananta OTT update available'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('$releaseName is ready to install.'),
+                const SizedBox(height: 8),
+                Text('Installed version: $installed\nNew version: $releaseVersion'),
+                if (notes.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text('What’s new', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  Text(notes.length > 900 ? '${notes.substring(0, 900)}…' : notes),
+                ],
+                const SizedBox(height: 12),
+                const Text('The Android installer will ask you to confirm installation.'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Later'),
+            ),
+            FilledButton.icon(
+              onPressed: _updateDownloading ? null : () {
+                Navigator.of(dialogContext).pop();
+                unawaited(_downloadAndInstallUpdate(downloadUrl, releaseVersion));
+              },
+              icon: const Icon(Icons.download),
+              label: const Text('Update now'),
+            ),
+          ],
+        ),
+      ).whenComplete(() => _updateDialogVisible = false);
+    } catch (error) {
+      // Update checks are optional and must never block opening the TV app.
+      debugPrint('Ananta updater check failed: $error');
+    } finally {
+      _updateCheckRunning = false;
+    }
+  }
+
+  Future<void> _downloadAndInstallUpdate(String url, String version) async {
+    if (_updateDownloading || !mounted) return;
+    setState(() {
+      _updateDownloading = true;
+      _updateDownloadProgress = 0;
+    });
+    final progress = ValueNotifier<double>(0);
+    bool downloadDialogOpen = true;
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Downloading Ananta OTT'),
+        content: SizedBox(
+          width: 320,
+          child: ValueListenableBuilder<double>(
+            valueListenable: progress,
+            builder: (context, value, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LinearProgressIndicator(value: value > 0 && value < 1 ? value : null),
+                const SizedBox(height: 10),
+                Text(value > 0 ? '${(value * 100).round()}% downloaded' : 'Connecting to GitHub…'),
+              ],
+            ),
+          ),
+        ),
+        actions: [TextButton(onPressed: () { downloadDialogOpen = false; Navigator.of(dialogContext).pop(); }, child: const Text('Close'))],
+      ),
+    ));
+    try {
+      final request = http.Request('GET', Uri.parse(url))
+        ..headers.addAll(const {'User-Agent': 'AnantaOTT-Updater', 'Accept': 'application/octet-stream'});
+      final client = http.Client();
+      try {
+        final response = await client.send(request).timeout(const Duration(seconds: 30));
+        if (response.statusCode != 200) throw HttpException('APK download failed (HTTP ${response.statusCode})');
+        final total = response.contentLength ?? 0;
+        final base = await getTemporaryDirectory();
+        final folder = Directory('${base.path}/AnantaOTT');
+        await folder.create(recursive: true);
+        final file = File('${folder.path}/ananta-ott-update-$version.apk');
+        final sink = file.openWrite();
+        var received = 0;
+        try {
+          await for (final chunk in response.stream) {
+            sink.add(chunk);
+            received += chunk.length;
+            if (total > 0) {
+              final value = (received / total).clamp(0.0, 1.0);
+              progress.value = value;
+              _updateDownloadProgress = value;
+            }
+          }
+        } finally {
+          await sink.close();
+        }
+        if (received < 1024 || !await file.exists()) throw const FileSystemException('Downloaded APK is empty or incomplete');
+        if (mounted && downloadDialogOpen) Navigator.of(context, rootNavigator: true).pop();
+        downloadDialogOpen = false;
+        // Android opens its package installer. On first use, Android may ask to
+        // allow installs from this app in Settings; this is an OS requirement.
+        final result = await OpenFilex.open(file.path, type: 'application/vnd.android.package-archive');
+        if (result.type != ResultType.done && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('APK downloaded, but Android could not open the installer: ${result.message}')),
+          );
+        }
+      } finally {
+        client.close();
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Update failed: $error'), duration: const Duration(seconds: 6)),
+        );
+      }
+      debugPrint('Ananta updater download/install failed: $error');
+    } finally {
+      if (downloadDialogOpen && mounted) Navigator.of(context, rootNavigator: true).maybePop();
+      progress.dispose();
+      if (mounted) setState(() => _updateDownloading = false);
+    }
+  }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -428,7 +632,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _initializeEpg();
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _focusTvPlayer();
+      // Run after the first frame so update checking never delays app startup.
+      unawaited(_checkForAppUpdate());
+    });
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
       // Avoid rebuilding the full player every minute when guide overlays are hidden.
       if (mounted && (_tvEpgVisible || _channelInfoVisible)) setState(() {});
@@ -441,13 +649,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (player == null) return;
       final value = player.value;
       if (value.hasError) {
-        _runtimeRetryCount++;
-        _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
+        if (_runtimeRetryCount < 6) {
+          _runtimeRetryCount++;
+          _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
+        }
         return;
       }
       if (value.isBuffering) {
         _bufferingStartedAt ??= DateTime.now();
-        if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24)) {
+        if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24) && _runtimeRetryCount < 6) {
           _runtimeRetryCount++;
           _bufferingStartedAt = null;
           _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
@@ -1077,24 +1287,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
               leading: CircleAvatar(
-                radius: 46,
+                radius: 30,
                 backgroundColor: accentColor.withOpacity(0.16),
-                // Contain the complete source logo inside the larger circle. Cover
-                // crops wide/tall channel artwork and cuts off text around its edges.
-                child: logoUrl.isEmpty
-                    ? const Icon(Icons.live_tv, color: accentColor, size: 40)
-                    : Padding(
-                        padding: const EdgeInsets.all(3),
-                        child: Image(
-                          image: _logoImageProvider(logoUrl),
-                          fit: BoxFit.contain,
-                          width: 64,
-                          height: 64,
-                          errorBuilder: (_, __, ___) => const Icon(
-                            Icons.live_tv, color: accentColor, size: 40,
-                          ),
-                        ),
-                      ),
+                backgroundImage: logoUrl.isEmpty ? null : _logoImageProvider(logoUrl),
+                child: logoUrl.isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
@@ -1526,17 +1722,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           'Accept-Encoding': 'gzip',
         }).timeout(const Duration(seconds: 20));
         if (response.statusCode != 200) continue;
-        // Keep a copy of each EPG feed in app-specific local storage for offline
-        // diagnostics/reuse. No broad/shared-storage permission is needed.
-        try {
-          final base = await getApplicationSupportDirectory();
-          final folder = Directory('${base.path}/AnantaOTT/epg_sources');
-          await folder.create(recursive: true);
-          final sourceName = Uri.parse(source).pathSegments.last.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-          await File('${folder.path}/$sourceName').writeAsBytes(response.bodyBytes, flush: false);
-        } catch (cacheError) {
-          debugPrint('EPG source file cache failed: $cacheError');
-        }
         final parsed = await compute(_parseEpgPayload, response.bodyBytes);
         final sourceNames = (parsed['namesById'] as Map).map<String, List<String>>(
           (key, value) => MapEntry(key.toString(), (value as List).map((item) => item.toString()).toList()),
@@ -2138,12 +2323,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (!mounted || requestId != _playRequestId || _appInBackground) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = 'Network/stream timeout. Reconnecting…';
-        _status = 'Reconnecting to ${channel.name}';
+        _playerError = retryAttempt < 6 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Stream timed out after 6 retries.';
+        _status = 'Stream timed out';
         _connecting = false;
       });
-      {
-        await Future.delayed(Duration(seconds: (1 + retryAttempt).clamp(1, 20).toInt()));
+      if (retryAttempt < 6) {
+        await Future.delayed(Duration(seconds: 1 + retryAttempt));
         if (mounted && !_appInBackground && requestId == _playRequestId) {
           await _playChannel(channel, retryAttempt: retryAttempt + 1);
         }
@@ -2155,12 +2340,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (!mounted || requestId != _playRequestId || _appInBackground) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = 'Stream interrupted. Reconnecting…';
-        _status = 'Reconnecting to ${channel.name}';
+        _playerError = retryAttempt < 6 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Unable to play after 6 retries.';
+        _status = 'Playback failed';
         _connecting = false;
       });
-      {
-        await Future.delayed(Duration(seconds: (1 + retryAttempt).clamp(1, 20).toInt()));
+      if (retryAttempt < 6) {
+        await Future.delayed(Duration(seconds: 1 + retryAttempt));
         if (mounted && !_appInBackground && requestId == _playRequestId) {
           await _playChannel(channel, retryAttempt: retryAttempt + 1);
         }
@@ -2211,18 +2396,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       ]);
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     } else {
-      // Exit fullscreen back to the normal mobile portrait layout.
-      // Large landscape devices (Android TV/tablets) retain their natural orientation.
-      final view = WidgetsBinding.instance.platformDispatcher.views.first;
-      final logicalWidth = view.physicalSize.width / view.devicePixelRatio;
-      final logicalHeight = view.physicalSize.height / view.devicePixelRatio;
-      if (logicalWidth < 700 && logicalHeight < 700) {
-        await SystemChrome.setPreferredOrientations([
-          DeviceOrientation.portraitUp,
-        ]);
-      } else {
-        await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-      }
+      // Restore sensor/system orientation rather than locking every phone to portrait.
+      // Android TV devices can remain in their normal landscape orientation.
+      await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     if (!mounted) return;
@@ -2507,7 +2683,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                             ),
                             child: _logoForChannel(_selectedChannel!).isNotEmpty
                                 ? ClipRRect(borderRadius: BorderRadius.circular(10), child: CachedNetworkImage(imageUrl: _logoForChannel(_selectedChannel!), fit: BoxFit.contain, placeholder: (_, __) => const Icon(Icons.live_tv, color: accentColor), errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
-                                : const Icon(Icons.live_tv, color: accentColor, size: 34),
+                                : const Icon(Icons.live_tv, color: accentColor, size: 30),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
@@ -2606,11 +2782,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           leading: CircleAvatar(
-            radius: 36,
+            radius: 32,
             backgroundColor: accentColor.withOpacity(0.17),
             backgroundImage: _logoForChannel(channel).isNotEmpty ? _logoImageProvider(_logoForChannel(channel)) : null,
             child: _logoForChannel(channel).isEmpty
-                ? const Icon(Icons.live_tv, color: accentColor, size: 34)
+                ? const Icon(Icons.live_tv, color: accentColor, size: 30)
                 : null,
           ),
           title: Text(
