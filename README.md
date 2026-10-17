@@ -13,7 +13,3 @@ The source has not been compiled or tested on a physical TV box in this package.
 
 Audio compatibility update
 Playback is implemented with media_kit/libmpv rather than Flutter video_player. The bundled native playback libraries provide broader codec support, intended to address MPEG Audio Layer 1/2 (MPGA/MP2) streams. This source has not been compiled or device-tested in this environment; verify the GitHub Actions build and test on the target Android TV device.
-Android package and updates
-The Android application ID is fixed at `com.ananta.ott`. Release builds must use the same signing keystore for every version. Configure GitHub Actions secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. If the old 1.0.5 APK was signed with a different/unavailable key, Android cannot replace it in place; that is a signing-certificate restriction. After one clean install of the newly signed build, subsequent releases update in place.
-Mobile Picture-in-Picture
-On Android 8.0+ phones/tablets, leaving the app while a live channel is playing enters PiP. The activity remains alive and the same media player/channel state is restored when the user returns. Android TV does not force phone-style PiP.
