@@ -1,6 +1,6 @@
 {
-  "version": "1.0.4",
-  "versionCode": 5,
+  "version": "1.0.5",
+  "versionCode": 6,
   "releaseNotes": "Fixed release build errors and improved mobile fullscreen exit orientation.",
   "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/latest/download/app-release.apk"
 }
