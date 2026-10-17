@@ -192,7 +192,7 @@ jobs:
       - name: Verify application version
         working-directory: build_app
         run: |
-          grep -q "version: 1.0.6+7" pubspec.yaml
+          grep -q "version: 1.0.7+8" pubspec.yaml
 
       - name: Build release APK
         working-directory: build_app
@@ -207,16 +207,21 @@ jobs:
           retention-days: 14
 
       - name: Publish APK to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v1.0.6
-          name: Ananta OTT v1.0.6
-          body: |
-            ## Ananta OTT v1.0.6
-            - Android mobile Picture-in-Picture when minimizing/home
-            - Restores the same channel/player/UI state when returning
-            - Mobile player controls sit above the bottom channel information bar with a clear gap
-            - APK automatically attached to this GitHub Release
-          files: build_app/build/app/outputs/flutter-apk/app-release.apk
-          overwrite_files: true
-          make_latest: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # GitHub immutable releases cannot have assets deleted/replaced.
+          # Create a new release for a new app version and skip publishing
+          # when that release already exists (safe workflow re-runs).
+          TAG="v1.0.7"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; immutable release is left unchanged."
+            exit 0
+          fi
+
+          gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT v1.0.7"             --notes "## Ananta OTT v1.0.7
+
+          - Improved Android mobile Picture-in-Picture behavior
+          - Preserves the same channel/player/UI state when returning from PiP
+          - Fixed GitHub Release publishing for immutable releases
+          - APK automatically attached to this GitHub Release"             --latest
