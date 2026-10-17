@@ -324,7 +324,7 @@ class AnantaHomePage extends StatefulWidget {
   State<AnantaHomePage> createState() => _AnantaHomePageState();
 }
 
-class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
+class _AnantaHomePageState extends State<AnantaHomePage> {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
@@ -380,7 +380,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     // Check the hosted version manifest after the first frame so update prompts
     // can safely use this page's BuildContext.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -539,8 +538,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    // Keep the channel information visible longer on Android TV.
-    _channelInfoTimer = Timer(const Duration(seconds: 20), () {
+    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -2239,7 +2237,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             if (_controlsVisible) ...[
               if (!tvMode)
                 Positioned(
-                bottom: _channelInfoVisible ? 142 : 12,
+                top: 8,
                 left: 10,
                 right: 10,
                 child: _glass(
@@ -2342,14 +2340,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     ),
                   ),
                 ),
-              if (_selectedChannel != null && _channelInfoVisible)
+              if (tvMode && _selectedChannel != null && _channelInfoVisible)
                 Positioned(
-                  // Keep the information card at the bottom on phones and TVs.
-                  // TV safe-area spacing accounts for overscan; phones use a
-                  // compact bottom inset so the card no longer covers the top.
-                  bottom: tvMode ? (initialized ? 48 : 20) : 12,
-                  left: tvMode ? 18 : 10,
-                  right: tvMode ? 18 : 10,
+                  // Keep the live information card slightly above the bottom edge
+                  // so it does not sit on top of TV overscan/system UI.
+                  bottom: initialized ? 48 : 20,
+                  left: 18,
+                  right: 18,
                   child: IgnorePointer(
                     child: _glass(
                       radius: 14,
@@ -2504,29 +2501,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     );
   }
 
-  // Keep the same player layout/orientation when returning from Android PiP.
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed || !mounted) return;
-    // Re-apply the layout that was active before the app entered PiP.
-    unawaited(SystemChrome.setPreferredOrientations(
-      _fullscreen || _fullscreenOnTv
-          ? const [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
-          : const [DeviceOrientation.portraitUp],
-    ));
-    unawaited(SystemChrome.setEnabledSystemUIMode(
-      _fullscreen ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
-    ));
-    if (mounted) setState(() => _controlsVisible = true);
-    _scheduleControlsHide();
-  }
-
   // --------------------------------------------------
   // DISPOSE
   // --------------------------------------------------
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _controlsTimer?.cancel();
     _channelInfoTimer?.cancel();
     _epgClock?.cancel();
