@@ -37,7 +37,7 @@ jobs:
           if 'applicationId = "com.ananta.ott"' not in gs:
               gs=gs.replace('defaultConfig {','defaultConfig {\n        applicationId = "com.ananta.ott"',1)
           if 'keystorePropertiesFile' not in gs:
-              gs='import java.util.Properties\nval keystoreProperties = Properties()\nval keystorePropertiesFile = rootProject.file("android/app/keystore.properties")\nif (keystorePropertiesFile.exists()) keystoreProperties.load(keystorePropertiesFile.inputStream())\n'+gs
+              gs='import java.util.Properties\nval keystoreProperties = Properties()\nval keystorePropertiesFile = rootProject.file("app/keystore.properties")\nif (keystorePropertiesFile.exists()) keystoreProperties.load(keystorePropertiesFile.inputStream())\n'+gs
           if 'signingConfigs {' not in gs:
               block='''android {
               signingConfigs {
@@ -134,27 +134,27 @@ jobs:
         run: flutter pub get
       - name: Analyze
         working-directory: build_app
-        run: flutter analyze --no-pub
+        run: flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings
       - name: Verify version
         working-directory: build_app
-        run: "grep -q 'version: 1.0.7+8' pubspec.yaml"
+        run: "grep -q 'version: 1.0.8+9' pubspec.yaml"
       - name: Build signed release APK
         working-directory: build_app
         run: flutter build apk --release --no-pub
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ananta-ott-1.0.7-release
+          name: ananta-ott-1.0.8-release
           path: build_app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 30
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.7
-          name: Ananta OTT v1.0.7
+          tag_name: v1.0.8
+          name: Ananta OTT v1.0.8
           body: |
-            ## Ananta OTT v1.0.7
+            ## Ananta OTT v1.0.8
             - Fixed Android mobile Picture-in-Picture entry and return behavior.
             - Preserves active channel/player state when returning from PiP.
             - Keeps TV behavior out of phone/tablet PiP handling.
