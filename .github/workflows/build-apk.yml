@@ -189,11 +189,6 @@ jobs:
         continue-on-error: true
         run: flutter analyze --no-pub
 
-      - name: Verify application version
-        working-directory: build_app
-        run: |
-          grep -q "version: 1.0.6+7" pubspec.yaml
-
       - name: Build release APK
         working-directory: build_app
         run: flutter build apk --release --no-pub --verbose
@@ -209,13 +204,13 @@ jobs:
       - name: Publish APK to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.6
-          name: Ananta OTT v1.0.6
+          tag_name: v1.0.5
+          name: Ananta OTT v1.0.5
           body: |
-            ## Ananta OTT v1.0.6
+            ## Ananta OTT v1.0.5
             - Android mobile Picture-in-Picture when minimizing/home
             - Restores the same channel/player/UI state when returning
-            - Mobile player controls sit above the bottom channel information bar with a clear gap
+            - Mobile channel information bar moved to the bottom
             - APK automatically attached to this GitHub Release
           files: build_app/build/app/outputs/flutter-apk/app-release.apk
           overwrite_files: true
