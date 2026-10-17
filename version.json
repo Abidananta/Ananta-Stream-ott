@@ -1,6 +1,6 @@
 {
   "version": "1.0.7",
-  "versionCode": 6,
-  "releaseNotes": "Fixed release build errors and improved mobile fullscreen exit orientation.",
+  "versionCode": 8,
+  "releaseNotes": "Moved mobile channel bar to the bottom and preserved player layout when returning from Android PiP.",
   "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/latest/download/app-release.apk"
 }
