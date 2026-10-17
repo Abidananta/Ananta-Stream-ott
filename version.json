@@ -1,5 +1,5 @@
 {
-  "version": "1.0.6",
+  "version": "1.0.5",
   "versionCode": 7,
   "releaseNotes": "Fixed Android PiP GitHub Actions build step.",
   "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/latest/download/app-release.apk"
