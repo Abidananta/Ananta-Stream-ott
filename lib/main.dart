@@ -1,9 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'update_checker.dart';
 
 const String appName = 'Ananta OTT';
 const String playlistUrl =
@@ -24,10 +22,6 @@ const List<String> epgSourceUrls = [
   'https://avkb.short.gy/jioepg.xml.gz',
   'https://avkb.short.gy/epg.xml.gz',
 ];
-
-// GitHub Releases API used to detect the latest stable public release.
-const String githubReleasesApi =
-    'https://api.github.com/repos/Abidananta/Ananta-Stream-ott/releases/latest';
 
 const Color accentColor = Color(0xFF9B87FF);
 const Color backgroundColor = Color(0xFF090914);
@@ -197,7 +191,6 @@ class AnantaPlayerController {
   }
   Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
   Future<void> play() => _engine.play();
-  Future<void> stop() => _engine.stop();
 
   // Wait until libmpv reports real video dimensions before committing a new
   // channel to the UI. Opening a media item is not the same as having a frame
@@ -331,7 +324,7 @@ class AnantaHomePage extends StatefulWidget {
   State<AnantaHomePage> createState() => _AnantaHomePageState();
 }
 
-class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
+class _AnantaHomePageState extends State<AnantaHomePage> {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
@@ -381,267 +374,28 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   final ScrollController _tvEpgScrollController = ScrollController();
   int _playlistRequestId = 0;
   int _playRequestId = 0;
-  bool _appInBackground = false;
-  bool _shuttingDownPlayback = false;
-  Directory? _logoDirectory;
-  final Map<String, String> _localLogoPaths = {};
-  bool _updateCheckRunning = false;
-  bool _updateDialogVisible = false;
-  bool _updateDownloading = false;
-  double _updateDownloadProgress = 0;
-
-  int _versionCompare(String a, String b) {
-    List<int> parts(String value) {
-      final cleaned = value.trim().replaceFirst(RegExp(r'^[vV]'), '').split('+').first;
-      return cleaned.split('.').map((part) {
-        final match = RegExp(r'^\d+').firstMatch(part.trim());
-        return match == null ? 0 : int.tryParse(match.group(0)!) ?? 0;
-      }).toList();
-    }
-    final left = parts(a);
-    final right = parts(b);
-    final count = left.length > right.length ? left.length : right.length;
-    for (var i = 0; i < count; i++) {
-      final x = i < left.length ? left[i] : 0;
-      final y = i < right.length ? right[i] : 0;
-      if (x != y) return x.compareTo(y);
-    }
-    return 0;
-  }
-
-  Future<void> _checkForAppUpdate() async {
-    if (_updateCheckRunning || !mounted) return;
-    _updateCheckRunning = true;
-    try {
-      final response = await http.get(
-        Uri.parse(githubReleasesApi),
-        headers: const {
-          'Accept': 'application/vnd.github+json',
-          'User-Agent': 'AnantaOTT-Updater',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      ).timeout(const Duration(seconds: 8));
-      if (response.statusCode != 200) {
-        debugPrint('Ananta updater: GitHub returned ${response.statusCode}');
-        return;
-      }
-      final data = jsonDecode(response.body);
-      if (data is! Map<String, dynamic> || data['draft'] == true || data['prerelease'] == true) return;
-      final tag = (data['tag_name'] ?? '').toString().trim();
-      final assets = data['assets'];
-      if (tag.isEmpty || assets is! List) return;
-      final apk = assets.whereType<Map>().cast<Map>().firstWhere(
-        (asset) {
-          final name = (asset['name'] ?? '').toString().toLowerCase();
-          final url = (asset['browser_download_url'] ?? '').toString();
-          return name.endsWith('.apk') && url.startsWith('https://');
-        },
-        orElse: () => <String, dynamic>{},
-      );
-      final downloadUrl = (apk['browser_download_url'] ?? '').toString();
-      if (downloadUrl.isEmpty) {
-        debugPrint('Ananta updater: latest release has no APK asset');
-        return;
-      }
-      final info = await PackageInfo.fromPlatform();
-      final installed = info.version;
-      final releaseVersion = tag.replaceFirst(RegExp(r'^[vV]'), '');
-      if (_versionCompare(releaseVersion, installed) <= 0 || !mounted || _updateDialogVisible) return;
-      final notes = (data['body'] ?? '').toString().trim();
-      final releaseName = (data['name'] ?? tag).toString();
-      _updateDialogVisible = true;
-      await showDialog<void>(
-        context: context,
-        barrierDismissible: true,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Ananta OTT update available'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('$releaseName is ready to install.'),
-                const SizedBox(height: 8),
-                Text('Installed version: $installed\nNew version: $releaseVersion'),
-                if (notes.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  const Text('What’s new', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  Text(notes.length > 900 ? '${notes.substring(0, 900)}…' : notes),
-                ],
-                const SizedBox(height: 12),
-                const Text('The Android installer will ask you to confirm installation.'),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Later'),
-            ),
-            FilledButton.icon(
-              onPressed: _updateDownloading ? null : () {
-                Navigator.of(dialogContext).pop();
-                unawaited(_downloadAndInstallUpdate(downloadUrl, releaseVersion));
-              },
-              icon: const Icon(Icons.download),
-              label: const Text('Update now'),
-            ),
-          ],
-        ),
-      ).whenComplete(() => _updateDialogVisible = false);
-    } catch (error) {
-      // Update checks are optional and must never block opening the TV app.
-      debugPrint('Ananta updater check failed: $error');
-    } finally {
-      _updateCheckRunning = false;
-    }
-  }
-
-  Future<void> _downloadAndInstallUpdate(String url, String version) async {
-    if (_updateDownloading || !mounted) return;
-    setState(() {
-      _updateDownloading = true;
-      _updateDownloadProgress = 0;
-    });
-    final progress = ValueNotifier<double>(0);
-    bool downloadDialogOpen = true;
-    unawaited(showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Downloading Ananta OTT'),
-        content: SizedBox(
-          width: 320,
-          child: ValueListenableBuilder<double>(
-            valueListenable: progress,
-            builder: (context, value, _) => Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                LinearProgressIndicator(value: value > 0 && value < 1 ? value : null),
-                const SizedBox(height: 10),
-                Text(value > 0 ? '${(value * 100).round()}% downloaded' : 'Connecting to GitHub…'),
-              ],
-            ),
-          ),
-        ),
-        actions: [TextButton(onPressed: () { downloadDialogOpen = false; Navigator.of(dialogContext).pop(); }, child: const Text('Close'))],
-      ),
-    ));
-    try {
-      final request = http.Request('GET', Uri.parse(url))
-        ..headers.addAll(const {'User-Agent': 'AnantaOTT-Updater', 'Accept': 'application/octet-stream'});
-      final client = http.Client();
-      try {
-        final response = await client.send(request).timeout(const Duration(seconds: 30));
-        if (response.statusCode != 200) throw HttpException('APK download failed (HTTP ${response.statusCode})');
-        final total = response.contentLength ?? 0;
-        final base = await getTemporaryDirectory();
-        final folder = Directory('${base.path}/AnantaOTT');
-        await folder.create(recursive: true);
-        final file = File('${folder.path}/ananta-ott-update-$version.apk');
-        final sink = file.openWrite();
-        var received = 0;
-        try {
-          await for (final chunk in response.stream) {
-            sink.add(chunk);
-            received += chunk.length;
-            if (total > 0) {
-              final value = (received / total).clamp(0.0, 1.0);
-              progress.value = value;
-              _updateDownloadProgress = value;
-            }
-          }
-        } finally {
-          await sink.close();
-        }
-        if (received < 1024 || !await file.exists()) throw const FileSystemException('Downloaded APK is empty or incomplete');
-        if (mounted && downloadDialogOpen) Navigator.of(context, rootNavigator: true).pop();
-        downloadDialogOpen = false;
-        // Android opens its package installer. On first use, Android may ask to
-        // allow installs from this app in Settings; this is an OS requirement.
-        final result = await OpenFilex.open(file.path, type: 'application/vnd.android.package-archive');
-        if (result.type != ResultType.done && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('APK downloaded, but Android could not open the installer: ${result.message}')),
-          );
-        }
-      } finally {
-        client.close();
-      }
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Update failed: $error'), duration: const Duration(seconds: 6)),
-        );
-      }
-      debugPrint('Ananta updater download/install failed: $error');
-    } finally {
-      if (downloadDialogOpen && mounted) Navigator.of(context, rootNavigator: true).maybePop();
-      progress.dispose();
-      if (mounted) setState(() => _updateDownloading = false);
-    }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached ||
-        state == AppLifecycleState.hidden) {
-      _appInBackground = true;
-      // Stop both the visible and pending players as soon as Android backgrounds
-      // the app. Do not wait for State.dispose(), which may run later.
-      unawaited(_stopAllPlayback());
-    } else if (state == AppLifecycleState.resumed) {
-      _appInBackground = false;
-    }
-  }
-
-  Future<void> _stopAllPlayback() async {
-    if (_shuttingDownPlayback) return;
-    _shuttingDownPlayback = true;
-    ++_playRequestId; // invalidate in-flight open/retry operations immediately
-    _controlsTimer?.cancel();
-    _channelInfoTimer?.cancel();
-    final active = _player;
-    final pending = _pendingPlayer;
-    _player = null;
-    _pendingPlayer = null;
-    // Stop first, then dispose. Stop is issued to both players before awaiting
-    // either one so a pending channel cannot continue producing audio.
-    final players = <AnantaPlayerController>{if (active != null) active, if (pending != null) pending};
-    await Future.wait(players.map((player) async {
-      try { await player.stop(); } catch (_) {}
-      try { await player.dispose(); } catch (_) {}
-    }));
-    try { await WakelockPlus.disable(); } catch (_) {}
-    _shuttingDownPlayback = false;
-  }
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
+    // Check the hosted version manifest after the first frame so update prompts
+    // can safely use this page's BuildContext.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) AppUpdateChecker.checkForUpdate(context);
+    });
     _loadFavorites();
     _loadPlaylist();
-    unawaited(_initializeLocalLogoCache());
     _initializeEpg();
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _focusTvPlayer();
-      // Run after the first frame so update checking never delays app startup.
-      unawaited(_checkForAppUpdate());
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
-      // Avoid rebuilding the full player every minute when guide overlays are hidden.
-      if (mounted && (_tvEpgVisible || _channelInfoVisible)) setState(() {});
+      if (mounted) setState(() {});
     });
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
     // Recover a stream that stalls after it initially starts; allow six retries.
     _playbackHealthTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      if (!mounted || _appInBackground || _shuttingDownPlayback || _connecting || _selectedChannel == null) return;
+      if (!mounted || _connecting || _selectedChannel == null) return;
       final player = _player;
       if (player == null) return;
       final value = player.value;
@@ -1250,8 +1004,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       channel.url, () => FocusNode(debugLabel: 'channel-${channel.name}'),
     );
     final focusedByIndex = index == _tvFocusedChannelIndex;
-    final logoUrl = _logoForChannel(channel);
-    final program = _epgForChannel(channel);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
       child: Focus(
@@ -1266,7 +1018,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         child: Builder(builder: (context) {
           final focused = Focus.of(context).hasFocus || focusedByIndex;
           return AnimatedContainer(
-            duration: Duration.zero,
+            duration: const Duration(milliseconds: 120),
             decoration: BoxDecoration(
               color: focused
                   ? accentColor.withOpacity(0.34)
@@ -1286,8 +1038,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               leading: CircleAvatar(
                 radius: 30,
                 backgroundColor: accentColor.withOpacity(0.16),
-                backgroundImage: logoUrl.isEmpty ? null : _logoImageProvider(logoUrl),
-                child: logoUrl.isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
+                backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
+                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
@@ -1295,11 +1047,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(_epgLabelForProgram(program), maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: program == null ? Colors.white38 : const Color(0xFFC9BEFF), fontSize: 10, fontWeight: FontWeight.w500)),
+                  Text(_epgLabel(channel), maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: _epgForChannel(channel) == null ? Colors.white38 : const Color(0xFFC9BEFF), fontSize: 10, fontWeight: FontWeight.w500)),
                   const SizedBox(height: 4),
                   ClipRRect(borderRadius: BorderRadius.circular(3), child: LinearProgressIndicator(
-                    value: _epgProgress(program), minHeight: 3,
+                    value: _epgProgress(_epgForChannel(channel)), minHeight: 3,
                     backgroundColor: Colors.white12,
                     valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
                   )),
@@ -1438,68 +1190,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }
     }
     return result;
-  }
-
-
-  Future<void> _initializeLocalLogoCache() async {
-    try {
-      final base = await getApplicationSupportDirectory();
-      final folder = Directory('${base.path}/AnantaOTT/logos');
-      await folder.create(recursive: true);
-      _logoDirectory = folder;
-      final indexFile = File('${base.path}/AnantaOTT/logo_index.json');
-      if (await indexFile.exists()) {
-        final decoded = jsonDecode(await indexFile.readAsString());
-        if (decoded is Map) {
-          for (final entry in decoded.entries) {
-            final path = entry.value.toString();
-            if (await File(path).exists()) _localLogoPaths[entry.key.toString()] = path;
-          }
-        }
-      }
-      if (mounted) setState(() {});
-      unawaited(_downloadMissingLogos());
-    } catch (error) {
-      debugPrint('Local logo cache initialization failed: $error');
-    }
-  }
-
-  ImageProvider<Object> _logoImageProvider(String url) {
-    final local = _localLogoPaths[url];
-    if (local != null && File(local).existsSync()) return FileImage(File(local));
-    return CachedNetworkImageProvider(url);
-  }
-
-  Future<void> _downloadMissingLogos() async {
-    final folder = _logoDirectory;
-    if (folder == null) return;
-    final urls = _channels.map((channel) => channel.logo).where((url) => url.startsWith('http')).toSet();
-    for (final url in urls) {
-      if (_localLogoPaths.containsKey(url)) continue;
-      try {
-        final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 8));
-        if (response.statusCode != 200 || response.bodyBytes.isEmpty) continue;
-        final filename = '${url.hashCode.abs()}.img';
-        final file = File('${folder.path}/$filename');
-        await file.writeAsBytes(response.bodyBytes, flush: true);
-        _localLogoPaths[url] = file.path;
-      } catch (error) {
-        debugPrint('Logo cache download skipped: $error');
-      }
-    }
-    try {
-      final base = await getApplicationSupportDirectory();
-      final indexFile = File('${base.path}/AnantaOTT/logo_index.json');
-      await indexFile.writeAsString(jsonEncode(_localLogoPaths), flush: true);
-    } catch (_) {}
-    if (mounted) setState(() {});
-  }
-
-  String _epgLabelForProgram(EpgProgram program) {
-    final now = DateTime.now().toUtc();
-    if (program.isAiringAt(now)) return 'Now · ${_formatEpgTime(program.stop)}';
-    if (program.start.isAfter(now)) return _formatEpgTime(program.start);
-    return 'Finished';
   }
 
   // --------------------------------------------------
@@ -2773,7 +2463,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _controlsTimer?.cancel();
     _channelInfoTimer?.cancel();
     _epgClock?.cancel();
