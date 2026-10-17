@@ -13,6 +13,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
 
 const String appName = 'Ananta OTT';
+const MethodChannel _pipChannel = MethodChannel('com.ananta.ott/pip');
 const String playlistUrl =
     'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/refs/heads/main/channels.m3u';
 const String ptvStreamUrl =
@@ -324,7 +325,7 @@ class AnantaHomePage extends StatefulWidget {
   State<AnantaHomePage> createState() => _AnantaHomePageState();
 }
 
-class _AnantaHomePageState extends State<AnantaHomePage> {
+class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
   List<Channel> _channels = [ptvChannel];
   Set<String> _favorites = {};
@@ -380,6 +381,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Check the hosted version manifest after the first frame so update prompts
     // can safely use this page's BuildContext.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -538,8 +540,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    // Keep the channel information visible longer on Android TV.
-    _channelInfoTimer = Timer(const Duration(seconds: 20), () {
+    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -2238,7 +2239,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
             if (_controlsVisible) ...[
               if (!tvMode)
                 Positioned(
-                top: 8,
+                bottom: 8,
                 left: 10,
                 right: 10,
                 child: _glass(
@@ -2283,8 +2284,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                 ),
               ),
               if (initialized)
-                Center(
-                  child: _glass(
+                Align(
+                  alignment: tvMode ? Alignment.center : Alignment.bottomCenter,
+                  child: Padding(
+                    padding: EdgeInsets.only(bottom: tvMode ? 0 : 58),
+                    child: _glass(
                     radius: 28,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 4,
@@ -2339,16 +2343,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
                         ),
                       ],
                     ),
+                    ),
                   ),
                 ),
-              if (_selectedChannel != null && _channelInfoVisible)
+              if (tvMode && _selectedChannel != null && _channelInfoVisible)
                 Positioned(
-                  // Keep the information card at the bottom on phones and TVs.
-                  // TV safe-area spacing accounts for overscan; phones use a
-                  // compact bottom inset so the card no longer covers the top.
-                  bottom: tvMode ? (initialized ? 48 : 20) : 12,
-                  left: tvMode ? 18 : 10,
-                  right: tvMode ? 18 : 10,
+                  // Keep the live information card slightly above the bottom edge
+                  // so it does not sit on top of TV overscan/system UI.
+                  bottom: initialized ? 48 : 20,
+                  left: 18,
+                  right: 18,
                   child: IgnorePointer(
                     child: _glass(
                       radius: 14,
@@ -2501,6 +2505,19 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
         ),
       ),
     );
+  }
+
+  // Keep the live player/controller alive when Android backgrounds the app.
+  // Android's native Activity automatically enters Picture-in-Picture on Home;
+  // Flutter is deliberately not disposing or reinitializing the stream here, so
+  // returning from PiP resumes the exact same channel and UI state.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      // Restore the normal UI after leaving PiP without changing channel,
+      // playlist position, fullscreen state, or playback controller.
+      setState(() {});
+    }
   }
 
   // --------------------------------------------------
