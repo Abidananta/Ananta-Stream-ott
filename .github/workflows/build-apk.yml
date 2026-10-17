@@ -46,7 +46,6 @@ jobs:
           activity.write_text(r'''package com.ananta.ott
 
           import android.app.PictureInPictureParams
-          import android.graphics.Rect
           import android.os.Build
           import android.util.Rational
           import io.flutter.embedding.android.FlutterActivity
@@ -56,34 +55,17 @@ jobs:
           class MainActivity : FlutterActivity() {
               private val channelName = "com.ananta.ott/pip"
 
-              override fun onCreate(savedInstanceState: android.os.Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  updatePipParams()
-              }
-
-              override fun onResume() {
-                  super.onResume()
-                  // Register the PiP parameters before the user leaves the app.
-                  // Android 12+ then performs the Home -> PiP transition itself,
-                  // which is more reliable than trying to enter PiP from
-                  // onUserLeaveHint after the activity is already leaving.
-                  updatePipParams()
-              }
-
               override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
                   super.configureFlutterEngine(flutterEngine)
                   MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
                       .setMethodCallHandler { call, result ->
                           when (call.method) {
                               "enterPictureInPicture" -> {
-                                  enterPipFallback()
+                                  enterPip()
                                   result.success(true)
                               }
                               "isPictureInPicture" -> {
-                                  result.success(
-                                      Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
-                                      isInPictureInPictureMode
-                                  )
+                                  result.success(isInPictureInPictureMode)
                               }
                               else -> result.notImplemented()
                           }
@@ -92,40 +74,25 @@ jobs:
 
               override fun onUserLeaveHint() {
                   super.onUserLeaveHint()
-                  // Android 8-11 do not have automatic PiP entry. Use the
-                  // explicit fallback there. Android 12+ already has
-                  // setAutoEnterEnabled(true), so do not race the system.
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                      Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                      enterPipFallback()
-                  }
+                  // Android Home/background action: keep the live stream visible
+                  // in PiP instead of destroying/recreating the Flutter page.
+                  enterPip()
               }
 
-              private fun updatePipParams() {
+              private fun enterPip() {
                   if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isFinishing) return
-
                   val builder = PictureInPictureParams.Builder()
-                      .setAspectRatio(Rational(16, 9))
-
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                       builder.setAutoEnterEnabled(true)
+                      // setSeamlessSourceRectHint() is not an Android API.
+                      // Keep the standard PiP source rect API for Android 12+.
                       builder.setSourceRectHint(
-                          Rect(
-                              0,
-                              0,
-                              resources.displayMetrics.widthPixels,
-                              (resources.displayMetrics.widthPixels * 9L / 16L).toInt()
-                          )
+                          android.graphics.Rect(0, 0, resources.displayMetrics.widthPixels,
+                              (resources.displayMetrics.widthPixels * 9L / 16L).toInt())
                       )
                   }
-
-                  setPictureInPictureParams(builder.build())
-              }
-
-              private fun enterPipFallback() {
-                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isFinishing) return
-                  updatePipParams()
-                  enterPictureInPictureMode()
+                  builder.setAspectRatio(Rational(16, 9))
+                  enterPictureInPictureMode(builder.build())
               }
           }
           ''')
@@ -225,7 +192,7 @@ jobs:
       - name: Verify application version
         working-directory: build_app
         run: |
-          grep -q "version: 1.0.7+8" pubspec.yaml
+          grep -q "version: 1.0.6+7" pubspec.yaml
 
       - name: Build release APK
         working-directory: build_app
@@ -240,30 +207,16 @@ jobs:
           retention-days: 14
 
       - name: Publish APK to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          APK=build_app/build/app/outputs/flutter-apk/app-release.apk
-          VERSION=$(sed -n 's/^version: *\([^+[:space:]]*\).*/\1/p' build_app/pubspec.yaml | head -n1)
-          TAG="v${VERSION}"
-          TITLE="Ananta OTT v${VERSION}"
-
-          echo "Release tag: ${TAG}"
-
-          # GitHub immutable releases cannot have assets replaced/deleted.
-          # If this version was already published, do not try to mutate it.
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists (possibly immutable). Skipping asset replacement."
-            exit 0
-          fi
-
-          gh release create "${TAG}" "${APK}" \
-            --title "${TITLE}" \
-            --latest \
-            --notes "## ${TITLE}
-
-- Android mobile Picture-in-Picture when minimizing/home
-- Restores the same channel/player/UI state when returning
-- Mobile player controls sit above the bottom channel information bar with a clear gap
-- APK automatically attached to this GitHub Release"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.6
+          name: Ananta OTT v1.0.6
+          body: |
+            ## Ananta OTT v1.0.6
+            - Android mobile Picture-in-Picture when minimizing/home
+            - Restores the same channel/player/UI state when returning
+            - Mobile player controls sit above the bottom channel information bar with a clear gap
+            - APK automatically attached to this GitHub Release
+          files: build_app/build/app/outputs/flutter-apk/app-release.apk
+          overwrite_files: true
+          make_latest: true
