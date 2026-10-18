@@ -13,6 +13,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
 import 'splash_screen.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 
 const String appName = 'Ananta OTT';
 const MethodChannel _pipChannel = MethodChannel('com.ananta.ott/pip');
@@ -118,25 +119,62 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
   return <String, dynamic>{'namesById': namesById, 'logosById': logosById, 'programmes': programmes};
 }
 
-void main() {
-  // Crash-safe startup: no uncaught error may close the app.
-  runZonedGuarded<void>(() {
-    WidgetsFlutterBinding.ensureInitialized();
-    FlutterError.onError = (details) {
-      debugPrint('FlutterError: ${details.exceptionAsString()}');
-    };
-    PlatformDispatcher.instance.onError = (error, stack) {
-      debugPrint('Uncaught: $error');
-      return true;
-    };
-    ErrorWidget.builder = (details) => const SizedBox.shrink();
-    try {
-      MediaKit.ensureInitialized();
-    } catch (e) {
-      debugPrint('MediaKit init failed: $e');
+// Online crash/error reporting (Sentry). The DSN is injected at build time
+// (--dart-define=SENTRY_DSN=...) or uses the default below. Empty disables it.
+const String _sentryDsn = String.fromEnvironment(
+  'SENTRY_DSN',
+  defaultValue:
+      'https://1f47bca2ee1bb03fcc7cfe60d0e97b5e@o4512278363111424.ingest.us.sentry.io/4512278716743680',
+);
+final RegExp _urlPattern = RegExp(r'https?://\S+');
+
+String _scrub(String? v) => (v ?? '').replaceAll(_urlPattern, '[url]');
+
+Future<void> _startApp() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  ErrorWidget.builder = (details) => const SizedBox.shrink();
+  try {
+    MediaKit.ensureInitialized();
+  } catch (e) {
+    debugPrint('MediaKit init failed: $e');
+    if (_sentryDsn.isNotEmpty) {
+      await Sentry.captureException(e);
     }
-    runApp(const AnantaOttApp());
-  }, (error, stack) => debugPrint('Zone error: $error'));
+  }
+  runApp(const AnantaOttApp());
+}
+
+Future<void> main() async {
+  if (_sentryDsn.isEmpty) {
+    // Crash-safe startup without reporting.
+    runZonedGuarded<void>(() => _startApp(),
+        (error, stack) => debugPrint('Zone error: $error'));
+    return;
+  }
+  await SentryFlutter.init(
+    (options) {
+      options.dsn = _sentryDsn;
+      options.sendDefaultPii = false;
+      options.attachScreenshot = false;
+      options.tracesSampleRate = 0;
+      options.maxBreadcrumbs = 30;
+      options.environment = kReleaseMode ? 'release' : 'debug';
+      // Never send stream/playlist URLs: drop network breadcrumbs and strip
+      // links from error messages.
+      options.beforeBreadcrumb = (crumb, hint) {
+        final c = crumb?.category ?? '';
+        if (c == 'http' || c == 'xhr' || c == 'navigation') return null;
+        return crumb;
+      };
+      options.beforeSend = (event, hint) {
+        final exceptions = event.exceptions
+            ?.map((e) => e.copyWith(value: _scrub(e.value)))
+            .toList();
+        return event.copyWith(exceptions: exceptions);
+      };
+    },
+    appRunner: () => _startApp(),
+  );
 }
 
 // Compatibility wrapper keeps the existing Ananta OTT UI and channel logic
