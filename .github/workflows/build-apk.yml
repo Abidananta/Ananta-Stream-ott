@@ -249,18 +249,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # GitHub immutable releases cannot have assets deleted/replaced.
-          # Create a new release for a new app version and skip publishing
-          # when that release already exists (safe workflow re-runs).
-          NAME=$(grep -E "^version:" pubspec.yaml | head -1 | sed -E "s/^version:[[:space:]]*//; s/\+.*//")
-          TAG="v$NAME"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; immutable release is left unchanged."
-            exit 0
-          fi
-
-          gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT $TAG"             --notes "## Ananta OTT $TAG
-
-          - Picture-in-Picture when minimizing the app while a stream is playing
-          - Video-only PiP window; playback pauses if the PiP window is closed
-          - APK automatically attached to this GitHub Release"             --latest
+          # GitHub immutable releases cannot have assets
