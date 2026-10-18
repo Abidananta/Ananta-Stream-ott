@@ -1,6 +1,6 @@
 {
-  "version": "1.0.10",
-  "versionCode": 11,
-  "releaseNotes": "Mobile Picture-in-Picture support. Build workflow now publishes the APK as a GitHub Actions artifact without trying to create or modify a GitHub Release/tag, avoiding immutable-release and restricted-tag failures.",
-  "downloadUrl": ""
+  "version": "1.0.8",
+  "versionCode": 9,
+  "releaseNotes": "Added Picture-in-Picture when minimizing the app during playback. Playback pauses if the PiP window is closed.",
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.0.8/app-release.apk"
 }
