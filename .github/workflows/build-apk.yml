@@ -317,13 +317,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # GitHub immutable releases cannot have assets deleted/replaced.
-          # Create a new release for a new app version and skip publishing
-          # when that release already exists (safe workflow re-runs).
           NAME=$(grep -E "^version:" pubspec.yaml | head -1 | sed -E "s/^version:[[:space:]]*//; s/\+.*//")
           TAG="v$NAME"
+          APK=build_app/build/app/outputs/flutter-apk/app-release.apk
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; immutable release is left unchanged."
+            # Same version already released: replace the APK with the new build.
+            echo "Release $TAG exists; replacing its APK with the new build."
+            gh release upload "$TAG" "$APK" --clobber --repo "$GITHUB_REPOSITORY"
             exit 0
           fi
 
