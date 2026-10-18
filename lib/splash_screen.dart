@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -26,7 +27,7 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
   late final AnimationController _loop = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 2400))
     ..repeat();
-  String _version = '1.1.1';
+  String _version = '1.1.2';
 
   @override
   void initState() {
@@ -36,21 +37,28 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
         setState(() => _version = info.version);
       }
     }).catchError((_) {});
-    Future.delayed(widget.duration, () {
-      if (!mounted) return;
-      try {
-        Navigator.of(context).pushReplacement(PageRouteBuilder<void>(
+    _timer = Timer(widget.duration, _goNext);
+  }
+
+  Timer? _timer;
+
+  void _goNext() {
+    if (!mounted) return;
+    try {
+      Navigator.of(context).pushReplacement(PageRouteBuilder<void>(
         transitionDuration: const Duration(milliseconds: 600),
         pageBuilder: (c, _, __) => widget.next(c),
         transitionsBuilder: (_, a, __, child) =>
             FadeTransition(opacity: a, child: child),
       ));
-      } catch (_) {}
-    });
+    } catch (e) {
+      debugPrint('Splash navigation failed: $e');
+    }
   }
 
   @override
   void dispose() {
+    _timer?.cancel();
     _intro.dispose();
     _loop.dispose();
     super.dispose();
