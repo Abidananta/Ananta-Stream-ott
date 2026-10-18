@@ -1,6 +1,6 @@
 {
-  "version": "1.0.12",
-  "versionCode": 13,
-  "releaseNotes": "Fixed white screen on launch and when entering Picture-in-Picture; the video now stays visible in PiP. Smoother live streaming with auto-reconnect.",
-  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.0.12/app-release.apk"
+  "version": "1.1.0",
+  "versionCode": 14,
+  "releaseNotes": "New animated launch screen with bigger logo, loading animation and version display.",
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.0/app-release.apk"
 }
