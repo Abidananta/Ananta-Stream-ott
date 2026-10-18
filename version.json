@@ -1,6 +1,6 @@
 {
-  "version": "1.1.0",
-  "versionCode": 14,
-  "releaseNotes": "New animated launch screen with bigger logo, loading animation and version display.",
-  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.0/app-release.apk"
+  "version": "1.1.1",
+  "versionCode": 15,
+  "releaseNotes": "Fixed launcher icon white background (bigger icon) and startup force close; animated launch screen.",
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.1/app-release.apk"
 }
