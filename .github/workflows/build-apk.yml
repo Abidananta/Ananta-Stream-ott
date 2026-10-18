@@ -251,13 +251,11 @@ jobs:
                       '    </style>\n'
                       '</resources>\n')
           (res / 'values/styles.xml').write_text(styles())
-          # Android 12+ system splash screen: dark background and a fully
-          # transparent icon, so no white box shows. The Flutter splash screen
-          # then shows the big animated logo.
+          # Android 12+ system splash screen: dark background only. The system
+          # shows the (adaptive) app icon on it, then the Flutter splash screen
+          # takes over. No custom splash icon resources, to stay crash-safe.
           (res / 'values-v31/styles.xml').write_text(styles(
-              '        <item name="android:windowSplashScreenBackground">@color/ananta_bg</item>\n'
-              '        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_transparent</item>\n'
-              '        <item name="android:windowSplashScreenIconBackgroundColor">@color/ananta_bg</item>\n'))
+              '        <item name="android:windowSplashScreenBackground">@color/ananta_bg</item>\n'))
           # Solid dark launch drawables (Flutter's template ships a white one).
           for d in res.glob('drawable*/launch_background.xml'):
               d.write_text('<?xml version="1.0" encoding="utf-8"?>\n'
@@ -310,7 +308,8 @@ jobs:
 
           gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT $TAG"             --notes "## Ananta OTT $TAG
 
-          - New animated launch screen: bigger logo without white box, loading animation, Developed By Ananta and app version
+          - Fixed white background on the app icon (bigger adaptive icon) and startup force close
+          - New animated launch screen: bigger logo, loading animation, Developed By Ananta and app version
           - Fixed white screen on launch and in Picture-in-Picture; video stays visible in PiP
           - Smoother live streams: bigger buffer, auto-reconnect when a stream stalls or stops
           - Picture-in-Picture when minimizing the app while a stream is playing
