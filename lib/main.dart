@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show PlatformDispatcher;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -118,9 +119,24 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
 }
 
 void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
-  runApp(const AnantaOttApp());
+  // Crash-safe startup: no uncaught error may close the app.
+  runZonedGuarded<void>(() {
+    WidgetsFlutterBinding.ensureInitialized();
+    FlutterError.onError = (details) {
+      debugPrint('FlutterError: ${details.exceptionAsString()}');
+    };
+    PlatformDispatcher.instance.onError = (error, stack) {
+      debugPrint('Uncaught: $error');
+      return true;
+    };
+    ErrorWidget.builder = (details) => const SizedBox.shrink();
+    try {
+      MediaKit.ensureInitialized();
+    } catch (e) {
+      debugPrint('MediaKit init failed: $e');
+    }
+    runApp(const AnantaOttApp());
+  }, (error, stack) => debugPrint('Zone error: $error'));
 }
 
 // Compatibility wrapper keeps the existing Ananta OTT UI and channel logic
