@@ -325,6 +325,7 @@ jobs:
 
           gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT $TAG"             --notes "## Ananta OTT $TAG
 
+          - Automatic online error reporting (Sentry) so problems can be fixed faster
           - Fixed white background on the app icon (bigger adaptive icon) and startup force close
           - New animated launch screen: bigger logo, loading animation, Developed By Ananta and app version
           - Fixed white screen on launch and in Picture-in-Picture; video stays visible in PiP
