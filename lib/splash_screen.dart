@@ -38,12 +38,14 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
     }).catchError((_) {});
     Future.delayed(widget.duration, () {
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(PageRouteBuilder<void>(
+      try {
+        Navigator.of(context).pushReplacement(PageRouteBuilder<void>(
         transitionDuration: const Duration(milliseconds: 600),
         pageBuilder: (c, _, __) => widget.next(c),
         transitionsBuilder: (_, a, __, child) =>
             FadeTransition(opacity: a, child: child),
       ));
+      } catch (_) {}
     });
   }
 
@@ -122,6 +124,8 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
                                     height: logo,
                                     fit: BoxFit.contain,
                                     filterQuality: FilterQuality.high,
+                                    errorBuilder: (_, __, ___) =>
+                                        const SizedBox.shrink(),
                                   ),
                                 ),
                               ),
