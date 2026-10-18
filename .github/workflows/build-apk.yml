@@ -3,8 +3,7 @@ name: Build Ananta OTT APK
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'v1.0.9'
+    branches: [main]
 
 permissions:
   contents: write
@@ -201,56 +200,42 @@ jobs:
       - name: Analyze source (diagnostic only)
         working-directory: build_app
         continue-on-error: true
-        run: |
-          flutter analyze --no-pub || {
-            echo "Flutter analyzer reported warnings/info; continuing to the release build."
-            true
-          }
+        run: flutter analyze --no-pub
 
       - name: Verify application version
         working-directory: build_app
         run: |
-          grep -Eq '^version:[[:space:]]*1\.0\.9\+10[[:space:]]*$' pubspec.yaml
+          grep -q "version: 1.0.8+9" pubspec.yaml
 
       - name: Build release APK
         working-directory: build_app
         run: flutter build apk --release --no-pub --verbose
 
-      - name: Upload APK artifact for download
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ananta-ott-1.0.9-pip-apk
+          name: ananta-ott-android-tv-apk
           path: build_app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
-      # IMPORTANT: GitHub repository rules in this repository restrict ref/tag creation.
-      # This workflow therefore NEVER creates a tag. A tag must already exist before
-      # the workflow is run. This also avoids modifying any immutable release.
-      - name: Publish immutable GitHub Release from existing tag
+      - name: Publish APK to GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          TAG="v1.0.9"
-          OWNER_REPO="${GITHUB_REPOSITORY}"
-
-          echo "Checking that ${TAG} already exists..."
-          if ! gh api "repos/${OWNER_REPO}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
-            echo "ERROR: ${TAG} does not exist."
-            echo "Create/push the tag first. This workflow intentionally refuses to create refs because repository rules restrict tag creation."
-            exit 1
+          # GitHub immutable releases cannot have assets deleted/replaced.
+          # Create a new release for a new app version and skip publishing
+          # when that release already exists (safe workflow re-runs).
+          TAG="v1.0.8"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; immutable release is left unchanged."
+            exit 0
           fi
 
-          if gh release view "${TAG}" --repo "${OWNER_REPO}" >/dev/null 2>&1; then
-            echo "ERROR: Release ${TAG} already exists and is immutable. Nothing will be deleted or replaced."
-            exit 1
-          fi
+          gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT v1.0.8"             --notes "## Ananta OTT v1.0.8
 
-          echo "Creating release ${TAG} from the existing tag (no tag creation)."
-          gh release create "${TAG}" \
-            --repo "${OWNER_REPO}" \
-            --verify-tag \
-            --title "Ananta OTT ${TAG}" \
-            --notes "Android 1.0.9+10: mobile Picture-in-Picture support and playback-state preservation." \
-            "build_app/build/app/outputs/flutter-apk/app-release.apk#app-release.apk"
+          - Added automatic Android mobile Picture-in-Picture when minimizing the app
+          - Preserves the same live channel/player/UI state when returning from PiP
+          - Android TV is excluded from phone-style automatic PiP
+          - Fixed GitHub Release publishing for immutable releases
+          - APK automatically attached to this GitHub Release"             --latest
