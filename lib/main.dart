@@ -2216,7 +2216,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   // PLAYER UI
   // --------------------------------------------------
-  Widget _buildPlayer({required bool fullscreen}) {
+  // The player subtree is keyed globally so Flutter MOVES it (instead of
+  // rebuilding it) when the layout changes, e.g. when Android enters
+  // Picture-in-Picture. This keeps the same video texture alive, so the last
+  // frame stays on screen instead of flashing white/black.
+  final GlobalKey _playerKey = GlobalKey(debugLabel: 'ananta-player');
+
+  Widget _buildPlayer({required bool fullscreen}) =>
+      KeyedSubtree(key: _playerKey, child: _buildPlayerBody(fullscreen: fullscreen));
+
+  Widget _buildPlayerBody({required bool fullscreen}) {
     final media = MediaQuery.of(context);
     final tvMode = media.size.width >= 850 && media.size.width > media.size.height;
     final player = _player;
