@@ -1,6 +1,6 @@
 {
-  "version": "1.0.8",
-  "versionCode": 9,
+  "version": "1.0.10",
+  "versionCode": 11,
   "releaseNotes": "Added Picture-in-Picture when minimizing the app during playback. Playback pauses if the PiP window is closed.",
-  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.0.8/app-release.apk"
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.0.10/app-release.apk"
 }
