@@ -1,6 +1,6 @@
 {
-  "version": "1.0.8",
-  "versionCode": 9,
+  "version": "1.0.9",
+  "versionCode": 10,
   "releaseNotes": "Added automatic Android mobile Picture-in-Picture when leaving the app. The same live player, channel, playback state, and Flutter UI are preserved when returning from PiP.",
-  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.0.8/app-release.apk"
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.0.9/app-release.apk"
 }
