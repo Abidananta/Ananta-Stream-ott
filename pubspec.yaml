@@ -18,7 +18,7 @@ dependencies:
   wakelock_plus: ^1.2.8
   package_info_plus: ^8.0.2
   url_launcher: ^6.3.0
-  sentry_flutter: ^8.14.2
+  sentry_flutter: ^9.0.0
 
 dev_dependencies:
   flutter_test:
