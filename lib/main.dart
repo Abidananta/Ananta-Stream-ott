@@ -377,11 +377,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   final ScrollController _tvEpgScrollController = ScrollController();
   int _playlistRequestId = 0;
   int _playRequestId = 0;
+  // Picture-in-Picture state (Android 8+). While true, only the video is drawn.
+  bool _inPip = false;
+  bool _pausedForBackground = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _pipChannel.setMethodCallHandler(_onPipCall);
     // Check the hosted version manifest after the first frame so update prompts
     // can safely use this page's BuildContext.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1962,6 +1966,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         try { await oldPlayer.dispose(); } catch (_) {}
       }
       await WakelockPlus.enable();
+      _syncPipAutoEnter();
       _scheduleControlsHide();
     } on TimeoutException {
       try { await controller.dispose(); } catch (_) {}
@@ -2011,6 +2016,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }
       if (!mounted) return;
       setState(() {});
+      _syncPipAutoEnter();
       _showPlayerControls();
     } catch (e) {
       debugPrint('Playback control error: $e');
@@ -2236,7 +2242,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 ),
               ),
             // All controls disappear together after 2 seconds.
-            if (_controlsVisible) ...[
+            if (_controlsVisible && !_inPip) ...[
               if (!tvMode)
                 Positioned(
                 bottom: 8,
@@ -2507,16 +2513,61 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     );
   }
 
-  // Keep the live player/controller alive when Android backgrounds the app.
-  // Android's native Activity automatically enters Picture-in-Picture on Home;
-  // Flutter is deliberately not disposing or reinitializing the stream here, so
-  // returning from PiP resumes the exact same channel and UI state.
+  // --------------------------------------------------
+  // PICTURE-IN-PICTURE
+  // --------------------------------------------------
+  // Native side (MainActivity) reports PiP mode changes through the channel.
+  Future<dynamic> _onPipCall(MethodCall call) async {
+    if (call.method == 'pipChanged') {
+      final active = call.arguments == true;
+      if (!mounted || active == _inPip) return null;
+      setState(() {
+        _inPip = active;
+        if (active) {
+          _controlsVisible = false;
+          _channelInfoVisible = false;
+          _tvSidebarVisible = false;
+          _tvEpgVisible = false;
+        }
+      });
+      if (!active) _focusTvPlayer();
+    }
+    return null;
+  }
+
+  // Tell Android whether Home/Recents should auto-enter PiP (only while a
+  // stream is actually playing).
+  Future<void> _syncPipAutoEnter() async {
+    final player = _player;
+    final enabled = player != null && player.value.isInitialized && player.value.isPlaying;
+    try {
+      await _pipChannel.invokeMethod('setPipAutoEnter', {
+        'enabled': enabled,
+        'aspect': player?.value.aspectRatio ?? 16 / 9,
+      });
+    } catch (e) {
+      debugPrint('PiP sync error: $e');
+    }
+  }
+
+  // Keep the live player/controller alive while Android shows the PiP window.
+  // If the app is fully hidden (PiP window dismissed, or Home without PiP),
+  // pause so audio does not keep playing invisibly; resume on return.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && mounted) {
-      // Restore the normal UI after leaving PiP without changing channel,
-      // playlist position, fullscreen state, or playback controller.
+    final player = _player;
+    if ((state == AppLifecycleState.hidden || state == AppLifecycleState.paused) && !_inPip) {
+      if (player != null && player.value.isInitialized && player.value.isPlaying) {
+        _pausedForBackground = true;
+        unawaited(player.pause().catchError((Object e) { debugPrint('Background pause error: $e'); }));
+      }
+    } else if (state == AppLifecycleState.resumed && mounted) {
+      if (_pausedForBackground && player != null) {
+        _pausedForBackground = false;
+        unawaited(player.play().catchError((Object e) { debugPrint('Resume error: $e'); }));
+      }
       setState(() {});
+      _syncPipAutoEnter();
     }
   }
 
@@ -2525,6 +2576,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   @override
   void dispose() {
+    _pipChannel.setMethodCallHandler(null);
+    unawaited(_pipChannel.invokeMethod('setPipAutoEnter', {'enabled': false}).catchError((Object e) { debugPrint('PiP cleanup error: $e'); }));
     _controlsTimer?.cancel();
     _channelInfoTimer?.cancel();
     _epgClock?.cancel();
@@ -2563,14 +2616,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   Widget build(BuildContext context) {
     final channels = _visibleChannels;
     final media = MediaQuery.of(context);
-    final useTvLayout = !_fullscreen && media.size.width >= 850 && media.size.width > media.size.height;
+    final useTvLayout = !_inPip && !_fullscreen && media.size.width >= 850 && media.size.width > media.size.height;
     return Focus(
       autofocus: true,
       onKeyEvent: _handleRemoteKey,
       child: WillPopScope(
       onWillPop: _handleBack,
       child: Scaffold(
-        appBar: (_fullscreen || useTvLayout)
+        appBar: (_fullscreen || _inPip || useTvLayout)
             ? null
             : AppBar(
                 backgroundColor: backgroundColor,
@@ -2622,7 +2675,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                   ),
                 ],
               ),
-        body: _fullscreen
+        body: (_fullscreen || _inPip)
             ? _buildPlayer(fullscreen: true)
             : useTvLayout
                 ? _buildTvLayout(channels)
