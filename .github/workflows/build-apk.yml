@@ -165,13 +165,30 @@ jobs:
           # does not draw a white box behind it, plus legacy PNG icons.
           RES=build_app/android/app/src/main/res
           rm -f $RES/mipmap-*/ic_launcher*.png $RES/mipmap-*/ic_launcher*.webp
-          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
-            mkdir -p $RES/mipmap-$d
-            cp assets/android/ic_launcher_$d.png $RES/mipmap-$d/ic_launcher.png
-          done
+          python3 -m pip install --quiet pillow || python3 -m pip install --quiet --break-system-packages pillow
+          RES="$RES" python3 - <<'ICONPY'
+          import os
+          from pathlib import Path
+          from PIL import Image
+          res = Path(os.environ['RES'])
+          im = Image.open('assets/ananta_launcher_icon.png').convert('RGBA')
+          art = im.crop(im.getbbox())
+          # Adaptive foreground (432px = 108dp @4x), logo ~74% of the canvas.
+          S = 432; w = int(S * 0.74)
+          fg = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+          a = art.resize((w, int(w * art.height / art.width)), Image.LANCZOS)
+          fg.paste(a, ((S - a.width) // 2, (S - a.height) // 2), a)
+          (res / 'drawable-nodpi').mkdir(parents=True, exist_ok=True)
+          fg.save(res / 'drawable-nodpi/ic_launcher_foreground.png')
+          # Legacy icons for Android < 8 (logo fills the whole icon).
+          for d, px in {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}.items():
+              c = Image.new('RGBA', (px, px), (0, 0, 0, 0))
+              b = art.resize((int(px * 0.98), int(px * 0.98 * art.height / art.width)), Image.LANCZOS)
+              c.paste(b, ((px - b.width) // 2, (px - b.height) // 2), b)
+              (res / f'mipmap-{d}').mkdir(parents=True, exist_ok=True)
+              c.save(res / f'mipmap-{d}/ic_launcher.png')
+          ICONPY
           mkdir -p $RES/mipmap-anydpi-v26 $RES/values
-          cp assets/android/ic_launcher_foreground.png $RES/drawable-nodpi/ic_launcher_foreground.png
-          cp assets/android/splash_transparent.png $RES/drawable-nodpi/splash_transparent.png
           printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">' '    <background android:drawable="@color/ic_launcher_background"/>' '    <foreground android:drawable="@drawable/ic_launcher_foreground"/>' '</adaptive-icon>' > $RES/mipmap-anydpi-v26/ic_launcher.xml
           cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml
           printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<resources>' '    <color name="ic_launcher_background">#FF12062B</color>' '</resources>' > $RES/values/ic_launcher_background.xml
