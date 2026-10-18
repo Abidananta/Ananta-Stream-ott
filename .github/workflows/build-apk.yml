@@ -187,6 +187,9 @@ jobs:
               c.paste(b, ((px - b.width) // 2, (px - b.height) // 2), b)
               (res / f'mipmap-{d}').mkdir(parents=True, exist_ok=True)
               c.save(res / f'mipmap-{d}/ic_launcher.png')
+          # Fully transparent image for the Android 12+ system splash icon, so no
+          # still logo is shown before the Flutter launch animation starts.
+          Image.new('RGBA', (288, 288), (0, 0, 0, 0)).save(res / 'drawable-nodpi/splash_transparent.png')
           ICONPY
           mkdir -p $RES/mipmap-anydpi-v26 $RES/values
           printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">' '    <background android:drawable="@color/ic_launcher_background"/>' '    <foreground android:drawable="@drawable/ic_launcher_foreground"/>' '</adaptive-icon>' > $RES/mipmap-anydpi-v26/ic_launcher.xml
@@ -268,11 +271,12 @@ jobs:
                       '    </style>\n'
                       '</resources>\n')
           (res / 'values/styles.xml').write_text(styles())
-          # Android 12+ system splash screen: dark background only. The system
-          # shows the (adaptive) app icon on it, then the Flutter splash screen
-          # takes over. No custom splash icon resources, to stay crash-safe.
+          # Android 12+ system splash screen: dark background and a fully
+          # transparent icon (PNG), so no still logo shows before the Flutter
+          # launch animation starts.
           (res / 'values-v31/styles.xml').write_text(styles(
-              '        <item name="android:windowSplashScreenBackground">@color/ananta_bg</item>\n'))
+              '        <item name="android:windowSplashScreenBackground">@color/ananta_bg</item>\n'
+              '        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_transparent</item>\n'))
           # Solid dark launch drawables (Flutter's template ships a white one).
           for d in res.glob('drawable*/launch_background.xml'):
               d.write_text('<?xml version="1.0" encoding="utf-8"?>\n'
