@@ -132,6 +132,8 @@ class _AnantaPlayerValue {
   String? get errorDescription => owner._error;
   bool get isPlaying => owner._engine.state.playing;
   bool get isBuffering => owner._buffering;
+  Duration get position => owner._engine.state.position;
+  bool get isCompleted => owner._engine.state.completed;
   double get aspectRatio {
     final w = owner._engine.state.width ?? 0;
     final h = owner._engine.state.height ?? 0;
@@ -142,7 +144,9 @@ class _AnantaPlayerValue {
 class AnantaPlayerController {
   final Uri uri;
   final Map<String, String> httpHeaders;
-  final Player _engine = Player();
+  // 64 MB demuxer buffer (default is 32 MB) so brief network stalls on live HLS
+  // are absorbed by the cache instead of stopping the picture.
+  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 64 * 1024 * 1024));
   late final VideoController _video = VideoController(_engine);
   bool _opened = false;
   bool _buffering = false;
@@ -183,6 +187,7 @@ class AnantaPlayerController {
       // setProperty(). Keep initialization compatible with the pinned API.
       // Buffering recovery is handled by the player's buffering state and
       // retry logic elsewhere in the app.
+      await _tuneForLiveStreams();
       await _engine.open(Media(uri.toString(), httpHeaders: httpHeaders), play: false);
       _opened = true;
     } catch (e) {
@@ -190,6 +195,35 @@ class AnantaPlayerController {
       rethrow;
     }
   }
+  // Best-effort libmpv tuning for smooth live HLS. Set through the native
+  // platform player (dynamic, so it never breaks compilation); any property a
+  // given libmpv build rejects is simply skipped.
+  Future<void> _tuneForLiveStreams() async {
+    const props = <String, String>{
+      'cache': 'yes',
+      'cache-secs': '40',
+      'demuxer-readahead-secs': '40',
+      'demuxer-max-bytes': '64MiB',
+      'demuxer-max-back-bytes': '16MiB',
+      // After a stall, wait until a few seconds are buffered before resuming
+      // so playback does not stutter repeatedly.
+      'cache-pause': 'yes',
+      'cache-pause-wait': '4',
+      'network-timeout': '30',
+      // Reconnect automatically when the server drops the connection.
+      'stream-lavf-o': 'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=4xx,5xx,reconnect_delay_max=5',
+      'hls-bitrate': 'max',
+    };
+    final dynamic platform = _engine.platform;
+    for (final entry in props.entries) {
+      try {
+        await platform.setProperty(entry.key, entry.value);
+      } catch (e) {
+        debugPrint('mpv property ${entry.key} not applied: $e');
+      }
+    }
+  }
+
   Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
   Future<void> play() => _engine.play();
 
@@ -380,6 +414,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // Picture-in-Picture state (Android 8+). While true, only the video is drawn.
   bool _inPip = false;
   bool _pausedForBackground = false;
+  bool _userPaused = false;
+  int _stallTicks = 0;
+  Duration? _lastHealthPosition;
 
   @override
   void initState() {
@@ -401,29 +438,47 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (mounted) setState(() {});
     });
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
-    // Recover a stream that stalls after it initially starts; allow six retries.
-    _playbackHealthTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+    // Watchdog: reconnect automatically when a live stream errors, ends,
+    // freezes (position stops advancing) or buffers for too long.
+    _playbackHealthTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (!mounted || _connecting || _selectedChannel == null) return;
+      if (_userPaused || _pausedForBackground) {
+        _stallTicks = 0;
+        _lastHealthPosition = null;
+        return;
+      }
       final player = _player;
       if (player == null) return;
       final value = player.value;
-      if (value.hasError) {
-        if (_runtimeRetryCount < 6) {
-          _runtimeRetryCount++;
-          _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
-        }
-        return;
-      }
-      if (value.isBuffering) {
-        _bufferingStartedAt ??= DateTime.now();
-        if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24) && _runtimeRetryCount < 6) {
-          _runtimeRetryCount++;
+      var needsRecovery = value.hasError || value.isCompleted;
+      if (!needsRecovery) {
+        if (value.isBuffering) {
+          _bufferingStartedAt ??= DateTime.now();
+          _stallTicks = 0;
+          if (DateTime.now().difference(_bufferingStartedAt!) >= const Duration(seconds: 24)) {
+            needsRecovery = true;
+          }
+        } else {
           _bufferingStartedAt = null;
-          _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
+          final position = value.position;
+          final frozen = !value.isPlaying ||
+              (_lastHealthPosition != null && position == _lastHealthPosition);
+          _lastHealthPosition = position;
+          if (frozen) {
+            if (++_stallTicks >= 3) needsRecovery = true;
+          } else {
+            _stallTicks = 0;
+            _runtimeRetryCount = 0;
+          }
         }
-      } else {
+      }
+      if (needsRecovery && _runtimeRetryCount < 10) {
+        _runtimeRetryCount++;
+        _stallTicks = 0;
         _bufferingStartedAt = null;
-        _runtimeRetryCount = 0;
+        _lastHealthPosition = null;
+        debugPrint('Stream stalled; reconnecting (attempt $_runtimeRetryCount)');
+        _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
       }
     });
   }
@@ -1955,6 +2010,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _status = 'Playing ${channel.name}';
         _connecting = false;
         _runtimeRetryCount = 0;
+        _userPaused = false;
+        _stallTicks = 0;
+        _lastHealthPosition = null;
         _bufferingStartedAt = null;
         _tvSidebarVisible = false;
         _tvEpgVisible = false;
@@ -2008,9 +2066,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     if (player == null || !player.value.isInitialized) return;
     try {
       if (player.value.isPlaying) {
+        _userPaused = true;
         await player.pause();
         await WakelockPlus.disable();
       } else {
+        _userPaused = false;
         await player.play();
         await WakelockPlus.enable();
       }
