@@ -11,6 +11,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
+import 'splash_screen.dart';
 
 const String appName = 'Ananta OTT';
 const MethodChannel _pipChannel = MethodChannel('com.ananta.ott/pip');
@@ -348,7 +349,7 @@ class AnantaOttApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      home: const AnantaHomePage(),
+      home: AnantaSplashScreen(next: (_) => const AnantaHomePage()),
     );
   }
 }
