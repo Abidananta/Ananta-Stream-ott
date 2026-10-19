@@ -27,7 +27,7 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
   late final AnimationController _loop = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 2400))
     ..repeat();
-  String _version = '1.1.5';
+  String _version = '1.1.6';
 
   @override
   void initState() {
