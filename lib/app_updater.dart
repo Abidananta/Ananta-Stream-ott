@@ -157,12 +157,19 @@ class _UpdateDialogState extends State<UpdateDialog>
         // retry if they dismiss the installer.
         setState(() => _phase = _Phase.idle);
       }
+    } on PlatformException catch (e) {
+      debugPrint('Install launch error: $e');
+      if (!mounted) return;
+      setState(() {
+        _phase = _Phase.error;
+        _error = 'Could not start the installer (${e.code}: ${e.message ?? 'unknown'}).';
+      });
     } catch (e) {
       debugPrint('Install launch error: $e');
       if (!mounted) return;
       setState(() {
         _phase = _Phase.error;
-        _error = 'Could not start the installer.';
+        _error = 'Could not start the installer ($e).';
       });
     }
   }
