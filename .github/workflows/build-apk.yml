@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# Uploading several files makes several pushes; only the newest run is needed.
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -186,10 +191,11 @@ jobs:
         run: |
           test -f lib/main.dart
           test -f lib/update_checker.dart
-          cp lib/main.dart build_app/lib/main.dart
-          cp lib/update_checker.dart build_app/lib/update_checker.dart
-          cp lib/splash_screen.dart build_app/lib/splash_screen.dart
-          cp lib/app_updater.dart build_app/lib/app_updater.dart
+          # Every Dart file the app imports must be uploaded to lib/.
+          for f in splash_screen.dart app_updater.dart; do
+            test -f "lib/$f" || { echo "::error::lib/$f is missing in the repository. Upload it to the lib folder."; exit 1; }
+          done
+          cp lib/*.dart build_app/lib/
           mkdir -p build_app/assets && cp assets/ananta_launcher_icon.png build_app/assets/
           cp pubspec.yaml build_app/pubspec.yaml
           # Flutter's generated test imports package:ott and MyApp, which do not
@@ -446,8 +452,12 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # Same version already released: replace the APK with the new build.
             echo "Release $TAG exists; replacing its APK with the new build."
-            gh release upload "$TAG" "$APK" --clobber --repo "$GITHUB_REPOSITORY"
-            exit 0
+            if gh release upload "$TAG" "$APK" --clobber --repo "$GITHUB_REPOSITORY"; then
+              exit 0
+            fi
+            # Upload refused (e.g. draft/odd release state): recreate the release.
+            echo "Upload failed; deleting and recreating release $TAG."
+            gh release delete "$TAG" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
           fi
 
           gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT $TAG"             --notes "## Ananta OTT $TAG
