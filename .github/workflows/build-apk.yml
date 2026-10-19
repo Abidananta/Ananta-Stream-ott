@@ -104,27 +104,35 @@ jobs:
                       }
                       try {
                           val path = call.argument<String>("path")
-                          if (path == null) {
-                              result.error("NO_PATH", "Missing path", null)
+                          val file = if (path != null) File(path) else null
+                          if (file == null || !file.exists()) {
+                              result.error("NO_FILE", "Downloaded APK not found", null)
                               return@setMethodCallHandler
                           }
-                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
-                              val settings = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + packageName))
-                              settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                              startActivity(settings)
-                              result.success("permission")
-                              return@setMethodCallHandler
-                          }
-                          val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", File(path))
-                          val install = Intent(Intent.ACTION_VIEW)
+                          val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+                          // No manual "unknown sources" check: when needed, Android's own
+                          // installer shows the permission prompt (works on phones and TVs,
+                          // where the separate settings screen may not exist).
+                          var install = Intent(Intent.ACTION_VIEW)
                           install.setDataAndType(uri, "application/vnd.android.package-archive")
                           install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                          startActivity(install)
+                          for (ri in packageManager.queryIntentActivities(install, PackageManager.MATCH_DEFAULT_ONLY)) {
+                              grantUriPermission(ri.activityInfo.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                          }
+                          try {
+                              startActivity(install)
+                          } catch (e: Exception) {
+                              // Some TV firmwares only handle the dedicated install action.
+                              install = Intent(Intent.ACTION_INSTALL_PACKAGE)
+                              install.setDataAndType(uri, "application/vnd.android.package-archive")
+                              install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                              startActivity(install)
+                          }
                           result.success("started")
                       } catch (e: Exception) {
-                          result.error("INSTALL_FAILED", e.message, null)
+                          result.error("INSTALL_FAILED", e.javaClass.simpleName + ": " + e.message, null)
                       }
-                  }
+                                        }
               }
 
               // When the user exits the app (Back/finish), end the process so no
@@ -470,4 +478,4 @@ jobs:
           - Smoother live streams: bigger buffer, auto-reconnect when a stream stalls or stops
           - Picture-in-Picture when minimizing the app while a stream is playing
           - Video-only PiP window; playback pauses if the PiP window is closed
-          - APK automatically attached to this GitHub Release"             --latest
+          - APK automatically attached to this GitHub Release"             --latest || echo "::warning::Could not publish release $TAG (it may already exist and be locked). The APK is still available under this run's Artifacts. Increase the version number for a new release."
