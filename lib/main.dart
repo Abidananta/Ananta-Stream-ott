@@ -314,14 +314,18 @@ class _AnantaPlayerValue {
 class AnantaPlayerController {
   final Uri uri;
   final Map<String, String> httpHeaders;
-  // 64 MB demuxer buffer (default is 32 MB) so brief network stalls on live HLS
+  // 96 MB demuxer buffer (default is 32 MB) so brief network stalls on live HLS
   // are absorbed by the cache instead of stopping the picture.
-  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 64 * 1024 * 1024));
+  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 96 * 1024 * 1024));
   late final VideoController _video = VideoController(_engine);
   bool _opened = false;
   bool _buffering = false;
   String? _error;
   StreamSubscription<bool>? _bufferingSubscription;
+  // Decoded video size reported by libmpv; drives the HD/FHD/4K badge.
+  final ValueNotifier<Size> videoSize = ValueNotifier<Size>(Size.zero);
+  int _vw = 0;
+  int _vh = 0;
   StreamSubscription<int?>? _widthSubscription;
   StreamSubscription<int?>? _heightSubscription;
   StreamSubscription<String>? _errorSubscription;
@@ -333,11 +337,15 @@ class AnantaPlayerController {
     });
     _widthSubscription = _engine.stream.width.listen((value) {
       debugPrint('Ananta video width: $value for $uri');
+      _vw = value ?? 0;
+      if (!_disposed) videoSize.value = Size(_vw.toDouble(), _vh.toDouble());
     }, onError: (Object error) {
       debugPrint('Ananta video-width stream error: $error');
     });
     _heightSubscription = _engine.stream.height.listen((value) {
       debugPrint('Ananta video height: $value for $uri');
+      _vh = value ?? 0;
+      if (!_disposed) videoSize.value = Size(_vw.toDouble(), _vh.toDouble());
     }, onError: (Object error) {
       debugPrint('Ananta video-height stream error: $error');
     });
@@ -371,17 +379,26 @@ class AnantaPlayerController {
   Future<void> _tuneForLiveStreams() async {
     const props = <String, String>{
       'cache': 'yes',
-      'cache-secs': '40',
-      'demuxer-readahead-secs': '40',
-      'demuxer-max-bytes': '64MiB',
-      'demuxer-max-back-bytes': '16MiB',
-      // After a stall, wait until a few seconds are buffered before resuming
-      // so playback does not stutter repeatedly.
+      // Read far ahead of the playback position (mpv default is only 1s), so
+      // the picture keeps playing through network hiccups.
+      'cache-secs': '90',
+      'demuxer-readahead-secs': '90',
+      'demuxer-max-bytes': '96MiB',
+      'demuxer-max-back-bytes': '8MiB',
+      // Pre-buffer before the first frame and after every stall instead of
+      // playing 1 second and stuttering again. For live TS streams this is
+      // the cache that absorbs jitter.
       'cache-pause': 'yes',
-      'cache-pause-wait': '4',
+      'cache-pause-initial': 'yes',
+      'cache-pause-wait': '8',
+      // Larger network read buffer (default 128 KiB).
+      'stream-buffer-size': '4MiB',
       'network-timeout': '30',
       // Reconnect automatically when the server drops the connection.
-      'stream-lavf-o': 'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=4xx,5xx,reconnect_delay_max=5',
+      'stream-lavf-o': 'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=%7%4xx,5xx,reconnect_delay_max=5',
+      // Live HLS: start a few segments behind the live edge so there is
+      // already something to buffer ahead of the playhead.
+      'demuxer-lavf-o': 'live_start_index=-5',
       'hls-bitrate': 'max',
     };
     final dynamic platform = _engine.platform;
@@ -424,6 +441,44 @@ class AnantaPlayerController {
     try { await _errorSubscription?.cancel(); } catch (_) {}
     try { await _engine.dispose(); } catch (e) { debugPrint('Player dispose error: $e'); }
   }
+}
+
+final ValueNotifier<Size> _noVideoSize = ValueNotifier<Size>(Size.zero);
+
+/// Quality label from the real decoded video size (width is checked too so
+/// wide-cropped 1080p such as 1920x800 is still FHD).
+String? _videoQualityLabel(Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 0 || h <= 0) return null;
+  if (w >= 3200 || h >= 2000) return '4K';
+  if (w >= 2400 || h >= 1400) return '2K';
+  if (w >= 1800 || h >= 1000) return 'FHD';
+  if (w >= 1200 || h >= 700) return 'HD';
+  return 'SD';
+}
+
+Widget _qualityBadge(Size size) {
+  final label = _videoQualityLabel(size);
+  if (label == null) return const SizedBox.shrink();
+  final color = switch (label) {
+    '4K' => const Color(0xFFFFC107),
+    '2K' => const Color(0xFFFF9800),
+    'FHD' => const Color(0xFF4CAF50),
+    'HD' => const Color(0xFF42A5F5),
+    _ => Colors.white54,
+  };
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+    decoration: BoxDecoration(
+      color: color.withOpacity(0.18),
+      borderRadius: BorderRadius.circular(6),
+      border: Border.all(color: color.withOpacity(0.8), width: 1.2),
+    ),
+    child: Text(
+      label,
+      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 0.8, color: color),
+    ),
+  );
 }
 
 class VideoPlayer extends StatelessWidget {
@@ -596,7 +651,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     // Check the hosted version manifest after the first frame so update prompts
     // can safely use this page's BuildContext.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) AppUpdateChecker.checkForUpdate(context);
+      if (mounted) {
+        AppUpdateChecker.checkForUpdate(context).then((_) {
+          if (mounted) _focusTvPlayer(); // give the remote back to the player
+        });
+      }
     });
     _loadFavorites();
     _loadPlaylist();
@@ -693,6 +752,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   void _focusTvPlayer() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_tvPlayerFocusNode.canRequestFocus) return;
+      // The update dialog owns the remote while it is open.
+      if (AppUpdateChecker.dialogOpen.value) return;
       _tvPlayerFocusNode.requestFocus();
     });
   }
@@ -806,6 +867,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   }
 
   KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
+    if (AppUpdateChecker.dialogOpen.value) return KeyEventResult.ignored;
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
@@ -2442,7 +2504,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 ),
               ),
             // All controls disappear together after 2 seconds.
-            if (_controlsVisible && !_inPip) ...[
+            if (_controlsVisible && !_inPip && !_looksLikePip(media.size)) ...[
               if (!tvMode)
                 Positioned(
                 bottom: 8,
@@ -2597,6 +2659,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                             ),
                           ),
                           const SizedBox(width: 12),
+                          ValueListenableBuilder<Size>(
+                            valueListenable: _player?.videoSize ?? _noVideoSize,
+                            builder: (_, size, __) => Padding(
+                              padding: EdgeInsets.only(right: _videoQualityLabel(size) == null ? 0 : 8),
+                              child: _qualityBadge(size),
+                            ),
+                          ),
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                             decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.18), borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.redAccent.withOpacity(0.55))),
@@ -2717,6 +2786,40 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // PICTURE-IN-PICTURE
   // --------------------------------------------------
   // Native side (MainActivity) reports PiP mode changes through the channel.
+  // A PiP window is small. Detecting it from the window size means the very
+  // first PiP frame already shows only the video on black, instead of the
+  // normal page (or a blank screen) until the native callback arrives.
+  bool _looksLikePip(Size size) => size.height < 300 && size.width < 600;
+
+  String? _lastPipRect;
+
+  // Tells Android which part of the screen is the video so the PiP animation
+  // zooms straight into the picture (no white/blank window while it starts).
+  void _syncPipRect() {
+    if (!mounted || _inPip || !Platform.isAndroid) return;
+    try {
+      final ro = _playerKey.currentContext?.findRenderObject();
+      if (ro is! RenderBox || !ro.attached || !ro.hasSize) return;
+      final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
+      final o = ro.localToGlobal(Offset.zero);
+      final r = [
+        (o.dx * dpr).round(),
+        (o.dy * dpr).round(),
+        ((o.dx + ro.size.width) * dpr).round(),
+        ((o.dy + ro.size.height) * dpr).round(),
+      ];
+      final key = r.join(',');
+      if (key == _lastPipRect) return;
+      _lastPipRect = key;
+      _pipChannel.invokeMethod('setPipSourceRect', {'rect': r}).catchError((Object e) {
+        debugPrint('PiP rect error: $e');
+        return null;
+      });
+    } catch (e) {
+      debugPrint('PiP rect error: $e');
+    }
+  }
+
   Future<dynamic> _onPipCall(MethodCall call) async {
     if (call.method == 'pipChanged') {
       final active = call.arguments == true;
@@ -2836,14 +2939,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   Widget build(BuildContext context) {
     final channels = _visibleChannels;
     final media = MediaQuery.of(context);
-    final useTvLayout = !_inPip && !_fullscreen && media.size.width >= 850 && media.size.width > media.size.height;
+    final inPip = _inPip || _looksLikePip(media.size);
+    final useTvLayout = !inPip && !_fullscreen && media.size.width >= 850 && media.size.width > media.size.height;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncPipRect());
     return Focus(
       autofocus: true,
       onKeyEvent: _handleRemoteKey,
       child: WillPopScope(
       onWillPop: _handleBack,
       child: Scaffold(
-        appBar: (_fullscreen || _inPip || useTvLayout)
+        backgroundColor: inPip ? Colors.black : null,
+        appBar: (_fullscreen || inPip || useTvLayout)
             ? null
             : AppBar(
                 backgroundColor: backgroundColor,
@@ -2895,7 +3001,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                   ),
                 ],
               ),
-        body: (_fullscreen || _inPip)
+        body: (_fullscreen || inPip)
             ? _buildPlayer(fullscreen: true)
             : useTvLayout
                 ? _buildTvLayout(channels)
