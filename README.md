@@ -12,3 +12,6 @@ This project still uses Flutter `video_player` and Android's native playback sta
 The source has not been compiled or tested on a physical TV box in this package.
 Audio compatibility update
 Playback is implemented with media_kit/libmpv rather than Flutter video_player. The bundled native playback libraries provide broader codec support, intended to address MPEG Audio Layer 1/2 (MPGA/MP2) streams. This source has not been compiled or device-tested in this environment; verify the GitHub Actions build and test on the target Android TV device.
+v1.1.7 notes
+`android_template/MainActivity.kt` now holds the native Android code (PiP + in-app installer). Upload this folder too.
+Update dialog: resumable download, PackageInstaller install with real error messages, full TV remote support.
