@@ -46,6 +46,11 @@ jobs:
           activity.write_text(r'''package com.ananta.ott
 
           import android.app.PictureInPictureParams
+          import android.content.Intent
+          import android.net.Uri
+          import android.provider.Settings
+          import androidx.core.content.FileProvider
+          import java.io.File
           import android.content.pm.PackageManager
           import android.content.res.Configuration
           import android.os.Build
@@ -63,6 +68,7 @@ jobs:
 
               override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
                   super.configureFlutterEngine(flutterEngine)
+                  setupInstaller(flutterEngine)
                   channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).also { ch ->
                       ch.setMethodCallHandler { call, result ->
                           when (call.method) {
@@ -81,6 +87,48 @@ jobs:
                               else -> result.notImplemented()
                           }
                       }
+                  }
+              }
+
+              // In-app updater: installs the downloaded APK over the current app.
+              private fun setupInstaller(flutterEngine: FlutterEngine) {
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.ananta.ott/installer").setMethodCallHandler { call, result ->
+                      if (call.method != "installApk") {
+                          result.notImplemented()
+                          return@setMethodCallHandler
+                      }
+                      try {
+                          val path = call.argument<String>("path")
+                          if (path == null) {
+                              result.error("NO_PATH", "Missing path", null)
+                              return@setMethodCallHandler
+                          }
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                              val settings = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + packageName))
+                              settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                              startActivity(settings)
+                              result.success("permission")
+                              return@setMethodCallHandler
+                          }
+                          val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", File(path))
+                          val install = Intent(Intent.ACTION_VIEW)
+                          install.setDataAndType(uri, "application/vnd.android.package-archive")
+                          install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                          startActivity(install)
+                          result.success("started")
+                      } catch (e: Exception) {
+                          result.error("INSTALL_FAILED", e.message, null)
+                      }
+                  }
+              }
+
+              // When the user exits the app (Back/finish), end the process so no
+              // audio keeps playing in the background (notably on Android TV).
+              override fun onDestroy() {
+                  val finishing = isFinishing
+                  super.onDestroy()
+                  if (finishing) {
+                      android.os.Process.killProcess(android.os.Process.myPid())
                   }
               }
 
@@ -141,6 +189,7 @@ jobs:
           cp lib/main.dart build_app/lib/main.dart
           cp lib/update_checker.dart build_app/lib/update_checker.dart
           cp lib/splash_screen.dart build_app/lib/splash_screen.dart
+          cp lib/app_updater.dart build_app/lib/app_updater.dart
           mkdir -p build_app/assets && cp assets/ananta_launcher_icon.png build_app/assets/
           cp pubspec.yaml build_app/pubspec.yaml
           # Flutter's generated test imports package:ott and MyApp, which do not
@@ -191,7 +240,8 @@ jobs:
           # still logo is shown before the Flutter launch animation starts.
           Image.new('RGBA', (288, 288), (0, 0, 0, 0)).save(res / 'drawable-nodpi/splash_transparent.png')
           ICONPY
-          mkdir -p $RES/mipmap-anydpi-v26 $RES/values
+          mkdir -p $RES/mipmap-anydpi-v26 $RES/values $RES/xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<paths>' '    <cache-path name="cache" path="." />' '    <external-cache-path name="ext_cache" path="." />' '</paths>' > $RES/xml/ananta_file_paths.xml
           printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">' '    <background android:drawable="@color/ic_launcher_background"/>' '    <foreground android:drawable="@drawable/ic_launcher_foreground"/>' '</adaptive-icon>' > $RES/mipmap-anydpi-v26/ic_launcher.xml
           cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml
           printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<resources>' '    <color name="ic_launcher_background">#FF12062B</color>' '</resources>' > $RES/values/ic_launcher_background.xml
@@ -209,7 +259,18 @@ jobs:
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.INTERNET'); root.insert(0, el)
           if not has_tag('uses-feature', 'name', 'android.hardware.touchscreen'):
               el = ET.Element('uses-feature'); el.set(ns + 'name', 'android.hardware.touchscreen'); el.set(ns + 'required', 'false'); root.insert(1, el)
+          if not has_tag('uses-permission', 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'):
+              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'); root.insert(2, el)
           app = root.find('application')
+          # FileProvider so Android's installer can read the downloaded APK.
+          prov = ET.SubElement(app, 'provider')
+          prov.set(ns + 'name', 'androidx.core.content.FileProvider')
+          prov.set(ns + 'authorities', '${applicationId}.fileprovider')
+          prov.set(ns + 'exported', 'false')
+          prov.set(ns + 'grantUriPermissions', 'true')
+          meta = ET.SubElement(prov, 'meta-data')
+          meta.set(ns + 'name', 'android.support.FILE_PROVIDER_PATHS')
+          meta.set(ns + 'resource', '@xml/ananta_file_paths')
           app.set(ns + 'label', 'Ananta OTT')
           app.set(ns + 'icon', '@mipmap/ic_launcher')
           app.set(ns + 'roundIcon', '@mipmap/ic_launcher_round')
@@ -285,6 +346,68 @@ jobs:
                            '</layer-list>\n')
           PYCODE
 
+      - name: Configure persistent release signing
+        env:
+          KS_B64: ${{ secrets.ANANTA_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANANTA_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANANTA_KEY_ALIAS }}
+        run: |
+          # Every build must be signed with the SAME key, otherwise Android
+          # refuses to update an installed app ("package conflicts") and the
+          # user would have to uninstall first. A GitHub secret key is used when
+          # configured; otherwise the keystore stored in signing/ is used.
+          APP=build_app/android/app
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > "$APP/ananta-release.jks"
+            export STORE_PASS="$KS_PASS"
+            export KEY_ALIAS="${KS_ALIAS:-ananta}"
+            echo "Signing with the key from GitHub secrets."
+          else
+            test -f signing/ananta-release.jks
+            cp signing/ananta-release.jks "$APP/ananta-release.jks"
+            export STORE_PASS="ananta-ott-2026"
+            export KEY_ALIAS="ananta"
+            echo "Signing with signing/ananta-release.jks."
+          fi
+          python3 - <<'SIGNPY'
+          import os
+          from pathlib import Path
+          sp = os.environ['STORE_PASS']; ka = os.environ['KEY_ALIAS']
+          app = Path('build_app/android/app')
+          kts = app / 'build.gradle.kts'
+          groovy = app / 'build.gradle'
+          done = False
+          if kts.exists():
+              t = kts.read_text()
+              block = ('    signingConfigs {\n'
+                       '        create("ananta") {\n'
+                       '            storeFile = file("ananta-release.jks")\n'
+                       '            storePassword = "%s"\n'
+                       '            keyAlias = "%s"\n'
+                       '            keyPassword = "%s"\n'
+                       '        }\n'
+                       '    }\n\n') % (sp, ka, sp)
+              if 'buildTypes {' in t and 'signingConfigs.getByName("debug")' in t:
+                  t = t.replace('buildTypes {', block + '    buildTypes {', 1)
+                  t = t.replace('signingConfigs.getByName("debug")', 'signingConfigs.getByName("ananta")')
+                  kts.write_text(t); done = True
+          elif groovy.exists():
+              t = groovy.read_text()
+              block = ("    signingConfigs {\n"
+                       "        ananta {\n"
+                       "            storeFile file('ananta-release.jks')\n"
+                       "            storePassword '%s'\n"
+                       "            keyAlias '%s'\n"
+                       "            keyPassword '%s'\n"
+                       "        }\n"
+                       "    }\n\n") % (sp, ka, sp)
+              if 'buildTypes {' in t and 'signingConfigs.debug' in t:
+                  t = t.replace('buildTypes {', block + '    buildTypes {', 1)
+                  t = t.replace('signingConfigs.debug', 'signingConfigs.ananta')
+                  groovy.write_text(t); done = True
+          print('::notice::persistent signing configured' if done else '::warning::could not patch Gradle signing config; APK will use the debug key')
+          SIGNPY
+
       - name: Resolve dependencies
         working-directory: build_app
         run: flutter pub get -v
@@ -329,6 +452,7 @@ jobs:
 
           gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT $TAG"             --notes "## Ananta OTT $TAG
 
+          - In-app update with download progress (no uninstall needed), audio stops on exit, smoother channel opening
           - Automatic online error reporting (Sentry) so problems can be fixed faster
           - Fixed white background on the app icon (bigger adaptive icon) and startup force close
           - New animated launch screen: bigger logo, loading animation, Developed By Ananta and app version
