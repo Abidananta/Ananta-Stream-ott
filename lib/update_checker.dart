@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'app_updater.dart';
 
 /// Checks a remotely hosted JSON manifest and prompts users when a newer
 /// Ananta OTT APK is available.
@@ -44,34 +44,11 @@ class AppUpdateChecker {
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Ananta OTT update available'),
-          content: SingleChildScrollView(
-            child: Text(
-              'A new version ($latestVersion) is available.\n\n'
-              '$releaseNotes\n\n'
-              'Open the download page to install the update. Android may ask '
-              'you to confirm installation.',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Later'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final uri = Uri.tryParse(downloadUrl);
-                if (uri == null ||
-                    !(uri.scheme == 'https' || uri.scheme == 'http')) {
-                  return;
-                }
-                Navigator.of(dialogContext).pop();
-                await launchUrl(uri, mode: LaunchMode.externalApplication);
-              },
-              child: const Text('Download update'),
-            ),
-          ],
+        builder: (_) => UpdateDialog(
+          version: latestVersion,
+          notes: releaseNotes,
+          downloadUrl: downloadUrl,
+          fallbackUrl: releaseUrl,
         ),
       );
     } catch (_) {
