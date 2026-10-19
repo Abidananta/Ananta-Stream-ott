@@ -41,160 +41,12 @@ jobs:
       - name: Generate Android project scaffolding
         run: flutter create --platforms=android --org com.ananta --project-name ott build_app
 
-      - name: Configure native Android PiP Activity
+      - name: Configure native Android PiP Activity and in-app installer
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          activity = Path('build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt')
-          activity.parent.mkdir(parents=True, exist_ok=True)
-          activity.write_text(r'''package com.ananta.ott
+          test -f android_template/MainActivity.kt || { echo "::error::android_template/MainActivity.kt is missing. Upload the android_template folder."; exit 1; }
+          mkdir -p build_app/android/app/src/main/kotlin/com/ananta/ott
+          cp android_template/MainActivity.kt build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt
 
-          import android.app.PictureInPictureParams
-          import android.content.Intent
-          import android.net.Uri
-          import android.provider.Settings
-          import androidx.core.content.FileProvider
-          import java.io.File
-          import android.content.pm.PackageManager
-          import android.content.res.Configuration
-          import android.os.Build
-          import android.util.Rational
-          import io.flutter.embedding.android.FlutterActivity
-          import io.flutter.embedding.engine.FlutterEngine
-          import io.flutter.plugin.common.MethodChannel
-
-          class MainActivity : FlutterActivity() {
-              private val channelName = "com.ananta.ott/pip"
-              private var channel: MethodChannel? = null
-              // True only while a stream is playing; gates Home/Recents auto-PiP.
-              private var pipEnabled = false
-              private var aspect = 16.0 / 9.0
-
-              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-                  super.configureFlutterEngine(flutterEngine)
-                  setupInstaller(flutterEngine)
-                  channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).also { ch ->
-                      ch.setMethodCallHandler { call, result ->
-                          when (call.method) {
-                              "isPipSupported" -> result.success(isPipSupported())
-                              "isPictureInPicture" -> result.success(isPipActive())
-                              "enterPictureInPicture" -> {
-                                  call.argument<Double>("aspect")?.let { aspect = it }
-                                  result.success(enterPip())
-                              }
-                              "setPipAutoEnter" -> {
-                                  pipEnabled = call.argument<Boolean>("enabled") ?: false
-                                  call.argument<Double>("aspect")?.let { aspect = it }
-                                  updateAutoEnter()
-                                  result.success(true)
-                              }
-                              else -> result.notImplemented()
-                          }
-                      }
-                  }
-              }
-
-              // In-app updater: installs the downloaded APK over the current app.
-              private fun setupInstaller(flutterEngine: FlutterEngine) {
-                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.ananta.ott/installer").setMethodCallHandler { call, result ->
-                      if (call.method != "installApk") {
-                          result.notImplemented()
-                          return@setMethodCallHandler
-                      }
-                      try {
-                          val path = call.argument<String>("path")
-                          val file = if (path != null) File(path) else null
-                          if (file == null || !file.exists()) {
-                              result.error("NO_FILE", "Downloaded APK not found", null)
-                              return@setMethodCallHandler
-                          }
-                          val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-                          // No manual "unknown sources" check: when needed, Android's own
-                          // installer shows the permission prompt (works on phones and TVs,
-                          // where the separate settings screen may not exist).
-                          var install = Intent(Intent.ACTION_VIEW)
-                          install.setDataAndType(uri, "application/vnd.android.package-archive")
-                          install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                          for (ri in packageManager.queryIntentActivities(install, PackageManager.MATCH_DEFAULT_ONLY)) {
-                              grantUriPermission(ri.activityInfo.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                          }
-                          try {
-                              startActivity(install)
-                          } catch (e: Exception) {
-                              // Some TV firmwares only handle the dedicated install action.
-                              install = Intent(Intent.ACTION_INSTALL_PACKAGE)
-                              install.setDataAndType(uri, "application/vnd.android.package-archive")
-                              install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                              startActivity(install)
-                          }
-                          result.success("started")
-                      } catch (e: Exception) {
-                          result.error("INSTALL_FAILED", e.javaClass.simpleName + ": " + e.message, null)
-                      }
-                                        }
-              }
-
-              // When the user exits the app (Back/finish), end the process so no
-              // audio keeps playing in the background (notably on Android TV).
-              override fun onDestroy() {
-                  val finishing = isFinishing
-                  super.onDestroy()
-                  if (finishing) {
-                      android.os.Process.killProcess(android.os.Process.myPid())
-                  }
-              }
-
-              override fun onUserLeaveHint() {
-                  super.onUserLeaveHint()
-                  // Home / app switch while a stream is playing: keep it visible in PiP.
-                  if (pipEnabled && !isPipActive()) enterPip()
-              }
-
-              override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
-                  super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-                  channel?.invokeMethod("pipChanged", isInPictureInPictureMode)
-              }
-
-              private fun isPipSupported(): Boolean =
-                  Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                      packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
-
-              private fun isPipActive(): Boolean =
-                  Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode
-
-              private fun buildParams(): PictureInPictureParams {
-                  // Android only accepts aspect ratios between 1:2.39 and 2.39:1.
-                  val ratio = aspect.coerceIn(0.5, 2.39)
-                  val builder = PictureInPictureParams.Builder()
-                      .setAspectRatio(Rational((ratio * 1000).toInt(), 1000))
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                      builder.setAutoEnterEnabled(pipEnabled)
-                  }
-                  return builder.build()
-              }
-
-              // Android 12+: system auto-enters PiP on Home gesture when enabled.
-              private fun updateAutoEnter() {
-                  if (!isPipSupported() || isFinishing) return
-                  try {
-                      setPictureInPictureParams(buildParams())
-                  } catch (e: Exception) {
-                      // Ignore: params are best-effort.
-                  }
-              }
-
-              private fun enterPip(): Boolean {
-                  if (!isPipSupported() || isFinishing) return false
-                  return try {
-                      enterPictureInPictureMode(buildParams())
-                  } catch (e: Exception) {
-                      false
-                  }
-              }
-          }
-          ''')
-          PY
       - name: Copy app source and configure Android TV icon and manifest
         run: |
           test -f lib/main.dart
@@ -236,10 +88,14 @@ jobs:
           res = Path(os.environ['RES'])
           im = Image.open('assets/ananta_launcher_icon.png').convert('RGBA')
           art = im.crop(im.getbbox())
-          # Adaptive foreground (432px = 108dp @4x), logo ~74% of the canvas.
-          S = 432; w = int(S * 0.74)
+          # Adaptive foreground (432px = 108dp @4x). The artwork is a rounded
+          # square with its own background, so it is scaled to the launcher's
+          # visible mask (72dp of 108dp = 67%; a little smaller so circular launchers do not clip the corners) and the adaptive background is
+          # fully transparent: no extra coloured box/rim around the icon.
+          S = 432; w = int(S * 0.63)
           fg = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-          a = art.resize((w, int(w * art.height / art.width)), Image.LANCZOS)
+          k = w / max(art.width, art.height)
+          a = art.resize((max(1, int(art.width * k)), max(1, int(art.height * k))), Image.LANCZOS)
           fg.paste(a, ((S - a.width) // 2, (S - a.height) // 2), a)
           (res / 'drawable-nodpi').mkdir(parents=True, exist_ok=True)
           fg.save(res / 'drawable-nodpi/ic_launcher_foreground.png')
@@ -258,7 +114,7 @@ jobs:
           printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<paths>' '    <cache-path name="cache" path="." />' '    <external-cache-path name="ext_cache" path="." />' '</paths>' > $RES/xml/ananta_file_paths.xml
           printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">' '    <background android:drawable="@color/ic_launcher_background"/>' '    <foreground android:drawable="@drawable/ic_launcher_foreground"/>' '</adaptive-icon>' > $RES/mipmap-anydpi-v26/ic_launcher.xml
           cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml
-          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<resources>' '    <color name="ic_launcher_background">#FF12062B</color>' '</resources>' > $RES/values/ic_launcher_background.xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<resources>' '    <color name="ic_launcher_background">#00000000</color>' '</resources>' > $RES/values/ic_launcher_background.xml
           python3 - <<'PY'
           from pathlib import Path
           import xml.etree.ElementTree as ET
