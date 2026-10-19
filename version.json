@@ -1,6 +1,6 @@
 {
-  "version": "1.1.5",
-  "versionCode": 19,
-  "releaseNotes": "Fixes build and release publishing; in-app update with download progress, audio stops on exit, smoother channel opening.",
-  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.5/app-release.apk"
+  "version": "1.1.6",
+  "versionCode": 20,
+  "releaseNotes": "Release publishing fixed; in-app update with download progress, audio stops on exit, smoother channel opening.",
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.6/app-release.apk"
 }
