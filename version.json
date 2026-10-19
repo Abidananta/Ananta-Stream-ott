@@ -1,6 +1,6 @@
 {
-  "version": "1.1.6",
-  "versionCode": 20,
-  "releaseNotes": "Release publishing fixed; in-app update with download progress, audio stops on exit, smoother channel opening.",
-  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.6/app-release.apk"
+  "version": "1.1.7",
+  "versionCode": 21,
+  "releaseNotes": "Fixed in-app update install, Picture-in-Picture without blank screen, cleaner app icon, TV remote support in the update dialog, bigger stream cache and HD/FHD/4K badge on the TV channel info card.",
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.7/app-release.apk"
 }
