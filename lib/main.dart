@@ -119,6 +119,120 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
   return <String, dynamic>{'namesById': namesById, 'logosById': logosById, 'programmes': programmes};
 }
 
+Map<String, List<EpgProgram>> _epgMapFromJsonTop(dynamic raw) {
+  final result = <String, List<EpgProgram>>{};
+  if (raw is! Map) return result;
+  // Keep a rolling three-day guide on device: programmes that have ended
+  // are discarded, while the current and next three days remain available.
+  final now = DateTime.now().toUtc();
+  final cutoff = now.subtract(const Duration(hours: 6));
+  final horizon = now.add(const Duration(days: 3));
+  for (final entry in raw.entries) {
+    if (entry.value is! List) continue;
+    final list = <EpgProgram>[];
+    for (final item in entry.value as List) {
+      if (item is! Map) continue;
+      try {
+        final start = DateTime.fromMillisecondsSinceEpoch(item['start'] as int, isUtc: true);
+        final stop = DateTime.fromMillisecondsSinceEpoch(item['stop'] as int, isUtc: true);
+        if (!stop.isAfter(cutoff) || start.isAfter(horizon)) continue;
+        list.add(EpgProgram(
+          title: item['title']?.toString() ?? '',
+          description: item['description']?.toString() ?? '',
+          start: start,
+          stop: stop,
+        ));
+      } catch (_) {}
+    }
+    list.sort((a, b) => a.start.compareTo(b.start));
+    if (list.isNotEmpty) result[entry.key.toString()] = list;
+  }
+  return result;
+}
+
+// Decodes the saved EPG cache off the UI thread.
+Map<String, dynamic> _decodeEpgCacheIsolate(String cached) {
+  final decoded = jsonDecode(cached);
+  if (decoded is! Map) return const <String, dynamic>{};
+  Map<String, String> logos(dynamic raw) => raw is Map
+      ? raw.map<String, String>((k, v) => MapEntry(k.toString(), v.toString()))
+      : <String, String>{};
+  return <String, dynamic>{
+    'savedAt': decoded['savedAt'] is int ? decoded['savedAt'] : 0,
+    'byId': _epgMapFromJsonTop(decoded['byId']),
+    'byName': _epgMapFromJsonTop(decoded['byName']),
+    'logosById': logos(decoded['logosById']),
+    'logosByName': logos(decoded['logosByName']),
+  };
+}
+
+// ---- Playlist prefetch (runs while the splash animation plays) ------------
+List<Channel> _parseM3uIsolate(String content) {
+  String attr(String line, String attribute) {
+    final pattern = RegExp('$attribute\\s*=\\s*["\\x27]([^"\\x27]*)', caseSensitive: false);
+    return pattern.firstMatch(line)?.group(1) ?? '';
+  }
+  final result = <Channel>[];
+  String? name;
+  String group = 'Live TV';
+  String logo = '';
+  String tvgId = '';
+  String tvgName = '';
+  for (final rawLine in content.split(RegExp(r'\r?\n'))) {
+    final line = rawLine.trim();
+    if (line.isEmpty) continue;
+    if (line.startsWith('#EXTINF')) {
+      final comma = line.lastIndexOf(',');
+      name = comma >= 0 ? line.substring(comma + 1).trim() : 'Unknown channel';
+      group = attr(line, 'group-title');
+      logo = attr(line, 'tvg-logo');
+      tvgId = attr(line, 'tvg-id');
+      tvgName = attr(line, 'tvg-name');
+      if (group.isEmpty) group = 'Live TV';
+    } else if (!line.startsWith('#') && name != null) {
+      final uri = Uri.tryParse(line);
+      if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) {
+        result.add(Channel(name: name, url: line, group: group, logo: logo, tvgId: tvgId, tvgName: tvgName));
+      }
+      name = null;
+      group = 'Live TV';
+      logo = '';
+      tvgId = '';
+      tvgName = '';
+    }
+  }
+  return result;
+}
+
+Future<List<Channel>> _fetchAndParsePlaylist() async {
+  final baseUri = Uri.parse(playlistUrl);
+  final query = Map<String, String>.from(baseUri.queryParameters);
+  query['_refresh'] = DateTime.now().millisecondsSinceEpoch.toString();
+  final response = await http
+      .get(baseUri.replace(queryParameters: query), headers: const {
+        'User-Agent': 'AnantaOTT/1.0',
+        'Accept': '*/*',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+      })
+      .timeout(const Duration(seconds: 25));
+  if (response.statusCode != 200) {
+    throw Exception('Playlist server returned HTTP ${response.statusCode}');
+  }
+  final parsed = await compute(_parseM3uIsolate, response.body);
+  if (parsed.isEmpty) throw Exception('No valid channels found in the M3U file.');
+  return parsed;
+}
+
+Future<List<Channel>>? _prefetchedPlaylist;
+void _startPlaylistPrefetch() {
+  final f = _fetchAndParsePlaylist();
+  _prefetchedPlaylist = f;
+  // Avoid an unhandled-error crash if nobody awaits it (the page falls back
+  // to its own fetch when the prefetch failed).
+  f.then<void>((_) {}, onError: (Object e) { debugPrint('Playlist prefetch failed: $e'); });
+}
+
 // Online crash/error reporting (Sentry). The DSN is injected at build time
 // (--dart-define=SENTRY_DSN=...) or uses the default below. Empty disables it.
 const String _sentryDsn = String.fromEnvironment(
@@ -141,6 +255,7 @@ Future<void> _startApp() async {
       await Sentry.captureException(e);
     }
   }
+  _startPlaylistPrefetch();
   runApp(const AnantaOttApp());
 }
 
@@ -485,7 +600,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     });
     _loadFavorites();
     _loadPlaylist();
-    _initializeEpg();
+    // Heavy guide work starts after the first channel is on screen, so channel
+    // opening and the first frames stay smooth.
+    Future<void>.delayed(const Duration(seconds: 8), () {
+      if (mounted) _initializeEpg();
+    });
     // Keep the TV player key handler focused from the first frame so physical
     // Android TV remotes can deliver D-pad events even before the first tap.
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusTvPlayer());
@@ -1389,55 +1508,23 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }).toList(),
   };
 
-  Map<String, List<EpgProgram>> _epgMapFromJson(dynamic raw) {
-    final result = <String, List<EpgProgram>>{};
-    if (raw is! Map) return result;
-    // Keep a rolling three-day guide on device: programmes that have ended
-    // are discarded, while the current and next three days remain available.
-    final now = DateTime.now().toUtc();
-    final cutoff = now.subtract(const Duration(hours: 6));
-    final horizon = now.add(const Duration(days: 3));
-    for (final entry in raw.entries) {
-      if (entry.value is! List) continue;
-      final list = <EpgProgram>[];
-      for (final item in entry.value as List) {
-        if (item is! Map) continue;
-        try {
-          final start = DateTime.fromMillisecondsSinceEpoch(item['start'] as int, isUtc: true);
-          final stop = DateTime.fromMillisecondsSinceEpoch(item['stop'] as int, isUtc: true);
-          if (!stop.isAfter(cutoff) || start.isAfter(horizon)) continue;
-          list.add(EpgProgram(
-            title: item['title']?.toString() ?? '',
-            description: item['description']?.toString() ?? '',
-            start: start,
-            stop: stop,
-          ));
-        } catch (_) {}
-      }
-      list.sort((a, b) => a.start.compareTo(b.start));
-      if (list.isNotEmpty) result[entry.key.toString()] = list;
-    }
-    return result;
-  }
+  Map<String, List<EpgProgram>> _epgMapFromJson(dynamic raw) => _epgMapFromJsonTop(raw);
 
   Future<bool> _loadCachedEpg() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final cached = prefs.getString('ananta_epg_3day_cache_v1');
       if (cached == null || cached.isEmpty) return false;
-      final decoded = jsonDecode(cached);
-      if (decoded is! Map) return false;
-      final savedAtRaw = decoded['savedAt'];
-      final savedAt = savedAtRaw is int ? savedAtRaw : 0;
+      final decoded = await compute(_decodeEpgCacheIsolate, cached);
+      if (decoded.isEmpty) return false;
+      final savedAt = decoded['savedAt'] as int;
       final age = DateTime.now().millisecondsSinceEpoch - savedAt;
       final cacheIsFresh = savedAt > 0 && age >= 0 &&
           age < const Duration(hours: 2).inMilliseconds;
-      final byId = _epgMapFromJson(decoded['byId']);
-      final byName = _epgMapFromJson(decoded['byName']);
-      final rawLogosById = decoded['logosById'];
-      final logosById = rawLogosById is Map ? rawLogosById.map<String, String>((k, v) => MapEntry(k.toString(), v.toString())) : <String, String>{};
-      final rawLogosByName = decoded['logosByName'];
-      final logosByName = rawLogosByName is Map ? rawLogosByName.map<String, String>((k, v) => MapEntry(k.toString(), v.toString())) : <String, String>{};
+      final byId = Map<String, List<EpgProgram>>.from(decoded['byId'] as Map);
+      final byName = Map<String, List<EpgProgram>>.from(decoded['byName'] as Map);
+      final logosById = Map<String, String>.from(decoded['logosById'] as Map);
+      final logosByName = Map<String, String>.from(decoded['logosByName'] as Map);
       if (!mounted || (byId.isEmpty && byName.isEmpty && logosById.isEmpty)) return false;
       setState(() {
         _epgById = byId;
@@ -1629,14 +1716,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     return const <EpgProgram>[];
   }
 
+  // Lazy cache: resolving EPG candidates for every channel up-front blocked the
+  // UI thread for seconds. Entries are now filled on demand and memoised.
   void _rebuildEpgChannelIndex() {
-    _epgByChannelUrl = <String, List<EpgProgram>>{
-      for (final channel in _channels) channel.url: _resolveEpgCandidates(channel),
-    };
+    _epgByChannelUrl = <String, List<EpgProgram>>{};
+  }
+
+  List<EpgProgram> _epgCandidatesCached(Channel channel) {
+    final cached = _epgByChannelUrl[channel.url];
+    if (cached != null) return cached;
+    final resolved = _resolveEpgCandidates(channel);
+    _epgByChannelUrl[channel.url] = resolved;
+    return resolved;
   }
 
   EpgProgram? _epgForChannel(Channel channel) =>
-      _pickCurrentProgram(_epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel));
+      _pickCurrentProgram(_epgCandidatesCached(channel));
 
   String _logoForChannel(Channel channel) {
     // Logos come ONLY from this app's channel_logos folder in the user's
@@ -1676,7 +1771,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   }
 
   List<EpgProgram> _epgScheduleForChannel(Channel channel) {
-    final source = _epgByChannelUrl[channel.url] ?? _resolveEpgCandidates(channel);
+    final source = _epgCandidatesCached(channel);
     final now = DateTime.now().toUtc();
     final start = now.subtract(const Duration(days: 3));
     final end = now.add(const Duration(days: 3));
@@ -1850,32 +1945,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _status = 'Loading latest playlist...';
     });
     try {
-      final baseUri = Uri.parse(playlistUrl);
-      final query = Map<String, String>.from(
-        baseUri.queryParameters,
-      );
-      query['_refresh'] =
-          DateTime.now().millisecondsSinceEpoch.toString();
-      final uri = baseUri.replace(queryParameters: query);
-      final response = await http
-          .get(
-            uri,
-            headers: const {
-              'User-Agent': 'AnantaOTT/1.0',
-              'Accept': '*/*',
-              'Cache-Control': 'no-cache',
-              'Pragma': 'no-cache',
-            },
-          )
-          .timeout(const Duration(seconds: 25));
-      if (response.statusCode != 200) {
-        throw Exception(
-          'Playlist server returned HTTP ${response.statusCode}',
-        );
-      }
-      final parsed = _parseM3u(response.body);
-      if (parsed.isEmpty) {
-        throw Exception('No valid channels found in the M3U file.');
+      List<Channel> parsed;
+      final prefetch = _prefetchedPlaylist;
+      _prefetchedPlaylist = null; // use the splash-time prefetch only once
+      try {
+        parsed = prefetch != null ? await prefetch : await _fetchAndParsePlaylist();
+      } catch (_) {
+        parsed = await _fetchAndParsePlaylist();
       }
       final updated = <Channel>[ptvChannel];
       final seen = <String>{ptvChannel.url};
@@ -2680,15 +2756,35 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final player = _player;
-    if ((state == AppLifecycleState.hidden || state == AppLifecycleState.paused) && !_inPip) {
-      if (player != null && player.value.isInitialized && player.value.isPlaying) {
-        _pausedForBackground = true;
-        unawaited(player.pause().catchError((Object e) { debugPrint('Background pause error: $e'); }));
+    final leaving = state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached;
+    if (leaving && !_inPip) {
+      // Silence everything immediately (also on TV when the app is closed):
+      // cancel any channel still connecting, mute, then pause the live one.
+      ++_playRequestId;
+      final pending = _pendingPlayer;
+      _pendingPlayer = null;
+      if (pending != null) {
+        unawaited(pending.dispose().catchError((Object e) { debugPrint('Pending stop error: $e'); }));
       }
+      if (player != null) {
+        if (!_userPaused) _pausedForBackground = true;
+        unawaited(() async {
+          try { await player.setVolume(0.0); } catch (_) {}
+          try { await player.pause(); } catch (e) { debugPrint('Background pause error: $e'); }
+        }());
+      }
+      if (_connecting && mounted) setState(() => _connecting = false);
     } else if (state == AppLifecycleState.resumed && mounted) {
-      if (_pausedForBackground && player != null) {
-        _pausedForBackground = false;
-        unawaited(player.play().catchError((Object e) { debugPrint('Resume error: $e'); }));
+      if (player != null) {
+        unawaited(() async {
+          try { await player.setVolume(1.0); } catch (_) {}
+          if (_pausedForBackground) {
+            _pausedForBackground = false;
+            try { await player.play(); } catch (e) { debugPrint('Resume error: $e'); }
+          }
+        }());
       }
       setState(() {});
       _syncPipAutoEnter();
