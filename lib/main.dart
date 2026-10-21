@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'app_storage.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -21,11 +22,36 @@ const String playlistUrl =
     'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/refs/heads/main/channels.m3u';
 const String ptvStreamUrl =
     'http://103.185.24.134:3001/ptv/index.m3u8';
-const List<String> epgSourceUrls = [
-  'https://avkb.short.gy/tsepg.xml.gz',
-  'https://avkb.short.gy/jioepg.xml.gz',
-  'https://avkb.short.gy/epg.xml.gz',
+// EPG sources: every XMLTV file in this app's repository epg/ folder. They are
+// also bundled inside the APK (same paths) and used when the network is down.
+const String epgRemoteBase = 'https://raw.githubusercontent.com/Abidananta/Ananta-Stream-ott/main/';
+const List<String> epgSourceFiles = [
+  'epg/epg.xml.gz',
+  'epg/jiotv/epg.xml.gz',
+  'epg/tataplay/epg.xml.gz',
 ];
+
+// Latest file from the repository, or the copy bundled in the APK.
+Future<List<int>?> _fetchEpgBytes(String file, bool bundledOnly) async {
+  if (!bundledOnly) {
+    try {
+      final response = await http.get(Uri.parse('$epgRemoteBase$file'), headers: const {
+        'User-Agent': 'AnantaOTT/1.0',
+        'Accept': '*/*',
+      }).timeout(const Duration(seconds: 40));
+      if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) return response.bodyBytes;
+    } catch (error) {
+      debugPrint('EPG download failed ($file): $error');
+    }
+  }
+  try {
+    final data = await rootBundle.load(file);
+    return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+  } catch (error) {
+    debugPrint('Bundled EPG missing ($file): $error');
+    return null;
+  }
+}
 
 const Color accentColor = Color(0xFF9B87FF);
 const Color backgroundColor = Color(0xFF090914);
@@ -1337,7 +1363,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               leading: CircleAvatar(
                 radius: 30,
                 backgroundColor: accentColor.withOpacity(0.16),
-                backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
+                backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel), cacheManager: AnantaStorage.logoCache) : null,
                 child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
               ),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
@@ -1495,7 +1521,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // EPG / XMLTV
   // --------------------------------------------------
   String _normalizeEpgName(String value) {
-    var name = value.toLowerCase().trim();
+    var name = value.toLowerCase().trim().replaceAll('&', ' and ');
     name = name.replaceAll(RegExp(r'\b(hd|fhd|uhd|4k|sd|hevc|h265|live|tv)\b', caseSensitive: false), ' ');
     return name.replaceAll(RegExp(r'[^a-z0-9]+'), '');
   }
@@ -1557,7 +1583,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     // again just because the app was reopened.
     final cacheIsFresh = await _loadCachedEpg();
     if (!mounted) return;
-    if (!cacheIsFresh) unawaited(_loadEpg());
+    if (cacheIsFresh) return;
+    if (_epgById.isEmpty && _epgByName.isEmpty) {
+      // Nothing saved yet: show the guide bundled in the APK immediately...
+      await _loadEpg(bundledOnly: true);
+      if (!mounted) return;
+    }
+    // ...then refresh from the repository's epg folder.
+    unawaited(_loadEpg());
   }
 
   Map<String, dynamic> _epgMapToJson(Map<String, List<EpgProgram>> source) => {
@@ -1574,8 +1607,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
   Future<bool> _loadCachedEpg() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final cached = prefs.getString('ananta_epg_3day_cache_v1');
+      String? cached;
+      try {
+        final f = await AnantaStorage.epgFile();
+        if (await f.exists()) cached = await f.readAsString();
+      } catch (_) {}
+      if (cached == null || cached.isEmpty) {
+        // Older versions kept the guide in SharedPreferences.
+        final prefs = await SharedPreferences.getInstance();
+        cached = prefs.getString('ananta_epg_3day_cache_v1');
+      }
       if (cached == null || cached.isEmpty) return false;
       final decoded = await compute(_decodeEpgCacheIsolate, cached);
       if (decoded.isEmpty) return false;
@@ -1612,20 +1653,26 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     Map<String, String> logosByName,
   ) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('ananta_epg_3day_cache_v1', jsonEncode({
+      final data = jsonEncode({
         'savedAt': DateTime.now().millisecondsSinceEpoch,
         'byId': _epgMapToJson(byId),
         'byName': _epgMapToJson(byName),
         'logosById': logosById,
         'logosByName': logosByName,
-      }));
+      });
+      final f = await AnantaStorage.epgFile();
+      await f.writeAsString(data, flush: true);
+      try {
+        // Free the old SharedPreferences copy once the file is saved.
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('ananta_epg_3day_cache_v1');
+      } catch (_) {}
     } catch (error) {
       debugPrint('Cached EPG could not be saved: $error');
     }
   }
 
-  Future<void> _loadEpg() async {
+  Future<void> _loadEpg({bool bundledOnly = false}) async {
     if (_epgLoading) return;
     _epgLoading = true;
     try {
@@ -1637,15 +1684,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final logosById = <String, String>{};
     final logosByName = <String, String>{};
     var successfulSources = 0;
-    for (final source in epgSourceUrls) {
+    for (final source in epgSourceFiles) {
       try {
-        final response = await http.get(Uri.parse(source), headers: const {
-          'User-Agent': 'AnantaOTT/1.0',
-          'Accept': '*/*',
-          'Accept-Encoding': 'gzip',
-        }).timeout(const Duration(seconds: 20));
-        if (response.statusCode != 200) continue;
-        final parsed = await compute(_parseEpgPayload, response.bodyBytes);
+        final bytes = await _fetchEpgBytes(source, bundledOnly);
+        if (bytes == null) continue;
+        final parsed = await compute(_parseEpgPayload, bytes);
         final sourceNames = (parsed['namesById'] as Map).map<String, List<String>>(
           (key, value) => MapEntry(key.toString(), (value as List).map((item) => item.toString()).toList()),
         );
@@ -1692,7 +1735,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
     final byId = <String, List<EpgProgram>>{};
     final byName = <String, List<EpgProgram>>{};
-    final seenProgramsByName = <String, Set<String>>{};
     final epgNow = DateTime.now().toUtc();
     final keepAfter = epgNow.subtract(const Duration(hours: 6));
     final keepUntil = epgNow.add(const Duration(days: 3));
@@ -1705,11 +1747,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       for (final name in namesById[entry.key] ?? const <String>[]) {
         final normalized = _normalizeEpgName(name);
         if (normalized.isEmpty || programs.isEmpty) continue;
-        final list = byName.putIfAbsent(normalized, () => <EpgProgram>[]);
-        final seen = seenProgramsByName.putIfAbsent(normalized, () => <String>{});
-        for (final program in programs) {
-          final key = '${program.start.millisecondsSinceEpoch}|${program.title}';
-          if (seen.add(key)) list.add(program);
+        // Several providers can carry the same channel. Mixing their schedules
+        // makes overlapping/duplicate rows, so keep the fullest single schedule.
+        final current = byName[normalized];
+        if (current == null || programs.length > current.length) {
+          byName[normalized] = List<EpgProgram>.of(programs);
         }
       }
     }
@@ -1771,9 +1813,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final directName = _epgByName[name];
     if (directName != null && directName.isNotEmpty) return directName;
     if (name.length >= 5) {
+      List<EpgProgram>? best;
+      var bestDiff = 1 << 30;
       for (final entry in _epgByName.entries) {
-        if (entry.key.length >= 5 && (entry.key.contains(name) || name.contains(entry.key))) return entry.value;
+        if (entry.key.length >= 5 && (entry.key.contains(name) || name.contains(entry.key))) {
+          final diff = (entry.key.length - name.length).abs();
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            best = entry.value;
+          }
+        }
       }
+      if (best != null) return best;
     }
     return const <EpgProgram>[];
   }
@@ -2637,7 +2688,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                               border: Border.all(color: accentColor.withOpacity(0.45)),
                             ),
                             child: _logoForChannel(_selectedChannel!).isNotEmpty
-                                ? ClipRRect(borderRadius: BorderRadius.circular(10), child: CachedNetworkImage(imageUrl: _logoForChannel(_selectedChannel!), fit: BoxFit.contain, placeholder: (_, __) => const Icon(Icons.live_tv, color: accentColor), errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
+                                ? ClipRRect(borderRadius: BorderRadius.circular(10), child: CachedNetworkImage(cacheManager: AnantaStorage.logoCache, imageUrl: _logoForChannel(_selectedChannel!), fit: BoxFit.contain, placeholder: (_, __) => const Icon(Icons.live_tv, color: accentColor), errorWidget: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
                                 : const Icon(Icons.live_tv, color: accentColor, size: 30),
                           ),
                           const SizedBox(width: 12),
@@ -2746,7 +2797,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           leading: CircleAvatar(
             radius: 32,
             backgroundColor: accentColor.withOpacity(0.17),
-            backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel)) : null,
+            backgroundImage: _logoForChannel(channel).isNotEmpty ? CachedNetworkImageProvider(_logoForChannel(channel), cacheManager: AnantaStorage.logoCache) : null,
             child: _logoForChannel(channel).isEmpty
                 ? const Icon(Icons.live_tv, color: accentColor, size: 30)
                 : null,

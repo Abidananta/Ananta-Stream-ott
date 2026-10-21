@@ -36,6 +36,8 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         // Black behind Flutter: nothing white can show while the PiP window resizes.
         window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
+        // Create the AnantaOTT data folder (epg + logos) on first launch.
+        try { ensureDataDirs() } catch (e: Exception) { /* best effort */ }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -82,7 +84,8 @@ class MainActivity : FlutterActivity() {
         registerInstallReceiver()
         ch.setMethodCallHandler { call, result ->
             when (call.method) {
-                "getCacheDir" -> result.success(cacheDir.absolutePath)
+                "getCacheDir" -> result.success(updateDir().absolutePath)
+                "getDataDir" -> result.success(ensureDataDirs().absolutePath)
                 "cleanup" -> {
                     cleanupUpdateFiles()
                     result.success(true)
@@ -97,10 +100,44 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // Folder that holds the downloaded update APK (app-private, always writable).
+    private fun updateDir(): File {
+        val dir = File(cacheDir, "ananta_updates")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    // Persistent app folder on internal storage for EPG and logo cache:
+    //   <internal storage>/Android/data/<package>/files/AnantaOTT/{epg,logos}
+    // This app-specific folder needs no storage permission on any Android
+    // version/device. Falls back to the app-private files dir if unavailable.
+    private fun ensureDataDirs(): File {
+        var base: File? = null
+        try {
+            base = getExternalFilesDir(null)
+        } catch (e: Exception) {
+            // fall through to internal files dir
+        }
+        var root = File(base ?: filesDir, "AnantaOTT")
+        if (!root.exists() && !root.mkdirs()) {
+            root = File(filesDir, "AnantaOTT")
+            root.mkdirs()
+        }
+        for (sub in listOf("epg", "logos")) {
+            try {
+                File(root, sub).mkdirs()
+            } catch (e: Exception) {
+                // best effort
+            }
+        }
+        return root
+    }
+
     private fun cleanupUpdateFiles() {
         try {
+            updateDir().listFiles()?.forEach { f -> f.delete() }
             cacheDir.listFiles()?.forEach { f ->
-                if (f.name.startsWith("ananta_update")) f.delete()
+                if (f.isFile && f.name.startsWith("ananta_update")) f.delete()
             }
         } catch (e: Exception) {
             // best effort
@@ -191,7 +228,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun viewInstall(file: File) {
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val uri = shareableUri(file)
         var install = Intent(Intent.ACTION_VIEW)
         install.setDataAndType(uri, "application/vnd.android.package-archive")
         install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -206,6 +243,20 @@ class MainActivity : FlutterActivity() {
             install.setDataAndType(uri, "application/vnd.android.package-archive")
             install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(install)
+        }
+    }
+
+    // FileProvider only serves folders listed in ananta_file_paths.xml. If the
+    // APK sits somewhere unexpected (some ROMs map cache folders differently,
+    // e.g. code_cache), copy it into our own cache folder and share that copy.
+    private fun shareableUri(file: File): Uri {
+        try {
+            return FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        } catch (e: IllegalArgumentException) {
+            val copy = File(updateDir(), "ananta_update_share.apk")
+            if (copy.exists()) copy.delete()
+            file.copyTo(copy, overwrite = true)
+            return FileProvider.getUriForFile(this, "$packageName.fileprovider", copy)
         }
     }
 
