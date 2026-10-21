@@ -1,6 +1,6 @@
 {
-  "version": "1.1.8",
-  "versionCode": 22,
+  "version": "1.1.7",
+  "versionCode": 21,
   "releaseNotes": "Fixed the \"Could not start the installer\" update error on all devices, new round/adaptive app icon that is never cropped, EPG now loads from every file in the epg folder (also bundled offline) and matches by channel name, and an AnantaOTT folder on internal storage keeps the EPG and logo cache.",
   "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.8/app-release.apk"
 }
