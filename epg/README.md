@@ -362,7 +362,7 @@ Please respect the original attribution and do not remove or modify the project 
 </p>
 
 <p align="center">
-  Made with ❤️ for the OTT / IPTV community
+  Made with ❤️ for the Ananta OTT 
 </p>
 
 <!-- DO NOT REMOVE THIS CREDIT -->
