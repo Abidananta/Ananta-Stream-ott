@@ -1,6 +1,8 @@
 package com.ananta.ott
 
+import android.Manifest
 import android.app.PendingIntent
+import android.os.Environment
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
@@ -36,13 +38,12 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         // Black behind Flutter: nothing white can show while the PiP window resizes.
         window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
-        // Create the AnantaOTT data folder (epg + logos) on first launch.
-        try { ensureDataDirs() } catch (e: Exception) { /* best effort */ }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         setupInstaller(flutterEngine)
+        setupStorage(flutterEngine)
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).also { ch ->
             ch.setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -84,8 +85,7 @@ class MainActivity : FlutterActivity() {
         registerInstallReceiver()
         ch.setMethodCallHandler { call, result ->
             when (call.method) {
-                "getCacheDir" -> result.success(updateDir().absolutePath)
-                "getDataDir" -> result.success(ensureDataDirs().absolutePath)
+                "getCacheDir" -> result.success(cacheDir.absolutePath)
                 "cleanup" -> {
                     cleanupUpdateFiles()
                     result.success(true)
@@ -100,44 +100,92 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // Folder that holds the downloaded update APK (app-private, always writable).
-    private fun updateDir(): File {
-        val dir = File(cacheDir, "ananta_updates")
-        if (!dir.exists()) dir.mkdirs()
-        return dir
+    // ------------------------------------------------------------------
+    // Storage: an "Ananta OTT" folder in the internal storage (visible in the
+    // file manager) that holds the cached EPG files and channel logos.
+    // Needs "All files access" on Android 11+ (storage permission on 6-10);
+    // without it the app-specific external folder is used instead.
+    // ------------------------------------------------------------------
+    private fun hasPublicStorageAccess(): Boolean {
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> Environment.isExternalStorageManager()
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ->
+                checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+            else -> true
+        }
     }
 
-    // Persistent app folder on internal storage for EPG and logo cache:
-    //   <internal storage>/Android/data/<package>/files/AnantaOTT/{epg,logos}
-    // This app-specific folder needs no storage permission on any Android
-    // version/device. Falls back to the app-private files dir if unavailable.
-    private fun ensureDataDirs(): File {
-        var base: File? = null
-        try {
-            base = getExternalFilesDir(null)
-        } catch (e: Exception) {
-            // fall through to internal files dir
-        }
-        var root = File(base ?: filesDir, "AnantaOTT")
-        if (!root.exists() && !root.mkdirs()) {
-            root = File(filesDir, "AnantaOTT")
-            root.mkdirs()
-        }
-        for (sub in listOf("epg", "logos")) {
-            try {
-                File(root, sub).mkdirs()
-            } catch (e: Exception) {
-                // best effort
+    private fun setupStorage(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.ananta.ott/storage")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getStorageRoot" -> {
+                        try {
+                            var isPublic = false
+                            var dir: File? = null
+                            if (hasPublicStorageAccess() && Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED) {
+                                val candidate = File(Environment.getExternalStorageDirectory(), "Ananta OTT")
+                                if (candidate.exists() || candidate.mkdirs()) {
+                                    dir = candidate
+                                    isPublic = true
+                                }
+                            }
+                            if (dir == null) {
+                                val base = getExternalFilesDir(null) ?: filesDir
+                                dir = File(base, "Ananta OTT")
+                                dir.mkdirs()
+                            }
+                            result.success(mapOf("path" to dir.absolutePath, "public" to isPublic))
+                        } catch (e: Exception) {
+                            result.error("STORAGE_FAILED", e.javaClass.simpleName + ": " + e.message, null)
+                        }
+                    }
+                    "requestStorageAccessOnce" -> {
+                        val prefs = getSharedPreferences("ananta_storage", Context.MODE_PRIVATE)
+                        if (hasPublicStorageAccess() || prefs.getBoolean("asked", false)) {
+                            result.success(false)
+                        } else {
+                            prefs.edit().putBoolean("asked", true).apply()
+                            result.success(requestStorageAccess())
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
             }
+    }
+
+    private fun requestStorageAccess(): Boolean {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val attempts = listOf(
+                    Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")),
+                    Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                )
+                for (intent in attempts) {
+                    try {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        return true
+                    } catch (e: Exception) {
+                        // not available on this firmware (many TV boxes)
+                    }
+                }
+                return false
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 4711)
+                return true
+            }
+        } catch (e: Exception) {
+            // ignore, the app-specific folder is used
         }
-        return root
+        return false
     }
 
     private fun cleanupUpdateFiles() {
         try {
-            updateDir().listFiles()?.forEach { f -> f.delete() }
             cacheDir.listFiles()?.forEach { f ->
-                if (f.isFile && f.name.startsWith("ananta_update")) f.delete()
+                if (f.name.startsWith("ananta_update")) f.delete()
             }
         } catch (e: Exception) {
             // best effort
@@ -167,7 +215,12 @@ class MainActivity : FlutterActivity() {
                         runOnUiThread { result.success("started") }
                     } catch (e2: Exception) {
                         runOnUiThread {
-                            result.error("INSTALL_FAILED", e2.javaClass.simpleName + ": " + e2.message, null)
+                            result.error(
+                                "INSTALL_FAILED",
+                                "session: " + e.javaClass.simpleName + ": " + e.message +
+                                    " | view: " + e2.javaClass.simpleName + ": " + e2.message,
+                                null
+                            )
                         }
                     }
                 }
@@ -228,7 +281,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun viewInstall(file: File) {
-        val uri = shareableUri(file)
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
         var install = Intent(Intent.ACTION_VIEW)
         install.setDataAndType(uri, "application/vnd.android.package-archive")
         install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -243,20 +296,6 @@ class MainActivity : FlutterActivity() {
             install.setDataAndType(uri, "application/vnd.android.package-archive")
             install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(install)
-        }
-    }
-
-    // FileProvider only serves folders listed in ananta_file_paths.xml. If the
-    // APK sits somewhere unexpected (some ROMs map cache folders differently,
-    // e.g. code_cache), copy it into our own cache folder and share that copy.
-    private fun shareableUri(file: File): Uri {
-        try {
-            return FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-        } catch (e: IllegalArgumentException) {
-            val copy = File(updateDir(), "ananta_update_share.apk")
-            if (copy.exists()) copy.delete()
-            file.copyTo(copy, overwrite = true)
-            return FileProvider.getUriForFile(this, "$packageName.fileprovider", copy)
         }
     }
 

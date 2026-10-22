@@ -15,7 +15,6 @@ dependencies:
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7
   cached_network_image: ^3.4.1
-  flutter_cache_manager: ^3.4.1
   wakelock_plus: ^1.2.8
   package_info_plus: ^8.0.2
   url_launcher: ^6.3.0
@@ -30,6 +29,6 @@ flutter:
   uses-material-design: true
   assets:
     - assets/ananta_launcher_icon.png
-    - epg/epg.xml.gz
-    - epg/jiotv/epg.xml.gz
-    - epg/tataplay/epg.xml.gz
+    - assets/epg/
+    - assets/epg/tataplay/
+    - assets/epg/jiotv/

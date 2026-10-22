@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'glass.dart';
+
 /// Update dialog: downloads the new APK inside the dialog (resumable, with
 /// automatic retries) and hands it to Android's PackageInstaller.
 ///
@@ -488,11 +490,21 @@ class _UpdateDialogState extends State<UpdateDialog>
     return KeyEventResult.ignored;
   }
 
-  ButtonStyle get _focusStyle => ButtonStyle(
+  // Frosted-glass buttons; the focused one gets a thick white ring (TV remote).
+  ButtonStyle _glassButton({required bool primary}) => ButtonStyle(
+        backgroundColor: WidgetStatePropertyAll(primary
+            ? const Color(0xFF9B87FF).withOpacity(0.55)
+            : Colors.white.withOpacity(0.09)),
+        foregroundColor: const WidgetStatePropertyAll(Colors.white),
+        overlayColor: WidgetStatePropertyAll(Colors.white.withOpacity(0.12)),
+        padding: const WidgetStatePropertyAll(
+            EdgeInsets.symmetric(horizontal: 20, vertical: 12)),
+        shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
         side: WidgetStateProperty.resolveWith((states) =>
             states.contains(WidgetState.focused)
                 ? const BorderSide(color: Colors.white, width: 3)
-                : null),
+                : BorderSide(color: Colors.white.withOpacity(0.28), width: 1)),
       );
 
   String get _actionLabel {
@@ -512,6 +524,7 @@ class _UpdateDialogState extends State<UpdateDialog>
     final downloading = _phase == _Phase.downloading;
     final busy = downloading || _phase == _Phase.installing;
     final percent = (_progress * 100).clamp(0, 100).toStringAsFixed(0);
+    final theme = Theme.of(context);
     return PopScope(
       canPop: !downloading,
       onPopInvokedWithResult: (didPop, _) {
@@ -521,42 +534,95 @@ class _UpdateDialogState extends State<UpdateDialog>
         canRequestFocus: false,
         skipTraversal: true,
         onKeyEvent: _onKey,
-        child: AlertDialog(
-          title: const Text('Ananta OTT update available'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('A new version (${widget.version}) is available.\n\n'
-                    '${widget.notes}'),
-                AnimatedSize(
-                  duration: const Duration(milliseconds: 250),
-                  curve: Curves.easeOut,
-                  alignment: Alignment.topCenter,
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 16),
-                    child: _statusArea(percent),
+        child: Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: Glass(
+              radius: 28,
+              blur: 26,
+              opacity: 0.16,
+              tint: const Color(0xFF2A2458),
+              borderOpacity: 0.30,
+              padding: const EdgeInsets.fromLTRB(24, 22, 24, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white.withOpacity(0.12),
+                          border: Border.all(color: Colors.white.withOpacity(0.28)),
+                        ),
+                        child: const Icon(Icons.system_update_rounded,
+                            color: Color(0xFFC9BEFF), size: 24),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Text('Ananta OTT update available',
+                            style: theme.textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.bold)),
+                      ),
+                    ],
                   ),
-                ),
-              ],
+                  const SizedBox(height: 16),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('A new version (${widget.version}) is available.',
+                              style: theme.textTheme.bodyLarge
+                                  ?.copyWith(fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 8),
+                          Text(widget.notes,
+                              style: theme.textTheme.bodyMedium
+                                  ?.copyWith(color: Colors.white70, height: 1.35)),
+                          AnimatedSize(
+                            duration: const Duration(milliseconds: 250),
+                            curve: Curves.easeOut,
+                            alignment: Alignment.topCenter,
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 16),
+                              child: _statusArea(percent),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      OutlinedButton(
+                        focusNode: _laterNode,
+                        style: _glassButton(primary: false),
+                        onPressed: _onLater,
+                        child: Text(downloading ? 'Cancel' : 'Later'),
+                      ),
+                      const SizedBox(width: 10),
+                      FilledButton(
+                        focusNode: _actionNode,
+                        autofocus: true,
+                        style: _glassButton(primary: true),
+                        onPressed: busy ? null : () => unawaited(_start()),
+                        child: Text(_actionLabel),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
-          actions: [
-            OutlinedButton(
-              focusNode: _laterNode,
-              style: _focusStyle,
-              onPressed: _onLater,
-              child: Text(downloading ? 'Cancel' : 'Later'),
-            ),
-            FilledButton(
-              focusNode: _actionNode,
-              autofocus: true,
-              style: _focusStyle,
-              onPressed: busy ? null : () => unawaited(_start()),
-              child: Text(_actionLabel),
-            ),
-          ],
         ),
       ),
     );
@@ -578,6 +644,8 @@ class _UpdateDialogState extends State<UpdateDialog>
                 builder: (_, value, __) => LinearProgressIndicator(
                   value: _total > 0 ? value : null,
                   minHeight: 10,
+                  backgroundColor: Colors.white.withOpacity(0.14),
+                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFB9A8FF)),
                 ),
               ),
             ),

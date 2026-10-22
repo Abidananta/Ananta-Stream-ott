@@ -16,3 +16,9 @@ Playback is implemented with media_kit/libmpv rather than Flutter video_player. 
 v1.1.7 notes
 - `android_template/MainActivity.kt` now holds the native Android code (PiP + in-app installer). Upload this folder too.
 - Update dialog: resumable download, PackageInstaller install with real error messages, full TV remote support.
+
+EPG sources (v1.1.7)
+- Every file in the repository's `epg/` folder is an EPG source: `.xml`, `.xml.gz`, `.gz` files are read directly; `.txt`/`.list`/`.m3u`/`.csv` files may list more EPG URLs. Sub-folders are included. Just drop files in `epg/`.
+- A copy of `epg/epg.xml.gz`, `epg/tataplay/epg.xml.gz`, `epg/jiotv/epg.xml.gz` is bundled in the APK (`assets/epg/`) as an offline seed.
+- Downloaded EPG files are cached in the device folder `Ananta OTT/epg/`.
+- TV guide: Right opens it, Left/Right change day (Yesterday / Today / Tomorrow / +2), Up/Down browse programmes, Back closes the guide.
