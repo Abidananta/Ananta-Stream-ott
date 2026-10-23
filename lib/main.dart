@@ -670,10 +670,10 @@ class AnantaOttApp extends StatelessWidget {
           backgroundColor: const Color(0xE62A2458),
           contentTextStyle: const TextStyle(color: Colors.white),
           actionTextColor: const Color(0xFFC9BEFF),
-          elevation: 10,
+          elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(18),
-            side: BorderSide(color: Colors.white.withOpacity(0.34)),
+            side: BorderSide(color: Colors.white.withOpacity(0.28)),
           ),
         ),
         popupMenuTheme: PopupMenuThemeData(
@@ -1520,23 +1520,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           return AnimatedContainer(
             duration: const Duration(milliseconds: 120),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: focused
-                    ? [accentColor.withOpacity(0.55), accentColor.withOpacity(0.22)]
-                    : selected
-                        ? [Colors.white.withOpacity(0.20), Colors.white.withOpacity(0.07)]
-                        : [Colors.white.withOpacity(0.10), Colors.white.withOpacity(0.03)],
-              ),
+              color: focused
+                  ? accentColor.withOpacity(0.34)
+                  : selected ? Colors.white.withOpacity(0.13) : Colors.white.withOpacity(0.035),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(
-                color: focused ? Colors.white.withOpacity(0.85) : Colors.white.withOpacity(selected ? 0.30 : 0.14),
+                color: focused ? accentColor : Colors.white.withOpacity(0.07),
                 width: focused ? 2 : 1,
               ),
-              boxShadow: focused
-                  ? [BoxShadow(color: accentColor.withOpacity(0.55), blurRadius: 16, offset: const Offset(0, 4))]
-                  : null,
             ),
             child: ListTile(
               focusColor: Colors.transparent,
@@ -2216,16 +2207,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           padding: const EdgeInsets.all(9),
                           clipBehavior: Clip.hardEdge,
                           decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: focused
-                                  ? [accentColor.withOpacity(0.55), accentColor.withOpacity(0.20)]
-                                  : current
-                                      ? [accentColor.withOpacity(0.38), accentColor.withOpacity(0.12)]
-                                      : [Colors.white.withOpacity(0.10), Colors.white.withOpacity(0.03)],
-                            ),
-                            borderRadius: BorderRadius.circular(12),
+                            color: focused
+                                ? accentColor.withOpacity(0.32)
+                                : current ? accentColor.withOpacity(0.22) : Colors.white.withOpacity(0.045),
+                            borderRadius: BorderRadius.circular(10),
                             border: Border.all(
                               color: focused ? Colors.white : current ? accentColor.withOpacity(0.75) : Colors.white.withOpacity(0.07),
                               width: focused ? 2 : 1,
@@ -3031,8 +3016,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             backgroundColor: Colors.white.withOpacity(0.08),
             selectedColor: accentColor.withOpacity(0.55),
             side: BorderSide(color: Colors.white.withOpacity(selected ? 0.45 : 0.18)),
-            elevation: selected ? 6 : 0,
-            shadowColor: accentColor,
+            elevation: 0,
             pressElevation: 0,
             surfaceTintColor: Colors.transparent,
             labelStyle: TextStyle(
@@ -3061,8 +3045,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         radius: 15,
         padding: EdgeInsets.zero,
         color: selected ? accentColor : glassColor,
-        opacity: selected ? 0.36 : 0.11,
-        borderOpacity: selected ? 0.42 : 0.20,
+        opacity: selected ? 0.30 : 0.10,
         child: ListTile(
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
@@ -3286,13 +3269,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
                     child: Container(
                       decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [Colors.white.withOpacity(0.14), Colors.white.withOpacity(0.03)],
-                        ),
-                        border: Border(bottom: BorderSide(color: const Color(0xFFD9D0FF).withOpacity(0.30))),
-                        boxShadow: [BoxShadow(color: const Color(0xFF7C5CFF).withOpacity(0.18), blurRadius: 18)],
+                        color: Colors.white.withOpacity(0.06),
+                        border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.16))),
                       ),
                     ),
                   ),
