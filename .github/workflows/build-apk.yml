@@ -359,6 +359,10 @@ jobs:
 
           gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT $TAG"             --notes "## Ananta OTT $TAG
 
+          - Smoother launch animation and channel switching; no lag on the playing stream while another channel loads
+          - Ananta OTT folder (EPG + logos) visible in every file manager (Documents/Ananta OTT)
+          - TV guide: no overlapping NOW programmes, opens on the current programme, smooth scrolling
+          - Removed empty space in mobile mode
           - In-app update with download progress (no uninstall needed), audio stops on exit, smoother channel opening
           - Automatic online error reporting (Sentry) so problems can be fixed faster
           - Fixed white background on the app icon (bigger adaptive icon) and startup force close
