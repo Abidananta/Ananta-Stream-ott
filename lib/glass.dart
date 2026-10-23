@@ -41,31 +41,74 @@ class Glass extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final borderRadius = BorderRadius.circular(radius);
-    Widget surface = Container(
+    final inner = BorderRadius.circular((radius - 1).clamp(0, 999).toDouble());
+    // Frosted body: light enters from the top-left (brighter top edge).
+    final body = Container(
       padding: padding,
       decoration: BoxDecoration(
-        borderRadius: borderRadius,
-        // Light enters from the top-left: brighter top edge, clearer bottom.
+        borderRadius: inner,
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            tint.withOpacity((opacity + 0.08).clamp(0.0, 1.0)),
-            tint.withOpacity((opacity * 0.6).clamp(0.0, 1.0)),
+            tint.withOpacity((opacity + 0.09).clamp(0.0, 1.0)),
+            tint.withOpacity((opacity * 0.55).clamp(0.0, 1.0)),
           ],
         ),
-        border: Border.all(color: Colors.white.withOpacity(borderOpacity), width: 1),
       ),
       child: child,
     );
+    // Specular sheen over the upper part of the glass + a faint bottom bounce.
+    final sheen = Positioned.fill(
+      child: IgnorePointer(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: inner,
+            gradient: const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0x2EFFFFFF), Color(0x08FFFFFF), Color(0x00FFFFFF), Color(0x0FB9A8FF)],
+              stops: [0.0, 0.32, 0.62, 1.0],
+            ),
+          ),
+        ),
+      ),
+    );
+    Widget surface = Stack(children: [sheen, body]);
     if (blur > 0) {
       surface = BackdropFilter(
         filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
         child: surface,
       );
     }
-    final clipped = ClipRRect(borderRadius: borderRadius, child: surface);
-    return margin == null ? clipped : Padding(padding: margin!, child: clipped);
+    surface = ClipRRect(borderRadius: inner, child: surface);
+    // Gradient hairline border (bright top-left, soft bottom-right) = polished
+    // glass edge, with a soft drop shadow lifting the card off the background.
+    Widget card = DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: borderRadius,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.28),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Colors.white.withOpacity((borderOpacity + 0.30).clamp(0.0, 1.0)),
+            Colors.white.withOpacity(borderOpacity * 0.35),
+            const Color(0xFFB9A8FF).withOpacity(borderOpacity * 0.9),
+          ],
+          stops: const [0.0, 0.55, 1.0],
+        ),
+      ),
+      child: Padding(padding: const EdgeInsets.all(1), child: surface),
+    );
+    card = RepaintBoundary(child: card);
+    return margin == null ? card : Padding(padding: margin!, child: card);
   }
 }
 
@@ -102,10 +145,27 @@ class GlassPanel extends StatelessWidget {
           ],
         ),
         border: rightBorder
-            ? Border(right: BorderSide(color: Colors.white.withOpacity(0.18)))
+            ? Border(right: BorderSide(color: const Color(0xFFD9D0FF).withOpacity(0.30)))
             : null,
       ),
-      child: child,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          const IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0x22FFFFFF), Color(0x00FFFFFF), Color(0x14B9A8FF)],
+                  stops: [0.0, 0.45, 1.0],
+                ),
+              ),
+            ),
+          ),
+          child,
+        ],
+      ),
     );
     if (blur > 0) {
       panel = ClipRect(
@@ -150,7 +210,7 @@ class GlassBackdrop extends StatelessWidget {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFF0D0B26), Color(0xFF080815)],
+            colors: [Color(0xFF110D2E), Color(0xFF070712)],
           ),
         ),
         child: Stack(
@@ -159,6 +219,7 @@ class GlassBackdrop extends StatelessWidget {
             _orb(const Alignment(1.1, -0.85), 420, const Color(0xFF7C4DFF)),
             _orb(const Alignment(-1.2, -0.1), 380, const Color(0xFF2979FF)),
             _orb(const Alignment(0.9, 0.95), 400, const Color(0xFFE040FB)),
+            _orb(const Alignment(-0.3, 1.2), 340, const Color(0xFF00B8D4)),
           ],
         ),
       ),

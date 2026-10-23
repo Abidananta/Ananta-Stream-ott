@@ -1580,6 +1580,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     Color color = glassColor,
     double blur = 0,
     double opacity = 0.10,
+    double borderOpacity = 0.20,
   }) {
     // Frosted glass: translucent gradient + light border; `blur` adds a live
     // backdrop blur (used on a few big surfaces only, it costs GPU time).
@@ -1587,6 +1588,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       radius: radius,
       blur: blur,
       opacity: opacity,
+      borderOpacity: borderOpacity,
       tint: color == glassColor ? Colors.white : color,
       padding: padding,
       child: child,
@@ -3044,7 +3046,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         radius: 15,
         padding: EdgeInsets.zero,
         color: selected ? accentColor : glassColor,
-        opacity: selected ? 0.30 : 0.10,
+        opacity: selected ? 0.36 : 0.11,
+        borderOpacity: selected ? 0.42 : 0.20,
         child: ListTile(
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
