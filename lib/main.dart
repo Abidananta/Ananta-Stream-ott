@@ -670,10 +670,11 @@ class AnantaOttApp extends StatelessWidget {
           backgroundColor: const Color(0xE62A2458),
           contentTextStyle: const TextStyle(color: Colors.white),
           actionTextColor: const Color(0xFFC9BEFF),
-          elevation: 0,
+          elevation: 10,
+          shadowColor: const Color(0xFF7C5CFF),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(18),
-            side: BorderSide(color: Colors.white.withOpacity(0.28)),
+            side: BorderSide(color: Colors.white.withOpacity(0.34)),
           ),
         ),
         popupMenuTheme: PopupMenuThemeData(
@@ -3009,26 +3010,37 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         itemBuilder: (context, index) {
           final category = _categories[index];
           final selected = _selectedCategory == category;
-          return ChoiceChip(
-            label: Text(category),
-            selected: selected,
-            showCheckmark: false,
-            backgroundColor: Colors.white.withOpacity(0.08),
-            selectedColor: accentColor.withOpacity(0.55),
-            side: BorderSide(color: Colors.white.withOpacity(selected ? 0.45 : 0.18)),
-            elevation: 0,
-            pressElevation: 0,
-            surfaceTintColor: Colors.transparent,
-            labelStyle: TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight:
-                  selected ? FontWeight.bold : FontWeight.normal,
+          return Center(child: GestureDetector(
+            onTap: () => setState(() => _selectedCategory = category),
+            child: AnimatedContainer(
+              height: 36,
+              duration: const Duration(milliseconds: 160),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(22),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: selected
+                      ? [const Color(0xFFB9A8FF).withOpacity(0.85), const Color(0xFF6D4DFF).withOpacity(0.70)]
+                      : [Colors.white.withOpacity(0.16), Colors.white.withOpacity(0.05)],
+                ),
+                border: Border.all(color: Colors.white.withOpacity(selected ? 0.55 : 0.22)),
+                boxShadow: selected
+                    ? [BoxShadow(color: const Color(0xFF7C5CFF).withOpacity(0.50), blurRadius: 14, offset: const Offset(0, 4))]
+                    : null,
+              ),
+              child: Text(
+                category,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+                ),
+              ),
             ),
-            onSelected: (_) {
-              setState(() => _selectedCategory = category);
-            },
-          );
+         ));
         },
       ),
     );
@@ -3271,8 +3283,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
                     child: Container(
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.06),
-                        border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.16))),
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [Colors.white.withOpacity(0.14), Colors.white.withOpacity(0.03)],
+                        ),
+                        border: Border(bottom: BorderSide(color: const Color(0xFFD9D0FF).withOpacity(0.30))),
+                        boxShadow: [BoxShadow(color: const Color(0xFF7C5CFF).withOpacity(0.18), blurRadius: 18)],
                       ),
                     ),
                   ),

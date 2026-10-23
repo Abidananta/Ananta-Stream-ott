@@ -554,15 +554,26 @@ class _UpdateDialogState extends State<UpdateDialog>
                   Row(
                     children: [
                       Container(
-                        width: 44,
-                        height: 44,
+                        width: 48,
+                        height: 48,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: Colors.white.withOpacity(0.12),
-                          border: Border.all(color: Colors.white.withOpacity(0.28)),
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [Color(0x40FFFFFF), Color(0x149B87FF)],
+                          ),
+                          border: Border.all(color: Colors.white.withOpacity(0.38)),
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFF9B87FF).withOpacity(0.55),
+                              blurRadius: 18,
+                              spreadRadius: 1,
+                            ),
+                          ],
                         ),
                         child: const Icon(Icons.system_update_rounded,
-                            color: Color(0xFFC9BEFF), size: 24),
+                            color: Colors.white, size: 25),
                       ),
                       const SizedBox(width: 14),
                       Expanded(
@@ -610,12 +621,36 @@ class _UpdateDialogState extends State<UpdateDialog>
                         child: Text(downloading ? 'Cancel' : 'Later'),
                       ),
                       const SizedBox(width: 10),
-                      FilledButton(
-                        focusNode: _actionNode,
-                        autofocus: true,
-                        style: _glassButton(primary: true),
-                        onPressed: busy ? null : () => unawaited(_start()),
-                        child: Text(_actionLabel),
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          gradient: busy
+                              ? null
+                              : const LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [Color(0xFFB9A8FF), Color(0xFF7C5CFF), Color(0xFF4FA3FF)],
+                                ),
+                          boxShadow: busy
+                              ? null
+                              : [
+                                  BoxShadow(
+                                    color: const Color(0xFF7C5CFF).withOpacity(0.55),
+                                    blurRadius: 16,
+                                    offset: const Offset(0, 5),
+                                  ),
+                                ],
+                        ),
+                        child: FilledButton(
+                          focusNode: _actionNode,
+                          autofocus: true,
+                          style: _glassButton(primary: true).copyWith(
+                            backgroundColor: WidgetStatePropertyAll(
+                                busy ? Colors.white.withOpacity(0.10) : Colors.transparent),
+                          ),
+                          onPressed: busy ? null : () => unawaited(_start()),
+                          child: Text(_actionLabel),
+                        ),
                       ),
                     ],
                   ),
@@ -635,18 +670,13 @@ class _UpdateDialogState extends State<UpdateDialog>
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: TweenAnimationBuilder<double>(
-                tween: Tween<double>(begin: 0, end: _progress),
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOut,
-                builder: (_, value, __) => LinearProgressIndicator(
-                  value: _total > 0 ? value : null,
-                  minHeight: 10,
-                  backgroundColor: Colors.white.withOpacity(0.14),
-                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFB9A8FF)),
-                ),
+            TweenAnimationBuilder<double>(
+              tween: Tween<double>(begin: 0, end: _progress),
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+              builder: (_, value, __) => _PremiumProgress(
+                value: _total > 0 ? value : null,
+                label: _total > 0 ? '$percent%' : '',
               ),
             ),
             const SizedBox(height: 8),
@@ -688,6 +718,77 @@ class _UpdateDialogState extends State<UpdateDialog>
           style: small,
         );
     }
+  }
+}
+
+/// Glass progress bar: translucent track, glowing violet-to-blue fill with a
+/// bright leading edge, and the percentage in a pill at the end.
+class _PremiumProgress extends StatelessWidget {
+  const _PremiumProgress({required this.value, required this.label});
+  final double? value; // null = indeterminate
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Container(
+            height: 14,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              color: Colors.white.withOpacity(0.10),
+              border: Border.all(color: Colors.white.withOpacity(0.22)),
+            ),
+            padding: const EdgeInsets.all(2),
+            child: value == null
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: const LinearProgressIndicator(
+                      minHeight: 10,
+                      backgroundColor: Colors.transparent,
+                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFB9A8FF)),
+                    ),
+                  )
+                : LayoutBuilder(builder: (context, c) {
+                    final w = (c.maxWidth * value!.clamp(0.0, 1.0)).clamp(0.0, c.maxWidth);
+                    return Align(
+                      alignment: Alignment.centerLeft,
+                      child: Container(
+                        width: w < 10 && w > 0 ? 10 : w,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          gradient: const LinearGradient(
+                            colors: [Color(0xFF9B87FF), Color(0xFF4FC3F7)],
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFF7C9CFF).withOpacity(0.7),
+                              blurRadius: 10,
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }),
+          ),
+        ),
+        if (label.isNotEmpty) ...[
+          const SizedBox(width: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              color: Colors.white.withOpacity(0.12),
+              border: Border.all(color: Colors.white.withOpacity(0.30)),
+            ),
+            child: Text(label,
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: 0.4)),
+          ),
+        ],
+      ],
+    );
   }
 }
 
