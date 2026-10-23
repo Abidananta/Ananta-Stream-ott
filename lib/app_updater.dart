@@ -6,8 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'glass.dart';
-
 /// Update dialog: downloads the new APK inside the dialog (resumable, with
 /// automatic retries) and hands it to Android's PackageInstaller.
 ///
@@ -490,21 +488,11 @@ class _UpdateDialogState extends State<UpdateDialog>
     return KeyEventResult.ignored;
   }
 
-  // Frosted-glass buttons; the focused one gets a thick white ring (TV remote).
-  ButtonStyle _glassButton({required bool primary}) => ButtonStyle(
-        backgroundColor: WidgetStatePropertyAll(primary
-            ? const Color(0xFF9B87FF).withOpacity(0.55)
-            : Colors.white.withOpacity(0.09)),
-        foregroundColor: const WidgetStatePropertyAll(Colors.white),
-        overlayColor: WidgetStatePropertyAll(Colors.white.withOpacity(0.12)),
-        padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 20, vertical: 12)),
-        shape: WidgetStatePropertyAll(
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+  ButtonStyle get _focusStyle => ButtonStyle(
         side: WidgetStateProperty.resolveWith((states) =>
             states.contains(WidgetState.focused)
                 ? const BorderSide(color: Colors.white, width: 3)
-                : BorderSide(color: Colors.white.withOpacity(0.28), width: 1)),
+                : null),
       );
 
   String get _actionLabel {
@@ -524,7 +512,6 @@ class _UpdateDialogState extends State<UpdateDialog>
     final downloading = _phase == _Phase.downloading;
     final busy = downloading || _phase == _Phase.installing;
     final percent = (_progress * 100).clamp(0, 100).toStringAsFixed(0);
-    final theme = Theme.of(context);
     return PopScope(
       canPop: !downloading,
       onPopInvokedWithResult: (didPop, _) {
@@ -534,130 +521,49 @@ class _UpdateDialogState extends State<UpdateDialog>
         canRequestFocus: false,
         skipTraversal: true,
         onKeyEvent: _onKey,
-        child: Dialog(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
-            child: Glass(
-              radius: 28,
-              blur: 26,
-              opacity: 0.16,
-              tint: const Color(0xFF2A2458),
-              borderOpacity: 0.30,
-              padding: const EdgeInsets.fromLTRB(24, 22, 24, 18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: const LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [Color(0x40FFFFFF), Color(0x149B87FF)],
-                          ),
-                          border: Border.all(color: Colors.white.withOpacity(0.38)),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFF9B87FF).withOpacity(0.55),
-                              blurRadius: 18,
-                              spreadRadius: 1,
-                            ),
-                          ],
-                        ),
-                        child: const Icon(Icons.system_update_rounded,
-                            color: Colors.white, size: 25),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Text('Ananta OTT update available',
-                            style: theme.textTheme.titleLarge
-                                ?.copyWith(fontWeight: FontWeight.bold)),
-                      ),
-                    ],
+        child: AlertDialog(
+          // Frosted-glass dialog (the screen behind is blurred by the caller).
+          backgroundColor: const Color(0xD91B1832),
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(28),
+            side: BorderSide(color: Colors.white.withOpacity(0.18)),
+          ),
+          title: const Text('Ananta OTT update available'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('A new version (${widget.version}) is available.\n\n'
+                    '${widget.notes}'),
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.easeOut,
+                  alignment: Alignment.topCenter,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: _statusArea(percent),
                   ),
-                  const SizedBox(height: 16),
-                  Flexible(
-                    child: SingleChildScrollView(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('A new version (${widget.version}) is available.',
-                              style: theme.textTheme.bodyLarge
-                                  ?.copyWith(fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 8),
-                          Text(widget.notes,
-                              style: theme.textTheme.bodyMedium
-                                  ?.copyWith(color: Colors.white70, height: 1.35)),
-                          AnimatedSize(
-                            duration: const Duration(milliseconds: 250),
-                            curve: Curves.easeOut,
-                            alignment: Alignment.topCenter,
-                            child: Padding(
-                              padding: const EdgeInsets.only(top: 16),
-                              child: _statusArea(percent),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      OutlinedButton(
-                        focusNode: _laterNode,
-                        style: _glassButton(primary: false),
-                        onPressed: _onLater,
-                        child: Text(downloading ? 'Cancel' : 'Later'),
-                      ),
-                      const SizedBox(width: 10),
-                      DecoratedBox(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(14),
-                          gradient: busy
-                              ? null
-                              : const LinearGradient(
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                  colors: [Color(0xFFB9A8FF), Color(0xFF7C5CFF), Color(0xFF4FA3FF)],
-                                ),
-                          boxShadow: busy
-                              ? null
-                              : [
-                                  BoxShadow(
-                                    color: const Color(0xFF7C5CFF).withOpacity(0.55),
-                                    blurRadius: 16,
-                                    offset: const Offset(0, 5),
-                                  ),
-                                ],
-                        ),
-                        child: FilledButton(
-                          focusNode: _actionNode,
-                          autofocus: true,
-                          style: _glassButton(primary: true).copyWith(
-                            backgroundColor: WidgetStatePropertyAll(
-                                busy ? Colors.white.withOpacity(0.10) : Colors.transparent),
-                          ),
-                          onPressed: busy ? null : () => unawaited(_start()),
-                          child: Text(_actionLabel),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
+          actions: [
+            OutlinedButton(
+              focusNode: _laterNode,
+              style: _focusStyle,
+              onPressed: _onLater,
+              child: Text(downloading ? 'Cancel' : 'Later'),
+            ),
+            FilledButton(
+              focusNode: _actionNode,
+              autofocus: true,
+              style: _focusStyle,
+              onPressed: busy ? null : () => unawaited(_start()),
+              child: Text(_actionLabel),
+            ),
+          ],
         ),
       ),
     );
@@ -670,13 +576,16 @@ class _UpdateDialogState extends State<UpdateDialog>
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TweenAnimationBuilder<double>(
-              tween: Tween<double>(begin: 0, end: _progress),
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOut,
-              builder: (_, value, __) => _PremiumProgress(
-                value: _total > 0 ? value : null,
-                label: _total > 0 ? '$percent%' : '',
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0, end: _progress),
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+                builder: (_, value, __) => LinearProgressIndicator(
+                  value: _total > 0 ? value : null,
+                  minHeight: 10,
+                ),
               ),
             ),
             const SizedBox(height: 8),
@@ -718,77 +627,6 @@ class _UpdateDialogState extends State<UpdateDialog>
           style: small,
         );
     }
-  }
-}
-
-/// Glass progress bar: translucent track, glowing violet-to-blue fill with a
-/// bright leading edge, and the percentage in a pill at the end.
-class _PremiumProgress extends StatelessWidget {
-  const _PremiumProgress({required this.value, required this.label});
-  final double? value; // null = indeterminate
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Container(
-            height: 14,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              color: Colors.white.withOpacity(0.10),
-              border: Border.all(color: Colors.white.withOpacity(0.22)),
-            ),
-            padding: const EdgeInsets.all(2),
-            child: value == null
-                ? ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: const LinearProgressIndicator(
-                      minHeight: 10,
-                      backgroundColor: Colors.transparent,
-                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFB9A8FF)),
-                    ),
-                  )
-                : LayoutBuilder(builder: (context, c) {
-                    final w = (c.maxWidth * value!.clamp(0.0, 1.0)).clamp(0.0, c.maxWidth);
-                    return Align(
-                      alignment: Alignment.centerLeft,
-                      child: Container(
-                        width: w < 10 && w > 0 ? 10 : w,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF9B87FF), Color(0xFF4FC3F7)],
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFF7C9CFF).withOpacity(0.7),
-                              blurRadius: 10,
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  }),
-          ),
-        ),
-        if (label.isNotEmpty) ...[
-          const SizedBox(width: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              color: Colors.white.withOpacity(0.12),
-              border: Border.all(color: Colors.white.withOpacity(0.30)),
-            ),
-            child: Text(label,
-                style: const TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: 0.4)),
-          ),
-        ],
-      ],
-    );
   }
 }
 

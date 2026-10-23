@@ -12,9 +12,9 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
-import 'storage_service.dart';
-import 'glass.dart';
 import 'splash_screen.dart';
+import 'glass.dart';
+import 'local_store.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
 const String appName = 'Ananta OTT';
@@ -32,6 +32,10 @@ const List<String> epgSourceUrls = [
 const Color accentColor = Color(0xFF9B87FF);
 const Color backgroundColor = Color(0xFF090914);
 const Color glassColor = Color(0xFF211F35);
+// Live blur over the video costs GPU time on weak TV boxes. The TV panels use
+// the same frosted-glass gradient without live blur by default; set to true
+// for a real blur on powerful devices.
+const bool kTvLiveBlur = false;
 
 String _epgAttribute(String text, String name) {
   final match = RegExp('\\b${RegExp.escape(name)}\\s*=\\s*["\\x27]([^"\\x27]*)', caseSensitive: false).firstMatch(text);
@@ -121,54 +125,6 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
   return <String, dynamic>{'namesById': namesById, 'logosById': logosById, 'programmes': programmes};
 }
 
-
-/// Adds the programmes of [extra] to [base] ONLY where they do not overlap a
-/// programme that is already there. [base] is the higher-priority source, so
-/// several EPG feeds can no longer stack up as "3 programmes on now".
-void _mergeEpgNoOverlap(List<EpgProgram> base, Iterable<EpgProgram> extra) {
-  if (base.isEmpty) {
-    base.addAll(extra);
-    base.sort((a, b) => a.start.compareTo(b.start));
-    return;
-  }
-  base.sort((a, b) => a.start.compareTo(b.start));
-  final added = <EpgProgram>[];
-  for (final e in extra) {
-    // first base programme that ends after e starts
-    var lo = 0, hi = base.length;
-    while (lo < hi) {
-      final mid = (lo + hi) >> 1;
-      if (base[mid].stop.isAfter(e.start)) { hi = mid; } else { lo = mid + 1; }
-    }
-    final clash = lo < base.length && base[lo].start.isBefore(e.stop);
-    if (!clash) added.add(e);
-  }
-  if (added.isEmpty) return;
-  added.sort((a, b) => a.start.compareTo(b.start));
-  // `added` items may overlap each other (same feed): keep a clean timeline.
-  EpgProgram? last;
-  for (final e in added) {
-    if (last != null && e.start.isBefore(last.stop)) continue;
-    base.add(e);
-    last = e;
-  }
-  base.sort((a, b) => a.start.compareTo(b.start));
-}
-
-/// Guarantees one programme at a time: used for guide data that was saved by
-/// an older version (where feeds were simply mixed together).
-List<EpgProgram> _epgTimeline(List<EpgProgram> input) {
-  if (input.length < 2) return input;
-  final sorted = [...input]..sort((a, b) => a.start.compareTo(b.start));
-  final out = <EpgProgram>[];
-  for (final p in sorted) {
-    // Overlaps another programme (a second feed with different times): skip.
-    if (out.isNotEmpty && p.start.isBefore(out.last.stop)) continue;
-    out.add(p);
-  }
-  return out;
-}
-
 Map<String, List<EpgProgram>> _epgMapFromJsonTop(dynamic raw) {
   final result = <String, List<EpgProgram>>{};
   if (raw is! Map) return result;
@@ -201,27 +157,6 @@ Map<String, List<EpgProgram>> _epgMapFromJsonTop(dynamic raw) {
 }
 
 // Decodes the saved EPG cache off the UI thread.
-String _encodeEpgCacheIsolate(Map<String, dynamic> args) {
-  Map<String, dynamic> toJson(Map<String, List<EpgProgram>> source) => {
-        for (final entry in source.entries)
-          entry.key: entry.value
-              .map((p) => <String, dynamic>{
-                    'title': p.title,
-                    'description': p.description,
-                    'start': p.start.millisecondsSinceEpoch,
-                    'stop': p.stop.millisecondsSinceEpoch,
-                  })
-              .toList(),
-      };
-  return jsonEncode({
-    'savedAt': args['savedAt'],
-    'byId': toJson(args['byId'] as Map<String, List<EpgProgram>>),
-    'byName': toJson(args['byName'] as Map<String, List<EpgProgram>>),
-    'logosById': args['logosById'],
-    'logosByName': args['logosByName'],
-  });
-}
-
 Map<String, dynamic> _decodeEpgCacheIsolate(String cached) {
   final decoded = jsonDecode(cached);
   if (decoded is! Map) return const <String, dynamic>{};
@@ -387,7 +322,7 @@ class AnantaPlayerController {
   final Map<String, String> httpHeaders;
   // 96 MB demuxer buffer (default is 32 MB) so brief network stalls on live HLS
   // are absorbed by the cache instead of stopping the picture.
-  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 32 * 1024 * 1024));
+  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 96 * 1024 * 1024));
   late final VideoController _video = VideoController(_engine);
   bool _opened = false;
   bool _buffering = false;
@@ -452,20 +387,18 @@ class AnantaPlayerController {
       'cache': 'yes',
       // Read far ahead of the playback position (mpv default is only 1s), so
       // the picture keeps playing through network hiccups.
-      // Start-up profile: modest numbers so the NEW channel opens fast and the
-      // channel still playing is not starved of CPU / memory / bandwidth.
-      // enableLiveCache() raises them once the channel is on screen.
-      'cache-secs': '20',
-      'demuxer-readahead-secs': '20',
-      'demuxer-max-bytes': '32MiB',
-      'demuxer-max-back-bytes': '4MiB',
+      'cache-secs': '90',
+      'demuxer-readahead-secs': '90',
+      'demuxer-max-bytes': '96MiB',
+      'demuxer-max-back-bytes': '8MiB',
       // Pre-buffer before the first frame and after every stall instead of
       // playing 1 second and stuttering again. For live TS streams this is
       // the cache that absorbs jitter.
       'cache-pause': 'yes',
       'cache-pause-initial': 'yes',
-      'cache-pause-wait': '3',
-      'stream-buffer-size': '1MiB',
+      'cache-pause-wait': '8',
+      // Larger network read buffer (default 128 KiB).
+      'stream-buffer-size': '4MiB',
       'network-timeout': '30',
       // Reconnect automatically when the server drops the connection.
       'stream-lavf-o': 'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=%7%4xx,5xx,reconnect_delay_max=5',
@@ -481,24 +414,6 @@ class AnantaPlayerController {
       } catch (e) {
         debugPrint('mpv property ${entry.key} not applied: $e');
       }
-    }
-  }
-
-  // Switches from the quick start-up profile to the big read-ahead cache.
-  Future<void> enableLiveCache() async {
-    const props = <String, String>{
-      'cache-secs': '90',
-      'demuxer-readahead-secs': '90',
-      'demuxer-max-bytes': '96MiB',
-      'demuxer-max-back-bytes': '8MiB',
-      'cache-pause-wait': '8',
-      'stream-buffer-size': '4MiB',
-    };
-    final dynamic platform = _engine.platform;
-    for (final entry in props.entries) {
-      try {
-        await platform.setProperty(entry.key, entry.value);
-      } catch (_) {}
     }
   }
 
@@ -658,47 +573,20 @@ class AnantaOttApp extends StatelessWidget {
         materialTapTargetSize: MaterialTapTargetSize.padded,
         useMaterial3: true,
         brightness: Brightness.dark,
-        // Transparent so the GlassBackdrop (see builder) shows through.
-        scaffoldBackgroundColor: Colors.transparent,
+        scaffoldBackgroundColor: backgroundColor,
         colorScheme: ColorScheme.fromSeed(
           seedColor: accentColor,
           brightness: Brightness.dark,
         ),
-        // Frosted notification bars (snackbars), menus and sheets.
         snackBarTheme: SnackBarThemeData(
           behavior: SnackBarBehavior.floating,
-          backgroundColor: const Color(0xE62A2458),
+          backgroundColor: const Color(0xE61B1832),
           contentTextStyle: const TextStyle(color: Colors.white),
-          actionTextColor: const Color(0xFFC9BEFF),
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: BorderSide(color: Colors.white.withOpacity(0.28)),
-          ),
-        ),
-        popupMenuTheme: PopupMenuThemeData(
-          color: const Color(0xE61B1840),
-          surfaceTintColor: Colors.transparent,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            side: BorderSide(color: Colors.white.withOpacity(0.22)),
+            side: BorderSide(color: Colors.white.withOpacity(0.16)),
           ),
         ),
-        bottomSheetTheme: BottomSheetThemeData(
-          backgroundColor: const Color(0xE61B1840),
-          surfaceTintColor: Colors.transparent,
-          shape: RoundedRectangleBorder(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-            side: BorderSide(color: Colors.white.withOpacity(0.22)),
-          ),
-        ),
-      ),
-      builder: (context, child) => Stack(
-        fit: StackFit.expand,
-        children: [
-          const GlassBackdrop(),
-          if (child != null) child,
-        ],
       ),
       home: AnantaSplashScreen(next: (_) => const AnantaHomePage()),
     );
@@ -740,6 +628,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   bool _epgLoading = false;
   int _tvFocusedEpgIndex = 0;
   int _tvEpgSelectedDayOffset = 0;
+  // Which (channel, day) the guide list was last auto-positioned for, so the
+  // list jumps to the programme that is on air whenever the guide is opened.
+  String _tvEpgAnchor = '';
+  int _tvEpgAnchorIndex = 0;
+  final GlobalKey _tvEpgAnchorKey = GlobalKey();
   int _tvFocusedChannelIndex = 0;
   int _tvFocusedCategoryIndex = 0;
   final ScrollController _tvChannelScrollController = ScrollController();
@@ -755,9 +648,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   Map<String, String> _indiaLogosByName = {};
   bool _indiaLogoIndexLoading = false;
   String _epgStatus = 'Loading programme guide…';
-  String _epgReport = '';
   Timer? _epgClock;
   Timer? _epgRefreshTimer;
+  Timer? _storeNotifyTimer;
+  int _epgSavedAt = 0;
+  bool _epgInitDone = false;
+  final Map<String, String> _logoUrlCache = {};
   Timer? _playbackHealthTimer;
   DateTime? _bufferingStartedAt;
   int _runtimeRetryCount = 0;
@@ -786,10 +682,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }
     });
     _loadFavorites();
-    // Create the "Ananta OTT" folder (epg/ + logos/) right away so logos and
-    // the guide are saved into it.
-    unawaited(StorageService.setup());
     _loadPlaylist();
+    // Local storage for the EPG files and the channel_logos folder. Logos that
+    // are already on the device are shown from disk immediately.
+    LocalStore.instance.revision.addListener(_onStoreChanged);
+    unawaited(LocalStore.instance.init().then((_) {
+      if (mounted) setState(() {});
+    }));
+    Future<void>.delayed(const Duration(seconds: 12), () {
+      if (mounted) unawaited(LocalStore.instance.syncLogos());
+    });
     // Heavy guide work starts after the first channel is on screen, so channel
     // opening and the first frames stay smooth.
     Future<void>.delayed(const Duration(seconds: 8), () {
@@ -801,7 +703,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _epgClock = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
-    _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) => _loadEpg());
+    _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) {
+      unawaited(_loadEpg());
+      unawaited(LocalStore.instance.syncLogos()); // self-throttled to 12 h
+    });
     // Watchdog: reconnect automatically when a live stream errors, ends,
     // freezes (position stops advancing) or buffers for too long.
     _playbackHealthTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -970,90 +875,31 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     });
   }
 
-  static const int _epgMinDay = -1; // yesterday
-  static const int _epgMaxDay = 2; // today + 2
-
-  /// Programmes of [channel] that run on the local day [offset] (0 = today).
-  List<EpgProgram> _epgDaySchedule(Channel channel, int offset) {
-    final now = DateTime.now();
-    final dayStart = DateTime(now.year, now.month, now.day).add(Duration(days: offset));
-    final dayEnd = dayStart.add(const Duration(days: 1));
-    return _epgScheduleForChannel(channel).where((program) {
-      return program.stop.toLocal().isAfter(dayStart) && program.start.toLocal().isBefore(dayEnd);
-    }).toList();
-  }
-
-  /// Height of one guide row (fixed, so scroll offsets are exact and the list
-  /// only builds the rows that are on screen).
-  static const double _epgRowExtent = 104;
-  DateTime _lastEpgScroll = DateTime.fromMillisecondsSinceEpoch(0);
-
-  /// Switches the TV guide to another day (works from the remote and by touch).
-  /// For today the programme that is on air is selected and scrolled into view.
-  void _setTvEpgDay(int offset, Channel? channel) {
-    final day = offset.clamp(_epgMinDay, _epgMaxDay).toInt();
-    var focus = 0;
-    if (day == 0 && channel != null) {
-      final nowUtc = DateTime.now().toUtc();
-      final index = _epgDaySchedule(channel, 0).indexWhere((p) => p.isAiringAt(nowUtc));
-      if (index > 0) focus = index;
-    }
-    setState(() {
-      _tvEpgSelectedDayOffset = day;
-      _tvFocusedEpgIndex = focus;
-    });
-    _epgScrollTo(focus, animate: false, alignment: 0.12);
-  }
-
   void _moveTvEpgSelection(int delta, Channel channel) {
-    final schedule = _epgDaySchedule(channel, _tvEpgSelectedDayOffset);
+    final schedule = _tvEpgDaySchedule(channel);
     if (schedule.isEmpty) return;
     _tvFocusedEpgIndex = (_tvFocusedEpgIndex + delta).clamp(0, schedule.length - 1).toInt();
-    _epgScrollTo(_tvFocusedEpgIndex, animate: true, alignment: 0.4, onlyIfHidden: true);
+    _scrollTvEpgToIndex(_tvFocusedEpgIndex);
     if (mounted) setState(() {});
   }
 
-  /// Scrolls the guide so row [index] sits at [alignment] of the viewport.
-  /// Waits (a few frames) until the list is laid out, e.g. right after the
-  /// guide opens. [onlyIfHidden] keeps the list still while the selection stays
-  /// inside the visible area, so holding Up/Down is smooth, not jumpy.
-  void _epgScrollTo(int index, {required bool animate, double alignment = 0.4, bool onlyIfHidden = false}) {
-    void step(int attempt) {
-      if (!mounted) return;
-      final c = _tvEpgScrollController;
-      if (!c.hasClients || !c.position.haveDimensions) {
-        if (attempt < 8) WidgetsBinding.instance.addPostFrameCallback((_) => step(attempt + 1));
-        return;
-      }
-      final pos = c.position;
-      final rowTop = index * _epgRowExtent;
-      final view = pos.viewportDimension;
-      if (onlyIfHidden) {
-        final visibleTop = pos.pixels + 12;
-        final visibleBottom = pos.pixels + view - _epgRowExtent - 12;
-        if (rowTop >= visibleTop && rowTop <= visibleBottom) return;
-      }
-      final target = (rowTop - view * alignment).clamp(0.0, pos.maxScrollExtent).toDouble();
-      if ((target - pos.pixels).abs() < 1) return;
-      final now = DateTime.now();
-      final fast = now.difference(_lastEpgScroll).inMilliseconds < 140; // key held down
-      _lastEpgScroll = now;
-      if (!animate || fast) {
-        c.jumpTo(target);
-      } else {
-        c.animateTo(target, duration: const Duration(milliseconds: 140), curve: Curves.easeOutCubic);
-      }
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) => step(0));
+  void _scrollTvEpgToIndex(int index) {
+    if (!_tvEpgScrollController.hasClients) return;
+    final position = _tvEpgScrollController.position;
+    // Guide rows have variable height; this estimate keeps keyboard selection
+    // near the viewport while ListView remains the source of truth for scrolling.
+    final target = (index * 118.0).clamp(0.0, position.maxScrollExtent).toDouble();
+    _tvEpgScrollController.animateTo(target,
+        duration: const Duration(milliseconds: 110), curve: Curves.easeOut);
   }
 
   void _scrollTvEpg(int delta) {
     if (!_tvEpgScrollController.hasClients) return;
     final position = _tvEpgScrollController.position;
-    final target = (_tvEpgScrollController.offset + delta * _epgRowExtent * 1.5)
+    final target = (_tvEpgScrollController.offset + delta * 150.0)
         .clamp(0.0, position.maxScrollExtent).toDouble();
     _tvEpgScrollController.animateTo(target,
-        duration: const Duration(milliseconds: 140), curve: Curves.easeOutCubic);
+        duration: const Duration(milliseconds: 120), curve: Curves.easeOut);
   }
 
   KeyEventResult _handleRemoteKey(FocusNode node, KeyEvent event) {
@@ -1166,12 +1012,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     }
 
     if (key == LogicalKeyboardKey.arrowLeft) {
-      if (_tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories &&
-          _tvEpgSelectionMode && _tvEpgSelectedDayOffset > _epgMinDay) {
-        // Guide open: Left = previous day (Yesterday is the first tab).
-        _setTvEpgDay(_tvEpgSelectedDayOffset - 1, _tvEpgPreviewChannel(channels));
-        return KeyEventResult.handled;
-      }
       if (_tvSidebarVisible && !_tvShowingCategories) {
         setState(() { _tvEpgVisible = false; _tvEpgSelectionMode = false; });
         _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
@@ -1188,16 +1028,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _showTvChannels(index: _tvFocusedChannelIndex);
       } else if (_tvSidebarVisible && !_tvEpgVisible) {
         // First Right opens the 3-day guide without interrupting playback.
-        setState(() { _tvEpgVisible = true; _tvEpgSelectionMode = true; _tvFocusedEpgIndex = 0; _tvEpgSelectedDayOffset = 0; });
-        // Show today's programme that is on air right away (no manual scrolling).
-        _setTvEpgDay(0, _tvEpgPreviewChannel(channels));
+        setState(() { _tvEpgVisible = true; _tvEpgSelectionMode = true; _tvFocusedEpgIndex = 0; _tvEpgSelectedDayOffset = 0; _tvEpgAnchor = ''; });
       } else if (_tvSidebarVisible && _tvEpgVisible) {
-        // Guide open: Right = next day (Up/Down browse the programmes).
-        if (!_tvEpgSelectionMode) {
-          setState(() => _tvEpgSelectionMode = true);
-        } else if (_tvEpgSelectedDayOffset < _epgMaxDay) {
-          _setTvEpgDay(_tvEpgSelectedDayOffset + 1, _tvEpgPreviewChannel(channels));
-        }
+        // Second Right enables the guide selection rail; Up/Down now browse
+        // every programme rather than moving channel focus.
+        setState(() => _tvEpgSelectionMode = !_tvEpgSelectionMode);
       } else {
         // Hidden sidebar: ignore Right as well; Enter is the only opener.
       }
@@ -1207,12 +1042,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.browserBack) {
       if (_tvShowingCategories) {
         _showTvChannels(index: _tvFocusedChannelIndex);
-        return KeyEventResult.handled;
-      }
-      if (_tvSidebarVisible && _tvEpgVisible) {
-        // Back closes the guide first and returns to the channel list.
-        setState(() { _tvEpgVisible = false; _tvEpgSelectionMode = false; });
-        _focusTvChannel(_tvFocusedChannelIndex);
         return KeyEventResult.handled;
       }
       if (_tvSidebarVisible) {
@@ -1305,10 +1134,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               duration: const Duration(milliseconds: 100),
               opacity: _tvSidebarVisible ? 1 : 0,
               child: RepaintBoundary(
-                child: ClipRect(
-                // A translucent panel is cheaper to render than a live blur
-                // on lower-powered TV boxes while keeping video visible.
-                child: GlassPanel(
+                child: Glass(
+                    borderRadius: const BorderRadius.horizontal(right: Radius.circular(26)),
+                    tint: const Color(0xFF14112B),
+                    strength: 1.05,
+                    blur: kTvLiveBlur ? 18 : 0,
                     child: SafeArea(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1429,9 +1259,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                                         child: AnimatedContainer(
                                           duration: const Duration(milliseconds: 100),
                                           decoration: BoxDecoration(
-                                            color: focused ? accentColor.withOpacity(0.34) : Colors.white.withOpacity(0.045),
-                                            borderRadius: BorderRadius.circular(12),
-                                            border: Border.all(color: focused ? accentColor : (selected ? accentColor.withOpacity(0.55) : Colors.white.withOpacity(0.08)), width: focused ? 2 : 1),
+                                            gradient: LinearGradient(
+                                              begin: Alignment.topLeft,
+                                              end: Alignment.bottomRight,
+                                              colors: focused
+                                                  ? [accentColor.withOpacity(0.55), accentColor.withOpacity(0.22)]
+                                                  : [Colors.white.withOpacity(0.10), Colors.white.withOpacity(0.03)],
+                                            ),
+                                            borderRadius: BorderRadius.circular(16),
+                                            border: Border.all(color: focused ? Colors.white.withOpacity(0.9) : (selected ? accentColor.withOpacity(0.6) : Colors.white.withOpacity(0.12)), width: focused ? 2 : 1),
+                                            boxShadow: focused ? [BoxShadow(color: accentColor.withOpacity(0.45), blurRadius: 16)] : null,
                                           ),
                                           child: ListTile(
                                             dense: true,
@@ -1468,7 +1305,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                       ),
                     ),
                 ),
-              ),
               ),
             ),
           ),
@@ -1520,14 +1356,21 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           return AnimatedContainer(
             duration: const Duration(milliseconds: 120),
             decoration: BoxDecoration(
-              color: focused
-                  ? accentColor.withOpacity(0.34)
-                  : selected ? Colors.white.withOpacity(0.13) : Colors.white.withOpacity(0.035),
-              borderRadius: BorderRadius.circular(12),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: focused
+                    ? [accentColor.withOpacity(0.55), accentColor.withOpacity(0.22)]
+                    : selected
+                        ? [Colors.white.withOpacity(0.20), Colors.white.withOpacity(0.07)]
+                        : [Colors.white.withOpacity(0.09), Colors.white.withOpacity(0.025)],
+              ),
+              borderRadius: BorderRadius.circular(18),
               border: Border.all(
-                color: focused ? accentColor : Colors.white.withOpacity(0.07),
+                color: focused ? Colors.white.withOpacity(0.9) : Colors.white.withOpacity(0.12),
                 width: focused ? 2 : 1,
               ),
+              boxShadow: focused ? [BoxShadow(color: accentColor.withOpacity(0.45), blurRadius: 16)] : null,
             ),
             child: ListTile(
               focusColor: Colors.transparent,
@@ -1535,12 +1378,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               dense: false,
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: CircleAvatar(
-                radius: 30,
-                backgroundColor: accentColor.withOpacity(0.16),
-                backgroundImage: _logoForChannel(channel).isNotEmpty ? LogoStore.provider(_logoForChannel(channel), channel.group) : null,
-                child: _logoForChannel(channel).isEmpty ? const Icon(Icons.live_tv, color: accentColor, size: 28) : null,
-              ),
+              leading: _glassAvatar(channel, 30),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
               subtitle: Column(
@@ -1578,19 +1416,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     EdgeInsetsGeometry padding = const EdgeInsets.all(10),
     double radius = 16,
     Color color = glassColor,
-    double blur = 0,
-    double opacity = 0.10,
-    double borderOpacity = 0.20,
+    double blur = 14,
   }) {
-    // Frosted glass: translucent gradient + light border; `blur` adds a live
-    // backdrop blur (used on a few big surfaces only, it costs GPU time).
+    // Frosted glass: blurred backdrop + tinted gradient + light edge. Used for
+    // the few large/overlay panels (search, player bar, controls, info card);
+    // long lists use blur: 0 for speed.
     return Glass(
       radius: radius,
-      blur: blur,
-      opacity: opacity,
-      borderOpacity: borderOpacity,
-      tint: color == glassColor ? Colors.white : color,
       padding: padding,
+      tint: color.withOpacity(1),
+      strength: color.opacity < 1 ? (color.opacity + 0.25).clamp(0.5, 1.0).toDouble() : 0.9,
+      blur: blur,
       child: child,
     );
   }
@@ -1756,11 +1592,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     // Always show the on-device guide first. Only fetch on startup when the
     // cache is absent/expired; a cache younger than two hours is never fetched
     // again just because the app was reopened.
-    // The saved-guide cache can be "fresh" while the files in Ananta OTT/epg
-    // were deleted by the user: put them back (download, or bundled copy).
-    unawaited(EpgDiskCache.restoreIfMissing(epgSourceUrls));
     final cacheIsFresh = await _loadCachedEpg();
     if (!mounted) return;
+    _epgInitDone = true;
+    // Even a "fresh" cache is revalidated cheaply later by the refresh timer;
+    // the stored EPG files make this work offline too.
     if (!cacheIsFresh) unawaited(_loadEpg());
   }
 
@@ -1778,12 +1614,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
   Future<bool> _loadCachedEpg() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final cached = prefs.getString('ananta_epg_3day_cache_v2');
+      // The parsed guide now lives in a file in the app's local storage.
+      // Older versions kept it in SharedPreferences; read that once if needed.
+      var cached = await LocalStore.instance.readParsedGuide();
+      if (cached == null || cached.isEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        cached = prefs.getString('ananta_epg_3day_cache_v1');
+      }
       if (cached == null || cached.isEmpty) return false;
       final decoded = await compute(_decodeEpgCacheIsolate, cached);
       if (decoded.isEmpty) return false;
       final savedAt = decoded['savedAt'] as int;
+      _epgSavedAt = savedAt;
       final age = DateTime.now().millisecondsSinceEpoch - savedAt;
       final cacheIsFresh = savedAt > 0 && age >= 0 &&
           age < const Duration(hours: 2).inMilliseconds;
@@ -1816,35 +1658,19 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     Map<String, String> logosByName,
   ) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      // Encoding ~100k programmes froze the UI for seconds: do it in an isolate.
-      final encoded = await compute(_encodeEpgCacheIsolate, <String, dynamic>{
-        'savedAt': DateTime.now().millisecondsSinceEpoch,
-        'byId': byId,
-        'byName': byName,
+      await LocalStore.instance.writeParsedGuide(jsonEncode({
+        'savedAt': _epgSavedAt == 0 ? DateTime.now().millisecondsSinceEpoch : _epgSavedAt,
+        'byId': _epgMapToJson(byId),
+        'byName': _epgMapToJson(byName),
         'logosById': logosById,
         'logosByName': logosByName,
-      });
-      await prefs.setString('ananta_epg_3day_cache_v2', encoded);
+      }));
+      // Drop the old SharedPreferences copy (it could be several MB).
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('ananta_epg_3day_cache_v1');
     } catch (error) {
       debugPrint('Cached EPG could not be saved: $error');
     }
-  }
-
-  Future<List<int>?> _downloadEpgBytes(String url) async {
-    if (url.isEmpty) return null;
-    try {
-      final response = await http.get(Uri.parse(url), headers: const {
-        'User-Agent': 'AnantaOTT/1.0',
-        'Accept': '*/*',
-        'Accept-Encoding': 'gzip',
-      }).timeout(const Duration(seconds: 45));
-      if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) return response.bodyBytes;
-      debugPrint('EPG download HTTP ${response.statusCode}: $url');
-    } catch (error) {
-      debugPrint('EPG download failed ($url): $error');
-    }
-    return null;
   }
 
   Future<void> _loadEpg() async {
@@ -1854,61 +1680,44 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final candidatesById = <String, List<EpgProgram>>{};
     // Hash sets avoid quadratic list scans when EPG feeds contain overlapping
     // programmes from multiple providers. This is important on low-memory TV boxes.
+    final seenProgramsById = <String, Set<String>>{};
     final namesById = <String, List<String>>{};
     final logosById = <String, String>{};
     final logosByName = <String, String>{};
     var successfulSources = 0;
-    final report = StringBuffer('EPG load ${DateTime.now().toUtc().toIso8601String()} (UTC)\n');
-    // Live feeds (epgSourceUrls) + every file in the repository's /epg folder.
-    final epgSources = await EpgSourceResolver.resolve(epgSourceUrls);
-    for (final source in epgSources) {
+    // 1) Bring the stored EPG files up to date (conditional download: a file
+    //    that did not change on the server is not downloaded again).
+    final epgFiles = <MapEntry<String, EpgFile>>[];
+    for (final source in epgSourceUrls) {
+      final stored = await LocalStore.instance.fetchEpg(source);
+      if (stored != null) epgFiles.add(MapEntry(source, stored));
+    }
+    if (!mounted) return;
+    if (epgFiles.isEmpty) {
+      if (_epgById.isEmpty && _epgByName.isEmpty) {
+        setState(() => _epgStatus = 'Programme guide unavailable');
+      }
+      return;
+    }
+    if (epgFiles.every((entry) => !entry.value.changed) &&
+        (_epgById.isNotEmpty || _epgByName.isNotEmpty)) {
+      // Nothing new on the server (or offline): keep the guide already loaded.
+      setState(() {
+        _epgStatus = epgFiles.any((entry) => entry.value.offline)
+            ? 'Offline: using stored programme guide'
+            : 'Programme guide is up to date';
+      });
+      if (!epgFiles.any((entry) => entry.value.offline)) {
+        _epgSavedAt = DateTime.now().millisecondsSinceEpoch;
+      }
+      return;
+    }
+    // 2) Parse the stored files (off the UI thread).
+    for (final entry in epgFiles) {
+      final source = entry.key;
       try {
-        // Candidates in order: live download -> backup url (repo /epg copy) ->
-        // copy saved in Ananta OTT/epg -> copy bundled in the APK. The first one
-        // that still has programmes for now/later wins; an outdated file (like
-        // an old snapshot) is only used when nothing fresher exists.
-        report.writeln('${source.name}:');
-        final candidates = <({String label, Future<List<int>?> Function() load, bool network})>[
-          (label: source.url, load: () => _downloadEpgBytes(source.url), network: true),
-          for (final alt in source.altUrls) (label: alt, load: () => _downloadEpgBytes(alt), network: true),
-          (label: 'saved copy (Ananta OTT/epg)', load: () => EpgDiskCache.read(source), network: false),
-          (label: 'copy bundled in the app', load: () => EpgBundled.read(source.path), network: false),
-        ];
-        final nowMs = DateTime.now().millisecondsSinceEpoch;
-        Map<String, dynamic>? parsed;
-        for (final candidateSource in candidates) {
-          final bytes = await candidateSource.load();
-          if (bytes == null) {
-            report.writeln('  - ${candidateSource.label}: no data');
-            continue;
-          }
-          Map<String, dynamic> candidate;
-          try {
-            candidate = await compute(_parseEpgPayload, bytes);
-          } catch (error) {
-            debugPrint('EPG parse failed (${source.name}): $error');
-            report.writeln('  - ${candidateSource.label}: could not be read ($error)');
-            continue;
-          }
-          final programmes = candidate['programmes'] as List;
-          var latestStop = 0;
-          for (final raw in programmes) {
-            final stop = (raw as Map)['stop'] as int;
-            if (stop > latestStop) latestStop = stop;
-          }
-          final fresh = latestStop > nowMs;
-          report.writeln('  - ${candidateSource.label}: ${programmes.length} programmes, last one ends '
-              '${latestStop == 0 ? '-' : DateTime.fromMillisecondsSinceEpoch(latestStop, isUtc: true).toIso8601String()} '
-              '${fresh ? '(fresh, used)' : '(OUTDATED)'}');
-          if (fresh) {
-            parsed = candidate;
-            // Keep the fresh download in Ananta OTT/epg (internal storage).
-            if (candidateSource.network) unawaited(EpgDiskCache.save(source, bytes));
-            break;
-          }
-          if (programmes.isNotEmpty) parsed ??= candidate; // outdated, last resort
-        }
-        if (parsed == null) continue;
+        final bytes = await entry.value.file.readAsBytes();
+        final parsed = await compute(_parseEpgPayload, bytes);
         final sourceNames = (parsed['namesById'] as Map).map<String, List<String>>(
           (key, value) => MapEntry(key.toString(), (value as List).map((item) => item.toString()).toList()),
         );
@@ -1932,7 +1741,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           }
         }
         final sourcePrograms = parsed['programmes'] as List;
-        final fromThisSource = <String, List<EpgProgram>>{};
         for (final raw in sourcePrograms) {
           final item = raw as Map;
           final id = item['id'].toString();
@@ -1943,29 +1751,24 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             start: DateTime.fromMillisecondsSinceEpoch(item['start'] as int, isUtc: true),
             stop: DateTime.fromMillisecondsSinceEpoch(item['stop'] as int, isUtc: true),
           );
-          (fromThisSource[id] ??= <EpgProgram>[]).add(program);
-        }
-        // Earlier sources win; later ones only fill gaps (no overlapping shows).
-        for (final entry in fromThisSource.entries) {
-          final list = candidatesById.putIfAbsent(entry.key, () => <EpgProgram>[]);
-          entry.value.sort((a, b) => a.start.compareTo(b.start));
-          _mergeEpgNoOverlap(list, entry.value);
+          final list = candidatesById.putIfAbsent(id, () => <EpgProgram>[]);
+          final key = '${program.start.millisecondsSinceEpoch}|${program.title}';
+          final seen = seenProgramsById.putIfAbsent(id, () => <String>{});
+          if (seen.add(key)) list.add(program);
         }
         successfulSources++;
       } catch (error) {
-        debugPrint('EPG source failed (${source.url}): $error');
+        debugPrint('EPG source failed ($source): $error');
+        LocalStore.instance.invalidateEpg(source);
       }
     }
 
-    _epgReport = report.toString();
-    unawaited(EpgDiskCache.writeStatus(_epgReport));
     final byId = <String, List<EpgProgram>>{};
     final byName = <String, List<EpgProgram>>{};
-    final localNow = DateTime.now();
-    final localMidnight = DateTime(localNow.year, localNow.month, localNow.day);
-    // Yesterday 00:00 .. end of "today + 2" (local time) for the day tabs.
-    final keepAfter = localMidnight.subtract(const Duration(days: 1)).toUtc();
-    final keepUntil = localMidnight.add(const Duration(days: 3)).toUtc();
+    final seenProgramsByName = <String, Set<String>>{};
+    final epgNow = DateTime.now().toUtc();
+    final keepAfter = epgNow.subtract(const Duration(hours: 6));
+    final keepUntil = epgNow.add(const Duration(days: 3));
     for (final entry in candidatesById.entries) {
       final programs = entry.value
         .where((p) => p.stop.isAfter(keepAfter) && p.start.isBefore(keepUntil))
@@ -1976,7 +1779,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         final normalized = _normalizeEpgName(name);
         if (normalized.isEmpty || programs.isEmpty) continue;
         final list = byName.putIfAbsent(normalized, () => <EpgProgram>[]);
-        _mergeEpgNoOverlap(list, programs);
+        final seen = seenProgramsByName.putIfAbsent(normalized, () => <String>{});
+        for (final program in programs) {
+          final key = '${program.start.millisecondsSinceEpoch}|${program.title}';
+          if (seen.add(key)) list.add(program);
+        }
       }
     }
     for (final list in byName.values) {
@@ -1992,6 +1799,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _epgLogosById = logosById;
         _epgLogosByName = logosByName;
         _epgStatus = 'Guide loaded from $successfulSources source(s)';
+        _epgSavedAt = DateTime.now().millisecondsSinceEpoch;
       } else if (_epgById.isEmpty && _epgByName.isEmpty) {
         _epgStatus = 'Programme guide unavailable';
       }
@@ -2024,11 +1832,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       final direct = _epgById[id];
       if (direct != null && direct.isNotEmpty) return direct;
       final normalizedId = _normalizeEpgName(id);
-      _epgIdNormalized ??= <String, List<EpgProgram>>{
-        for (final entry in _epgById.entries) _normalizeEpgName(entry.key): entry.value,
-      };
-      final byNormalizedId = _epgIdNormalized![normalizedId];
-      if (byNormalizedId != null && byNormalizedId.isNotEmpty) return byNormalizedId;
+      for (final entry in _epgById.entries) {
+        if (_normalizeEpgName(entry.key) == normalizedId) return entry.value;
+      }
     }
     final playlistName = _normalizeEpgName(channel.tvgName);
     if (playlistName.isNotEmpty) {
@@ -2048,17 +1854,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
   // Lazy cache: resolving EPG candidates for every channel up-front blocked the
   // UI thread for seconds. Entries are now filled on demand and memoised.
-  Map<String, List<EpgProgram>>? _epgIdNormalized;
-
   void _rebuildEpgChannelIndex() {
     _epgByChannelUrl = <String, List<EpgProgram>>{};
-    _epgIdNormalized = null;
   }
 
   List<EpgProgram> _epgCandidatesCached(Channel channel) {
     final cached = _epgByChannelUrl[channel.url];
     if (cached != null) return cached;
-    final resolved = _epgTimeline(_resolveEpgCandidates(channel));
+    final resolved = _resolveEpgCandidates(channel);
     _epgByChannelUrl[channel.url] = resolved;
     return resolved;
   }
@@ -2066,16 +1869,42 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   EpgProgram? _epgForChannel(Channel channel) =>
       _pickCurrentProgram(_epgCandidatesCached(channel));
 
-  final Map<String, String> _logoUrlMemo = <String, String>{};
+  /// Round channel logo in a glass ring (stored copy on disk when available).
+  Widget _glassAvatar(Channel channel, double radius) {
+    final logo = _logoImage(channel);
+    return Container(
+      padding: const EdgeInsets.all(2.5),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Colors.white.withOpacity(0.55), accentColor.withOpacity(0.25)],
+        ),
+      ),
+      child: CircleAvatar(
+        radius: radius - 2.5,
+        backgroundColor: const Color(0xFF1B1836),
+        backgroundImage: logo,
+        onBackgroundImageError: logo == null ? null : (_, __) {},
+        child: logo == null ? Icon(Icons.live_tv, color: accentColor, size: radius * 0.9) : null,
+      ),
+    );
+  }
 
-  String _logoForChannel(Channel channel) =>
-      _logoUrlMemo.putIfAbsent('${channel.name}|${channel.tvgName}', () => _computeLogoForChannel(channel));
+  String _logoForChannel(Channel channel) {
+    final cached = _logoUrlCache[channel.url];
+    if (cached != null) return cached;
+    final resolved = _resolveLogoUrl(channel);
+    _logoUrlCache[channel.url] = resolved;
+    return resolved;
+  }
 
-  String _computeLogoForChannel(Channel channel) {
+  String _resolveLogoUrl(Channel channel) {
     // Logos come ONLY from this app's channel_logos folder in the user's
-    // repository. Do not use XMLTV/EPG artwork, playlist tvg-logo, or any
-    // external logo catalogue. CachedNetworkImageProvider caches downloaded
-    // files on device.
+    // repository. That folder is mirrored into the device's local storage by
+    // LocalStore; this method only decides which file name belongs to a
+    // channel. Playlist tvg-logo and EPG artwork are deliberately not used.
     String slugFor(String value) {
       var name = value.toLowerCase().trim();
       // The logo filenames retain quality suffixes: "Star Plus HD" must map
@@ -2090,16 +1919,43 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       return name;
     }
 
-    // Try the visible playlist channel name first, then tvg-name if present.
-    // Quality labels (HD/FHD/4K) are deliberately preserved.
-    final names = <String>[channel.name, channel.tvgName];
-    for (final raw in names) {
+    const base = 'https://raw.githubusercontent.com/Abidananta/Ananta-Stream-ott/main/channel_logos/';
+    final candidates = <String>[];
+    for (final raw in <String>[channel.name, channel.tvgName]) {
       final slug = slugFor(raw);
-      if (slug.isNotEmpty) {
-        return 'https://raw.githubusercontent.com/Abidananta/Ananta-Stream-ott/main/channel_logos/$slug.png';
-      }
+      if (slug.isNotEmpty && !candidates.contains(slug)) candidates.add(slug);
+    }
+    if (candidates.isEmpty) return '';
+    final store = LocalStore.instance;
+    if (!store.hasLogoListing) {
+      // File list not known yet (first start, offline): same behaviour as
+      // before, first candidate; it is fetched on demand and stored.
+      return '$base${candidates.first}.png';
+    }
+    for (final slug in candidates) {
+      if (store.knowsLogo('$slug.png')) return '$base$slug.png';
+    }
+    // Retry without the quality suffix (e.g. "Star Plus HD" -> star-plus-in).
+    for (final slug in candidates) {
+      final plain = slug
+          .replaceFirst(RegExp(r'-(hd|fhd|uhd|sd|4k)-in$'), '-in');
+      if (plain != slug && store.knowsLogo('$plain.png')) return '$base$plain.png';
     }
     return '';
+  }
+
+  /// Logo image for a channel: the copy stored on the device when available,
+  /// otherwise the network (and it is stored for next time).
+  ImageProvider? _logoImage(Channel channel) {
+    final url = _logoForChannel(channel);
+    if (url.isEmpty) return null;
+    final name = url.substring(url.lastIndexOf('/') + 1);
+    final store = LocalStore.instance;
+    final file = store.logoFile(name);
+    if (file != null) return ResizeImage(FileImage(file), width: 192);
+    if (store.logoMissingRemotely(name)) return null;
+    store.requestLogo(name);
+    return CachedNetworkImageProvider(url);
   }
 
   double _epgProgress(EpgProgram? program) {
@@ -2113,8 +1969,88 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final now = DateTime.now().toUtc();
     final start = now.subtract(const Duration(days: 3));
     final end = now.add(const Duration(days: 3));
-    return source.where((p) => p.stop.isAfter(start) && p.start.isBefore(end)).toList()
+    final sorted = source.where((p) => p.stop.isAfter(start) && p.start.isBefore(end)).toList()
       ..sort((a, b) => a.start.compareTo(b.start));
+    return _resolveEpgOverlaps(sorted);
+  }
+
+  /// Several EPG feeds describe the same channel with slightly different
+  /// start times, which used to make 2-3 programmes show as "NOW" at once.
+  /// Keep a single non-overlapping timeline: a programme that starts before
+  /// the previous one ended is dropped when it is a duplicate / contained in
+  /// it, otherwise it replaces the previous one only if the previous one has
+  /// already ended by the time it starts (tolerance 2 min for sloppy feeds).
+  List<EpgProgram> _resolveEpgOverlaps(List<EpgProgram> sorted) {
+    final result = <EpgProgram>[];
+    for (final program in sorted) {
+      if (!program.stop.isAfter(program.start)) continue;
+      if (result.isEmpty) {
+        result.add(program);
+        continue;
+      }
+      final last = result.last;
+      final overlap = last.stop.difference(program.start);
+      if (overlap <= const Duration(minutes: 2)) {
+        result.add(program);
+      } else if (program.stop.isAfter(last.stop.add(const Duration(minutes: 10))) &&
+          program.start.difference(last.start) > const Duration(minutes: 20)) {
+        // Genuinely different, later programme from another feed: cut the
+        // previous one at this start so only one programme is live.
+        result[result.length - 1] = EpgProgram(
+          title: last.title,
+          description: last.description,
+          start: last.start,
+          stop: program.start,
+        );
+        result.add(program);
+      }
+      // else: duplicate of the previous programme from another feed; skip.
+    }
+    return result;
+  }
+
+  /// Programmes of [channel] that fall on the day picked in the TV guide tabs.
+  List<EpgProgram> _tvEpgDaySchedule(Channel channel) {
+    final today = DateTime.now();
+    final dayStart = DateTime(today.year, today.month, today.day)
+        .add(Duration(days: _tvEpgSelectedDayOffset));
+    final dayEnd = dayStart.add(const Duration(days: 1));
+    return _epgScheduleForChannel(channel).where((program) {
+      return program.stop.toLocal().isAfter(dayStart) &&
+          program.start.toLocal().isBefore(dayEnd);
+    }).toList();
+  }
+
+  /// Index of the programme on air now (0 when the selected day is not today
+  /// or nothing is airing).
+  int _tvEpgCurrentIndex(List<EpgProgram> schedule) {
+    if (_tvEpgSelectedDayOffset != 0) return 0;
+    final now = DateTime.now().toUtc();
+    final index = schedule.indexWhere((p) => p.isAiringAt(now));
+    if (index >= 0) return index;
+    final next = schedule.indexWhere((p) => p.start.isAfter(now));
+    return next < 0 ? 0 : next;
+  }
+
+  /// Scrolls the guide list so the programme at [index] sits at the top.
+  void _positionTvEpgAt(int index, [int attempt = 0]) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ctx = _tvEpgAnchorKey.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(ctx, alignment: 0.0, duration: Duration.zero);
+        return;
+      }
+      if (!_tvEpgScrollController.hasClients) {
+        if (attempt < 8) _positionTvEpgAt(index, attempt + 1);
+        return;
+      }
+      // Rows are built lazily: jump near the row, then retry until the real
+      // row exists and can be measured.
+      final position = _tvEpgScrollController.position;
+      _tvEpgScrollController.jumpTo((index * 112.0).clamp(0.0, position.maxScrollExtent).toDouble());
+      if (attempt < 8) _positionTvEpgAt(index, attempt + 1);
+    });
   }
 
   Channel? _tvEpgPreviewChannel(List<Channel> channels) {
@@ -2133,15 +2069,27 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
   Widget _buildTvEpgPanel(Channel channel) {
     final localToday = DateTime.now();
-    final schedule = _epgDaySchedule(channel, _tvEpgSelectedDayOffset);
+    final schedule = _tvEpgDaySchedule(channel);
+    final anchor = '${channel.url}|$_tvEpgSelectedDayOffset';
+    if (_tvEpgAnchor != anchor) {
+      // Guide just opened / channel or day changed: start on the live programme.
+      _tvEpgAnchor = anchor;
+      _tvEpgAnchorIndex = _tvEpgCurrentIndex(schedule);
+      _tvFocusedEpgIndex = _tvEpgAnchorIndex;
+      if (schedule.isNotEmpty) _positionTvEpgAt(_tvEpgAnchorIndex);
+    }
     final now = DateTime.now().toUtc();
-    return GlassPanel(
+    return Glass(
+      borderRadius: const BorderRadius.horizontal(right: Radius.circular(26)),
+      tint: const Color(0xFF1A1536),
+      strength: 1.0,
+      blur: kTvLiveBlur ? 18 : 0,
       child: SafeArea(
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 12, 10),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(_tvEpgSelectionMode ? 'TV GUIDE · ◀ ▶ CHANGE DAY · ▲ ▼ PROGRAMMES' : 'TV GUIDE · PRESS RIGHT TO NAVIGATE', style: const TextStyle(fontSize: 10, letterSpacing: 0.7, color: Color(0xFFC9BEFF), fontWeight: FontWeight.bold)),
+              Text(_tvEpgSelectionMode ? '3-DAY TV GUIDE · SELECT WITH UP/DOWN' : '3-DAY TV GUIDE · PRESS RIGHT TO NAVIGATE', style: const TextStyle(fontSize: 10, letterSpacing: 0.7, color: Color(0xFFC9BEFF), fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               Text(channel.name.trim(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               Text(channel.group, style: const TextStyle(fontSize: 11, color: Colors.white60)),
@@ -2150,24 +2098,36 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
             child: Row(
-              children: List.generate(_epgMaxDay - _epgMinDay + 1, (tabIndex) {
-                final dayOffset = _epgMinDay + tabIndex;
+              children: List.generate(3, (dayOffset) {
                 final day = DateTime(localToday.year, localToday.month, localToday.day)
                     .add(Duration(days: dayOffset));
                 final selected = _tvEpgSelectedDayOffset == dayOffset;
-                final label = dayOffset == -1 ? 'YESTERDAY' : dayOffset == 0 ? 'TODAY' : dayOffset == 1 ? 'TOMORROW' : '${['MON','TUE','WED','THU','FRI','SAT','SUN'][day.weekday - 1]} ${day.day}/${day.month}';
+                final label = dayOffset == 0 ? 'TODAY' : dayOffset == 1 ? 'TOMORROW' : '${['MON','TUE','WED','THU','FRI','SAT','SUN'][day.weekday - 1]} ${day.day}/${day.month}';
                 return Expanded(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 3),
                     child: InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: () => _setTvEpgDay(dayOffset, channel),
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () {
+                        setState(() {
+                          _tvEpgSelectedDayOffset = dayOffset;
+                          _tvFocusedEpgIndex = 0;
+                          _tvEpgAnchor = ''; // re-anchor: live programme for today, top otherwise
+                        });
+                      },
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 3),
                         decoration: BoxDecoration(
-                          color: selected ? accentColor.withOpacity(0.34) : Colors.white.withOpacity(0.05),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: selected ? Colors.white : Colors.white12, width: selected ? 1.5 : 1),
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: selected
+                                ? [accentColor.withOpacity(0.60), accentColor.withOpacity(0.25)]
+                                : [Colors.white.withOpacity(0.10), Colors.white.withOpacity(0.03)],
+                          ),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: selected ? Colors.white.withOpacity(0.85) : Colors.white.withOpacity(0.12), width: selected ? 1.5 : 1),
+                          boxShadow: selected ? [BoxShadow(color: accentColor.withOpacity(0.35), blurRadius: 12)] : null,
                         ),
                         child: Text(label, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
                           style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: selected ? Colors.white : Colors.white70)),
@@ -2181,12 +2141,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           const Divider(height: 1, color: Colors.white12),
           Expanded(
             child: schedule.isEmpty
-              ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text(_epgStatus == 'Loading programme guide…' ? 'Loading guide…' : 'No guide for this channel on this day', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white60, fontSize: 12)),
-                  // Only when no guide data was loaded at all: show why.
-                  if (_epgByName.isEmpty && _epgById.isEmpty && _epgReport.isNotEmpty)
-                    Padding(padding: const EdgeInsets.only(top: 10), child: Text(_epgReport, textAlign: TextAlign.left, style: const TextStyle(color: Colors.white38, fontSize: 8))),
-                ])))
+              ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_epgStatus == 'Loading programme guide…' ? 'Loading guide…' : 'No 3-day guide available for this channel', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white60, fontSize: 12))))
               : Scrollbar(
                   controller: _tvEpgScrollController,
                   thumbVisibility: true,
@@ -2195,52 +2150,57 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                   physics: const ClampingScrollPhysics(),
                   padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
                   itemCount: schedule.length,
-                  itemExtent: _epgRowExtent, // fixed rows: exact scrolling, only visible rows are built
                   itemBuilder: (context, index) {
                     final program = schedule[index];
                     final current = program.isAiringAt(now);
-                    final focused = index == _tvFocusedEpgIndex && _tvEpgSelectionMode;
-                    return RepaintBoundary(
-                      child: Padding(
-                        padding: const EdgeInsets.only(bottom: 6),
-                        child: Container(
-                          padding: const EdgeInsets.all(9),
-                          clipBehavior: Clip.hardEdge,
-                          decoration: BoxDecoration(
-                            color: focused
-                                ? accentColor.withOpacity(0.32)
-                                : current ? accentColor.withOpacity(0.22) : Colors.white.withOpacity(0.045),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: focused ? Colors.white : current ? accentColor.withOpacity(0.75) : Colors.white.withOpacity(0.07),
-                              width: focused ? 2 : 1,
-                            ),
+                    final previous = index == 0 ? null : schedule[index - 1];
+                    final newDay = previous == null || previous.start.toLocal().year != program.start.toLocal().year || previous.start.toLocal().month != program.start.toLocal().month || previous.start.toLocal().day != program.start.toLocal().day;
+                    final localStart = program.start.toLocal();
+                    final dayLabel = '${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][localStart.weekday - 1]}, ${localStart.day.toString().padLeft(2, '0')}/${localStart.month.toString().padLeft(2, '0')}';
+                    return Column(key: index == _tvEpgAnchorIndex ? _tvEpgAnchorKey : null, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      if (newDay) Padding(padding: const EdgeInsets.fromLTRB(4, 8, 4, 5), child: Text(dayLabel, style: const TextStyle(color: Color(0xFFC9BEFF), fontSize: 11, fontWeight: FontWeight.bold))),
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.all(9),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: index == _tvFocusedEpgIndex && _tvEpgSelectionMode
+                                ? [accentColor.withOpacity(0.55), accentColor.withOpacity(0.22)]
+                                : current
+                                    ? [accentColor.withOpacity(0.38), accentColor.withOpacity(0.12)]
+                                    : [Colors.white.withOpacity(0.08), Colors.white.withOpacity(0.025)],
                           ),
-                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Row(children: [
-                              Text('${_formatEpgTime(program.start)} – ${_formatEpgTime(program.stop)}', style: const TextStyle(fontSize: 10, color: Colors.white60, fontWeight: FontWeight.w600)),
-                              const Spacer(),
-                              if (current) const Text('NOW', style: TextStyle(fontSize: 9, color: Color(0xFFD6CCFF), fontWeight: FontWeight.bold, letterSpacing: 1)),
-                            ]),
-                            const SizedBox(height: 4),
-                            Text(program.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, fontWeight: current ? FontWeight.bold : FontWeight.w500)),
-                            if (program.description.isNotEmpty) ...[
-                              const SizedBox(height: 3),
-                              Text(program.description, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white60, height: 1.2)),
-                            ],
-                            if (current) ...[
-                              const Spacer(),
-                              ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(
-                                value: program.stop.isAfter(program.start) ? (now.difference(program.start).inMilliseconds / program.stop.difference(program.start).inMilliseconds).clamp(0.0, 1.0).toDouble() : 0.0,
-                                minHeight: 3,
-                                backgroundColor: Colors.white12,
-                                valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
-                              )),
-                            ],
-                          ]),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: index == _tvFocusedEpgIndex && _tvEpgSelectionMode
+                              ? Colors.white.withOpacity(0.95) : current ? accentColor.withOpacity(0.75) : Colors.white.withOpacity(0.11), width: index == _tvFocusedEpgIndex && _tvEpgSelectionMode ? 2 : 1),
+                          boxShadow: index == _tvFocusedEpgIndex && _tvEpgSelectionMode ? [BoxShadow(color: accentColor.withOpacity(0.4), blurRadius: 14)] : null,
                         ),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Row(children: [
+                            Text(_formatEpgTime(program.start), style: const TextStyle(fontSize: 10, color: Colors.white60, fontWeight: FontWeight.w600)),
+                            const Spacer(),
+                            if (current) const Text('NOW', style: TextStyle(fontSize: 9, color: Color(0xFFD6CCFF), fontWeight: FontWeight.bold, letterSpacing: 1)),
+                          ]),
+                          const SizedBox(height: 4),
+                          Text(program.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, fontWeight: current ? FontWeight.bold : FontWeight.w500)),
+                          if (program.description.isNotEmpty) ...[
+                            const SizedBox(height: 3),
+                            Text(program.description, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.white60, height: 1.2)),
+                          ],
+                          if (current) ...[
+                            const SizedBox(height: 7),
+                            ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(
+                              value: program.stop.isAfter(program.start) ? (now.difference(program.start).inMilliseconds / program.stop.difference(program.start).inMilliseconds).clamp(0.0, 1.0).toDouble() : 0.0,
+                              minHeight: 3,
+                              backgroundColor: Colors.white12,
+                              valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
+                            )),
+                          ],
+                        ]),
                       ),
-                    );
+                    ]);
                   },
                 ),
                 ),
@@ -2390,28 +2350,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     }
     final requestId = ++_playRequestId;
     final oldPlayer = _player;
-    // Fast zapping (holding Next/Prev, tapping several rows): wait a moment so
-    // only the LAST choice creates a decoder. Creating and destroying a libmpv
-    // player per press is what froze the picture of the channel being watched.
-    if (retryAttempt == 0) {
-      if (mounted) {
-        setState(() {
-          _tvSidebarVisible = false;
-          _tvEpgVisible = false;
-          _tvEpgSelectionMode = false;
-          _connecting = true;
-          _status = 'Buffering ${channel.name}...';
-        });
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 260));
-      if (!mounted || requestId != _playRequestId) return;
-    }
     final previousPending = _pendingPlayer;
     _pendingPlayer = null;
     if (previousPending != null) {
-      // Release the abandoned decoder in the background, not on the path of
-      // the new channel.
-      unawaited(previousPending.dispose().catchError((Object e) { debugPrint('Pending dispose: $e'); }));
+      try { await previousPending.dispose(); } catch (_) {}
     }
     // Keep the current player visible while the next channel opens. This avoids
     // a black frame during channel changes and lets viewers keep the last video
@@ -2495,14 +2437,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _showChannelInfoFor10Seconds();
       _focusTvPlayer();
       if (oldPlayer != null && oldPlayer != controller) {
-        // Let the new picture present a few frames first, then free the old
-        // decoder; disposing in the same frame caused a visible hitch.
-        unawaited(Future<void>.delayed(const Duration(milliseconds: 400), () async {
-          try { await oldPlayer.dispose(); } catch (_) {}
-        }));
+        try { await oldPlayer.dispose(); } catch (_) {}
       }
-      // Now that the channel is live, give it the large read-ahead cache.
-      unawaited(controller.enableLiveCache());
       await WakelockPlus.enable();
       _syncPipAutoEnter();
       _scheduleControlsHide();
@@ -2750,23 +2686,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             // On Android TV, video output metadata may not arrive until the
             // media_kit Video surface is attached. This lets the current channel
             // remain visible while the replacement warms up off-screen.
-            // It is attached as a 2x2 px surface in a corner: no full-screen
-            // saveLayer/Opacity over the live picture (that made the playing
-            // stream stutter while another channel was loading).
             if (_pendingPlayer != null && _pendingPlayer != player)
-              Positioned(
-                left: 0,
-                top: 0,
-                width: 2,
-                height: 2,
+              Positioned.fill(
                 child: IgnorePointer(
-                  child: ClipRect(
-                    child: Video(
-                      key: ValueKey<AnantaPlayerController>(_pendingPlayer!),
-                      controller: _pendingPlayer!._video,
-                      controls: NoVideoControls,
-                      fit: BoxFit.fill,
-                    ),
+                  child: Opacity(
+                    opacity: 0.01,
+                    child: VideoPlayer(_pendingPlayer!),
                   ),
                 ),
               ),
@@ -2810,7 +2735,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 right: 10,
                 child: _glass(
                   radius: 12,
-                  blur: 12,
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
                     vertical: 1,
@@ -2857,7 +2781,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     padding: EdgeInsets.only(bottom: tvMode ? 0 : 58),
                     child: _glass(
                     radius: 28,
-                    blur: 12,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 4,
                       vertical: 1,
@@ -2923,10 +2846,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                   right: 18,
                   child: IgnorePointer(
                     child: _glass(
-                      radius: 14,
-                      blur: 12,
-                      opacity: 0.5,
-                      color: const Color(0xFF14122E),
+                      radius: 22,
+                      blur: kTvLiveBlur ? 16 : 0,
+                      color: const Color(0xB5101020),
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                       child: Row(
                         children: [
@@ -2938,8 +2860,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                               borderRadius: BorderRadius.circular(10),
                               border: Border.all(color: accentColor.withOpacity(0.45)),
                             ),
-                            child: _logoForChannel(_selectedChannel!).isNotEmpty
-                                ? ClipRRect(borderRadius: BorderRadius.circular(10), child: Image(image: LogoStore.provider(_logoForChannel(_selectedChannel!), _selectedChannel!.group), fit: BoxFit.contain, errorBuilder: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
+                            child: _logoImage(_selectedChannel!) != null
+                                ? ClipRRect(borderRadius: BorderRadius.circular(10), child: Image(image: _logoImage(_selectedChannel!)!, fit: BoxFit.contain, errorBuilder: (_, __, ___) => const Icon(Icons.live_tv, color: accentColor)))
                                 : const Icon(Icons.live_tv, color: accentColor, size: 30),
                           ),
                           const SizedBox(width: 12),
@@ -3000,33 +2922,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   Widget _buildCategories() {
     return SizedBox(
-      height: 46,
+      height: 48,
       child: ListView.separated(
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         scrollDirection: Axis.horizontal,
         itemCount: _categories.length,
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
           final category = _categories[index];
-          final selected = _selectedCategory == category;
-          return ChoiceChip(
-            label: Text(category),
-            selected: selected,
-            showCheckmark: false,
-            backgroundColor: Colors.white.withOpacity(0.08),
-            selectedColor: accentColor.withOpacity(0.55),
-            side: BorderSide(color: Colors.white.withOpacity(selected ? 0.45 : 0.18)),
-            elevation: 0,
-            pressElevation: 0,
-            surfaceTintColor: Colors.transparent,
-            labelStyle: TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-            ),
-            onSelected: (_) {
-              setState(() => _selectedCategory = category);
-            },
+          return GlassChip(
+            label: category,
+            selected: _selectedCategory == category,
+            onTap: () => setState(() => _selectedCategory = category),
           );
         },
       ),
@@ -3041,22 +2948,19 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final favorite = _favorites.contains(channel.url);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: _glass(
-        radius: 15,
-        padding: EdgeInsets.zero,
-        color: selected ? accentColor : glassColor,
-        opacity: selected ? 0.30 : 0.10,
-        child: ListTile(
+      child: Glass(
+        radius: 20,
+        blur: 0, // lists: frosted gradient without per-tile live blur
+        tint: selected ? accentColor : kGlassTint,
+        strength: selected ? 0.9 : 0.8,
+        borderColor: selected ? Colors.white.withOpacity(0.5) : null,
+        glow: selected ? accentColor.withOpacity(0.28) : null,
+        child: Material(
+          type: MaterialType.transparency,
+          child: ListTile(
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          leading: CircleAvatar(
-            radius: 32,
-            backgroundColor: accentColor.withOpacity(0.17),
-            backgroundImage: _logoForChannel(channel).isNotEmpty ? LogoStore.provider(_logoForChannel(channel), channel.group) : null,
-            child: _logoForChannel(channel).isEmpty
-                ? const Icon(Icons.live_tv, color: accentColor, size: 30)
-                : null,
-          ),
+          leading: _glassAvatar(channel, 32),
           title: Text(
             channel.name,
             maxLines: 1,
@@ -3083,6 +2987,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             ),
           ),
           onTap: () => _playChannel(channel),
+          ),
         ),
       ),
     );
@@ -3186,8 +3091,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }
       if (_connecting && mounted) setState(() => _connecting = false);
     } else if (state == AppLifecycleState.resumed && mounted) {
-      // Back from the file manager: re-create deleted epg files.
-      unawaited(EpgDiskCache.restoreIfMissing(epgSourceUrls));
       if (player != null) {
         unawaited(() async {
           try { await player.setVolume(1.0); } catch (_) {}
@@ -3199,7 +3102,27 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }
       setState(() {});
       _syncPipAutoEnter();
+      _refreshStaleData();
     }
+  }
+
+  // Auto-update when the app comes back after a long time in the background.
+  void _refreshStaleData() {
+    if (_epgInitDone && !_epgLoading) {
+      final age = DateTime.now().millisecondsSinceEpoch - _epgSavedAt;
+      if (_epgSavedAt == 0 || age < 0 || age > const Duration(hours: 2).inMilliseconds) {
+        unawaited(_loadEpg());
+      }
+    }
+    unawaited(LocalStore.instance.syncLogos());
+  }
+
+  void _onStoreChanged() {
+    _logoUrlCache.clear();
+    if (_storeNotifyTimer?.isActive ?? false) return;
+    _storeNotifyTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) setState(() {});
+    });
   }
 
   // --------------------------------------------------
@@ -3213,6 +3136,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _channelInfoTimer?.cancel();
     _epgClock?.cancel();
     _epgRefreshTimer?.cancel();
+    _storeNotifyTimer?.cancel();
+    LocalStore.instance.revision.removeListener(_onStoreChanged);
     _playbackHealthTimer?.cancel();
     _playlistRequestId++;
     _playRequestId++;
@@ -3257,6 +3182,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       onWillPop: _handleBack,
       child: Scaffold(
         backgroundColor: inPip ? Colors.black : null,
+        extendBodyBehindAppBar: !(_fullscreen || inPip || useTvLayout),
         appBar: (_fullscreen || inPip || useTvLayout)
             ? null
             : AppBar(
@@ -3266,28 +3192,43 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 surfaceTintColor: Colors.transparent,
                 flexibleSpace: ClipRect(
                   child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                     child: Container(
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.06),
-                        border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.16))),
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.white.withOpacity(0.10),
+                            Colors.white.withOpacity(0.03),
+                          ],
+                        ),
+                        border: Border(
+                          bottom: BorderSide(color: Colors.white.withOpacity(0.14)),
+                        ),
                       ),
                     ),
                   ),
                 ),
-                title: const Row(
+                title: Row(
                   children: [
-                    Icon(
+                    const Icon(
                       Icons.blur_on,
                       color: accentColor,
                       size: 29,
                     ),
-                    SizedBox(width: 8),
-                    Text(
-                      'Ananta OTT',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.3,
+                    const SizedBox(width: 8),
+                    ShaderMask(
+                      shaderCallback: (rect) => const LinearGradient(
+                        colors: [Colors.white, Color(0xFFC9BEFF)],
+                      ).createShader(rect),
+                      child: const Text(
+                        'Ananta OTT',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.3,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                   ],
@@ -3327,20 +3268,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             ? _buildPlayer(fullscreen: true)
             : useTvLayout
                 ? _buildTvLayout(channels)
-                : Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Color(0xFF19152B),
-                      backgroundColor,
-                      Color(0xFF101020),
-                    ],
-                  ),
-                ),
+                : GlassBackground(
                 child: Column(
                   children: [
+                    SizedBox(height: media.padding.top + kToolbarHeight),
                     _buildPlayer(fullscreen: false),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(
@@ -3379,7 +3310,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           horizontal: 10,
                         ),
                         radius: 15,
-                        blur: 14,
                         child: TextField(
                           controller: _searchController,
                           onChanged: (value) {
@@ -3404,9 +3334,20 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                         ),
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 10),
                     _buildCategories(),
-                    const SizedBox(height: 4),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
+                      child: Text(
+                        _status,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
                     Expanded(
                       child: channels.isEmpty
                           ? Center(
@@ -3420,18 +3361,26 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                                 ),
                               ),
                             )
-                          : ListView.builder(
-                              padding: const EdgeInsets.only(bottom: 8),
+                          : MediaQuery.removePadding(
+                              context: context,
+                              removeTop: true,
+                              child: ListView.builder(
                               key: ValueKey(
                                 '$_selectedCategory-'
                                 '$_showFavoritesOnly-$_searchQuery',
                               ),
+                              shrinkWrap: false,
+                              // No implicit status-bar padding: the player already
+                              // sits below the app bar, so the default top inset
+                              // left a blank band above the first channel.
+                              padding: EdgeInsets.only(bottom: media.padding.bottom + 8),
                               itemCount: channels.length,
                               itemBuilder: (context, index) {
                                 return _buildChannelTile(
                                   channels[index],
                                 );
                               },
+                            ),
                             ),
                     ),
                   ],

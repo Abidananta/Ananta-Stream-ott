@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -76,12 +77,15 @@ class AppUpdateChecker {
         await showDialog<void>(
           context: context,
           barrierDismissible: false,
-          builder: (_) => UpdateDialog(
-            version: latestVersion,
-            notes: releaseNotes,
-            downloadUrl: downloadUrl,
-            fallbackUrl: releaseUrl,
-            mirrors: mirrors,
+          builder: (_) => BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 9, sigmaY: 9),
+            child: UpdateDialog(
+              version: latestVersion,
+              notes: releaseNotes,
+              downloadUrl: downloadUrl,
+              fallbackUrl: releaseUrl,
+              mirrors: mirrors,
+            ),
           ),
         );
       } finally {

@@ -10,7 +10,7 @@ import 'package:path_provider/path_provider.dart';
 /// On-device storage for the programme guide (EPG) and the channel logos.
 ///
 /// Layout (private app storage, works on every Android phone / TV box):
-///   <app support dir>/ananta_data/
+///   <external app files dir>/Ananta OTT/   (fallback: <support dir>/ananta_data/)
 ///     epg/                 raw EPG downloads (.xml.gz), parsed guide cache,
 ///                          HTTP validators (ETag / Last-Modified)
 ///     channel_logos/       the whole `channel_logos` folder of the GitHub
@@ -72,8 +72,7 @@ class LocalStore {
 
   Future<void> _init() async {
     try {
-      final base = await getApplicationSupportDirectory();
-      final root = Directory('${base.path}/ananta_data');
+      final root = await _resolveRoot();
       _epgDir = await Directory('${root.path}/epg').create(recursive: true);
       _logoDir = await Directory('${root.path}/channel_logos').create(recursive: true);
       await for (final entity in _logoDir!.list()) {
@@ -97,6 +96,53 @@ class LocalStore {
       _bump();
     } catch (error) {
       debugPrint('Local store unavailable: $error');
+    }
+  }
+
+  /// Creates (once, automatically) the "Ananta OTT" app folder that holds the
+  /// channel logos and the EPG cache. It lives in the app's own external
+  /// storage (Android/data/<package>/files/Ananta OTT, visible in file
+  /// managers, no permission needed) and falls back to private storage. A
+  /// cache created by an older version is moved over on first start.
+  Future<Directory> _resolveRoot() async {
+    final support = await getApplicationSupportDirectory();
+    final legacy = Directory('${support.path}/ananta_data');
+    Directory? preferred;
+    try {
+      final external = await getExternalStorageDirectory();
+      if (external != null) {
+        preferred = await Directory('${external.path}/Ananta OTT').create(recursive: true);
+        final probe = File('${preferred.path}/.write_test');
+        await probe.writeAsString('ok', flush: true);
+        await probe.delete();
+      }
+    } catch (_) {
+      preferred = null;
+    }
+    final root = preferred ?? await legacy.create(recursive: true);
+    if (preferred != null && await legacy.exists()) {
+      try {
+        await _copyTree(legacy, preferred);
+        await legacy.delete(recursive: true);
+      } catch (error) {
+        debugPrint('Cache migration skipped: $error');
+      }
+    }
+    return root;
+  }
+
+  Future<void> _copyTree(Directory from, Directory to) async {
+    await for (final entity in from.list(recursive: true, followLinks: false)) {
+      final rel = entity.path.substring(from.path.length);
+      if (entity is Directory) {
+        await Directory('${to.path}$rel').create(recursive: true);
+      } else if (entity is File) {
+        final target = File('${to.path}$rel');
+        if (!await target.exists()) {
+          await target.parent.create(recursive: true);
+          await entity.copy(target.path);
+        }
+      }
     }
   }
 

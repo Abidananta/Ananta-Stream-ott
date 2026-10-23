@@ -17,6 +17,7 @@ dependencies:
   cached_network_image: ^3.4.1
   wakelock_plus: ^1.2.8
   package_info_plus: ^8.0.2
+  path_provider: ^2.1.4
   url_launcher: ^6.3.0
   sentry_flutter: ^9.0.0
 
@@ -29,6 +30,3 @@ flutter:
   uses-material-design: true
   assets:
     - assets/ananta_launcher_icon.png
-    - assets/epg/
-    - assets/epg/tataplay/
-    - assets/epg/jiotv/

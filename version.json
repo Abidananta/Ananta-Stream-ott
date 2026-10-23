@@ -1,6 +1,6 @@
 {
   "version": "1.1.9",
   "versionCode": 23,
-  "releaseNotes": "Smoother launch animation and channel switching, Ananta OTT folder now visible in every file manager (Documents/Ananta OTT), fixed overlapping 'NOW' programmes in the TV guide, guide opens on the current programme with smooth scrolling, removed empty space in mobile mode.",
+  "releaseNotes": "Mobile list spacing fixed, TV guide now shows the single live programme (duplicate overlapping entries removed) and opens on it, and logos + guide are kept in a visible Ananta OTT app folder for fast loading.",
   "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.9/app-release.apk"
 }

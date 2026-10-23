@@ -12,14 +12,16 @@ This project still uses Flutter `video_player` and Android's native playback sta
 The source has not been compiled or tested on a physical TV box in this package.
 Audio compatibility update
 Playback is implemented with media_kit/libmpv rather than Flutter video_player. The bundled native playback libraries provide broader codec support, intended to address MPEG Audio Layer 1/2 (MPGA/MP2) streams. This source has not been compiled or device-tested in this environment; verify the GitHub Actions build and test on the target Android TV device.
+v1.1.9 notes
+Mobile: removed gap above channel list and the logo counter. TV EPG: overlapping duplicate programmes from multiple feeds are merged so one NOW entry shows, and the guide opens on the live programme. Logos + EPG cache live in an 'Ananta OTT' app folder (external app storage, falls back to private storage; old cache is migrated).
+
+v1.1.8 notes (glass UI + local storage)
+Glass UI: lib/glass.dart (Glass, GlassBackground, GlassChip) is used by every screen. TV panels use the frosted gradient without live blur by default (kTvLiveBlur in main.dart) because blur over video is heavy on weak TV boxes.
+Local storage: lib/local_store.dart keeps EPG downloads (conditional ETag/Last-Modified refresh), the parsed guide and a mirror of the repository's channel_logos folder in the app's private storage (ananta_data/). Logos sync every 12 h, on app resume and on demand; removed logos are deleted. New dependency: path_provider.
+
+Icon update
+Launcher icon redesigned as a safe-zone adaptive icon (dark background + inner emblem) so it is never cropped in circle, squircle or square launchers; round legacy and themed icons added.
 
 v1.1.7 notes
-- `android_template/MainActivity.kt` now holds the native Android code (PiP + in-app installer). Upload this folder too.
-- Update dialog: resumable download, PackageInstaller install with real error messages, full TV remote support.
-
-EPG sources (v1.1.7)
-- Every file in the repository's `epg/` folder is an EPG source: `.xml`, `.xml.gz`, `.gz` files are read directly; `.txt`/`.list`/`.m3u`/`.csv` files may list more EPG URLs. Sub-folders are included. Just drop files in `epg/`.
-- The live feeds (`epg/sources.txt` and the built-in list) are always tried first. Old snapshot files are only used when nothing fresher exists.
-- A snapshot of the three feeds is bundled in the APK (`assets/epg/`) as an offline seed.
-- Downloaded EPG files are cached in the device folder `Ananta OTT/epg/`.
-- TV guide: Right opens it, Left/Right change day (Yesterday / Today / Tomorrow / +2), Up/Down browse programmes, Back closes the guide.
+`android_template/MainActivity.kt` now holds the native Android code (PiP + in-app installer). Upload this folder too.
+Update dialog: resumable download, PackageInstaller install with real error messages, full TV remote support.
