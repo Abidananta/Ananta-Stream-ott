@@ -1,0 +1,368 @@
+name: Build Ananta OTT APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+# Uploading several files makes several pushes; only the newest run is needed.
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Verify Java and Flutter
+        run: |
+          java -version
+          flutter --version
+
+      - name: Generate Android project scaffolding
+        run: flutter create --platforms=android --org com.ananta --project-name ott build_app
+
+      - name: Configure native Android PiP Activity and in-app installer
+        run: |
+          test -f android_template/MainActivity.kt || { echo "::error::android_template/MainActivity.kt is missing. Upload the android_template folder."; exit 1; }
+          mkdir -p build_app/android/app/src/main/kotlin/com/ananta/ott
+          cp android_template/MainActivity.kt build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt
+
+      - name: Copy app source and configure Android TV icon and manifest
+        run: |
+          test -f lib/main.dart
+          test -f lib/update_checker.dart
+          # Every Dart file the app imports must be uploaded to lib/.
+          for f in splash_screen.dart app_updater.dart; do
+            test -f "lib/$f" || { echo "::error::lib/$f is missing in the repository. Upload it to the lib folder."; exit 1; }
+          done
+          cp lib/*.dart build_app/lib/
+          mkdir -p build_app/assets && cp assets/ananta_launcher_icon.png build_app/assets/
+          cp pubspec.yaml build_app/pubspec.yaml
+          # Flutter's generated test imports package:ott and MyApp, which do not
+          # exist in this app. Remove that template test from the temporary build.
+          rm -rf build_app/test
+          # Guard a nullable EPG program in repository revisions that use this
+          # display expression. The current source may already have the fix.
+          python3 - <<'PYFIX'
+          from pathlib import Path
+          p = Path('build_app/lib/main.dart')
+          s = p.read_text()
+          s = s.replace(
+              'Text(_epgLabelForProgram(program),',
+              'if (program != null) Text(_epgLabelForProgram(program),'
+          )
+          p.write_text(s)
+          PYFIX
+          mkdir -p build_app/android/app/src/main/res/drawable-nodpi
+          cp assets/ananta_launcher_icon.png build_app/android/app/src/main/res/drawable-nodpi/ananta_launcher_icon.png
+          cp assets/ananta_tv_banner.png build_app/android/app/src/main/res/drawable-nodpi/ananta_tv_banner.png
+          # Launcher icon: adaptive icon (dark background + big logo) so Android
+          # does not draw a white box behind it, plus legacy PNG icons.
+          RES=build_app/android/app/src/main/res
+          rm -f $RES/mipmap-*/ic_launcher*.png $RES/mipmap-*/ic_launcher*.webp
+          python3 -m pip install --quiet pillow || python3 -m pip install --quiet --break-system-packages pillow
+          RES="$RES" python3 - <<'ICONPY'
+          import os
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFilter
+          res = Path(os.environ['RES'])
+          BG = (7, 5, 31, 255)  # dark navy, same as the artwork's own background
+          im = Image.open('assets/ananta_launcher_icon.png').convert('RGBA')
+          # The artwork is a rounded square with its own frame. A circular or
+          # squircle launcher mask would cut its corners/text, so the adaptive
+          # icon uses only the inner emblem (globe + A + ANANTA OTT), softly
+          # feathered, on a solid dark adaptive background. It sits inside the
+          # 66dp safe zone, so every mask shape (circle, squircle, rounded
+          # square, teardrop) shows the full logo without cropping.
+          def emblem(size, frac):
+              c = im.crop((56, 56, 456, 352))
+              f = 8
+              m = Image.new('L', c.size, 0)
+              ImageDraw.Draw(m).rounded_rectangle((f, f, c.width - 1 - f, c.height - 1 - f), radius=60, fill=255)
+              c.putalpha(m.filter(ImageFilter.GaussianBlur(f)))
+              k = frac * size / c.width
+              return c.resize((max(1, int(c.width * k)), max(1, int(c.height * k))), Image.LANCZOS)
+          def canvas(size, frac, shape=None):
+              base = Image.new('RGBA', (size, size), BG)
+              e = emblem(size, frac)
+              base.alpha_composite(e, ((size - e.width) // 2, (size - e.height) // 2))
+              if shape == 'circle':
+                  mk = Image.new('L', (size * 4, size * 4), 0)
+                  ImageDraw.Draw(mk).ellipse((0, 0, size * 4 - 1, size * 4 - 1), fill=255)
+                  base.putalpha(mk.resize((size, size), Image.LANCZOS))
+              elif shape == 'round':
+                  mk = Image.new('L', (size * 4, size * 4), 0)
+                  ImageDraw.Draw(mk).rounded_rectangle((0, 0, size * 4 - 1, size * 4 - 1), radius=int(size * 4 * 0.22), fill=255)
+                  base.putalpha(mk.resize((size, size), Image.LANCZOS))
+              return base
+          (res / 'drawable-nodpi').mkdir(parents=True, exist_ok=True)
+          # Adaptive foreground: 432px = 108dp @4x, emblem 60% wide (transparent
+          # elsewhere); adaptive background is the solid colour defined in XML.
+          fg = Image.new('RGBA', (432, 432), (0, 0, 0, 0))
+          e = emblem(432, 0.60)
+          fg.alpha_composite(e, ((432 - e.width) // 2, (432 - e.height) // 2))
+          fg.save(res / 'drawable-nodpi/ic_launcher_foreground.png')
+          # Legacy icons for Android < 8: rounded square + circular variant
+          # (roundIcon is used by Android 7.1 round launchers).
+          for d, px in {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}.items():
+              (res / f'mipmap-{d}').mkdir(parents=True, exist_ok=True)
+              canvas(px, 0.92, 'round').save(res / f'mipmap-{d}/ic_launcher.png')
+              canvas(px, 0.86, 'circle').save(res / f'mipmap-{d}/ic_launcher_round.png')
+          # Android 13+ themed (monochrome) icon: a simple silhouette of the emblem.
+          mono = Image.new('RGBA', (432, 432), (0, 0, 0, 0))
+          lum = e.convert('L').point(lambda v: 255 if v > 90 else 0)
+          sil = Image.new('RGBA', e.size, (0, 0, 0, 255)); sil.putalpha(Image.composite(lum, Image.new('L', e.size, 0), e.getchannel('A')))
+          mono.alpha_composite(sil, ((432 - e.width) // 2, (432 - e.height) // 2))
+          mono.save(res / 'drawable-nodpi/ic_launcher_monochrome.png')
+          # Fully transparent image for the Android 12+ system splash icon, so no
+          # still logo is shown before the Flutter launch animation starts.
+          Image.new('RGBA', (288, 288), (0, 0, 0, 0)).save(res / 'drawable-nodpi/splash_transparent.png')
+          ICONPY
+          mkdir -p $RES/mipmap-anydpi-v26 $RES/values $RES/xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<paths>' '    <cache-path name="cache" path="." />' '    <external-cache-path name="ext_cache" path="." />' '</paths>' > $RES/xml/ananta_file_paths.xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">' '    <background android:drawable="@color/ic_launcher_background"/>' '    <foreground android:drawable="@drawable/ic_launcher_foreground"/>' '    <monochrome android:drawable="@drawable/ic_launcher_monochrome"/>' '</adaptive-icon>' > $RES/mipmap-anydpi-v26/ic_launcher.xml
+          cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<resources>' '    <color name="ic_launcher_background">#FF07051F</color>' '</resources>' > $RES/values/ic_launcher_background.xml
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          manifest = Path('build_app/android/app/src/main/AndroidManifest.xml')
+          ET.register_namespace('android', 'http://schemas.android.com/apk/res/android')
+          ns = '{http://schemas.android.com/apk/res/android}'
+          tree = ET.parse(manifest)
+          root = tree.getroot()
+          def has_tag(tag, attr, value):
+              return any(el.tag == tag and el.get(ns + attr) == value for el in root)
+          if not has_tag('uses-permission', 'name', 'android.permission.INTERNET'):
+              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.INTERNET'); root.insert(0, el)
+          if not has_tag('uses-feature', 'name', 'android.hardware.touchscreen'):
+              el = ET.Element('uses-feature'); el.set(ns + 'name', 'android.hardware.touchscreen'); el.set(ns + 'required', 'false'); root.insert(1, el)
+          if not has_tag('uses-permission', 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'):
+              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'); root.insert(2, el)
+          app = root.find('application')
+          # FileProvider so Android's installer can read the downloaded APK.
+          prov = ET.SubElement(app, 'provider')
+          prov.set(ns + 'name', 'androidx.core.content.FileProvider')
+          prov.set(ns + 'authorities', '${applicationId}.fileprovider')
+          prov.set(ns + 'exported', 'false')
+          prov.set(ns + 'grantUriPermissions', 'true')
+          meta = ET.SubElement(prov, 'meta-data')
+          meta.set(ns + 'name', 'android.support.FILE_PROVIDER_PATHS')
+          meta.set(ns + 'resource', '@xml/ananta_file_paths')
+          app.set(ns + 'label', 'Ananta OTT')
+          app.set(ns + 'icon', '@mipmap/ic_launcher')
+          app.set(ns + 'roundIcon', '@mipmap/ic_launcher_round')
+          app.set(ns + 'banner', '@drawable/ananta_tv_banner')
+          app.set(ns + 'usesCleartextTraffic', 'true')
+          activities = list(app.findall('activity'))
+          launcher = None
+          for activity in activities:
+              for filt in activity.findall('intent-filter'):
+                  cats = [c.get(ns + 'name') for c in filt.findall('category')]
+                  if 'android.intent.category.LAUNCHER' in cats:
+                      launcher = activity
+                      break
+              if launcher is not None: break
+          if launcher is None and activities:
+              launcher = activities[0]
+          if launcher is not None:
+              # Keep the Flutter activity alive and enable Android 8+ PiP.
+              launcher.set(ns + 'supportsPictureInPicture', 'true')
+              if int(root.get('android:versionCode', '0') or 0) >= 0:
+                  launcher.set(ns + 'resizeableActivity', 'true')
+              has_leanback = any('android.intent.category.LEANBACK_LAUNCHER' in [c.get(ns + 'name') for c in f.findall('category')] for f in launcher.findall('intent-filter'))
+              if not has_leanback:
+                  filt = ET.SubElement(launcher, 'intent-filter')
+                  action = ET.SubElement(filt, 'action'); action.set(ns + 'name', 'android.intent.action.MAIN')
+                  category = ET.SubElement(filt, 'category'); category.set(ns + 'name', 'android.intent.category.LEANBACK_LAUNCHER')
+          tree.write(manifest, encoding='utf-8', xml_declaration=True)
+          PY
+
+      - name: Configure dark launch window (no white flash)
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import shutil
+          res = Path('build_app/android/app/src/main/res')
+          # Remove light/dark variants generated by flutter create so one
+          # consistent dark launch background is always used.
+          for d in list(res.glob('values-night*')):
+              shutil.rmtree(d, ignore_errors=True)
+          (res / 'values').mkdir(parents=True, exist_ok=True)
+          (res / 'values-v31').mkdir(parents=True, exist_ok=True)
+          (res / 'values/colors.xml').write_text(
+              '<?xml version="1.0" encoding="utf-8"?>\n'
+              '<resources>\n'
+              '    <color name="ananta_bg">#FF090914</color>\n'
+              '</resources>\n')
+          def styles(extra=''):
+              return ('<?xml version="1.0" encoding="utf-8"?>\n'
+                      '<resources>\n'
+                      '    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">\n'
+                      '        <item name="android:windowBackground">@color/ananta_bg</item>\n'
+                      '        <item name="android:colorBackground">@color/ananta_bg</item>\n'
+                      + extra +
+                      '    </style>\n'
+                      '    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">\n'
+                      '        <item name="android:windowBackground">@color/ananta_bg</item>\n'
+                      '        <item name="android:colorBackground">@color/ananta_bg</item>\n'
+                      + extra +
+                      '    </style>\n'
+                      '</resources>\n')
+          (res / 'values/styles.xml').write_text(styles())
+          # Android 12+ system splash screen: dark background and a fully
+          # transparent icon (PNG), so no still logo shows before the Flutter
+          # launch animation starts.
+          (res / 'values-v31/styles.xml').write_text(styles(
+              '        <item name="android:windowSplashScreenBackground">@color/ananta_bg</item>\n'
+              '        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_transparent</item>\n'))
+          # Solid dark launch drawables (Flutter's template ships a white one).
+          for d in res.glob('drawable*/launch_background.xml'):
+              d.write_text('<?xml version="1.0" encoding="utf-8"?>\n'
+                           '<layer-list xmlns:android="http://schemas.android.com/apk/res/android">\n'
+                           '    <item android:drawable="@color/ananta_bg" />\n'
+                           '</layer-list>\n')
+          PYCODE
+
+      - name: Configure persistent release signing
+        env:
+          KS_B64: ${{ secrets.ANANTA_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANANTA_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANANTA_KEY_ALIAS }}
+        run: |
+          # Every build must be signed with the SAME key, otherwise Android
+          # refuses to update an installed app ("package conflicts") and the
+          # user would have to uninstall first. A GitHub secret key is used when
+          # configured; otherwise the keystore stored in signing/ is used.
+          APP=build_app/android/app
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > "$APP/ananta-release.jks"
+            export STORE_PASS="$KS_PASS"
+            export KEY_ALIAS="${KS_ALIAS:-ananta}"
+            echo "Signing with the key from GitHub secrets."
+          else
+            test -f signing/ananta-release.jks
+            cp signing/ananta-release.jks "$APP/ananta-release.jks"
+            export STORE_PASS="ananta-ott-2026"
+            export KEY_ALIAS="ananta"
+            echo "Signing with signing/ananta-release.jks."
+          fi
+          python3 - <<'SIGNPY'
+          import os
+          from pathlib import Path
+          sp = os.environ['STORE_PASS']; ka = os.environ['KEY_ALIAS']
+          app = Path('build_app/android/app')
+          kts = app / 'build.gradle.kts'
+          groovy = app / 'build.gradle'
+          done = False
+          if kts.exists():
+              t = kts.read_text()
+              block = ('    signingConfigs {\n'
+                       '        create("ananta") {\n'
+                       '            storeFile = file("ananta-release.jks")\n'
+                       '            storePassword = "%s"\n'
+                       '            keyAlias = "%s"\n'
+                       '            keyPassword = "%s"\n'
+                       '        }\n'
+                       '    }\n\n') % (sp, ka, sp)
+              if 'buildTypes {' in t and 'signingConfigs.getByName("debug")' in t:
+                  t = t.replace('buildTypes {', block + '    buildTypes {', 1)
+                  t = t.replace('signingConfigs.getByName("debug")', 'signingConfigs.getByName("ananta")')
+                  kts.write_text(t); done = True
+          elif groovy.exists():
+              t = groovy.read_text()
+              block = ("    signingConfigs {\n"
+                       "        ananta {\n"
+                       "            storeFile file('ananta-release.jks')\n"
+                       "            storePassword '%s'\n"
+                       "            keyAlias '%s'\n"
+                       "            keyPassword '%s'\n"
+                       "        }\n"
+                       "    }\n\n") % (sp, ka, sp)
+              if 'buildTypes {' in t and 'signingConfigs.debug' in t:
+                  t = t.replace('buildTypes {', block + '    buildTypes {', 1)
+                  t = t.replace('signingConfigs.debug', 'signingConfigs.ananta')
+                  groovy.write_text(t); done = True
+          print('::notice::persistent signing configured' if done else '::warning::could not patch Gradle signing config; APK will use the debug key')
+          SIGNPY
+
+      - name: Resolve dependencies
+        working-directory: build_app
+        run: flutter pub get -v
+
+      - name: Analyze source (diagnostic only)
+        working-directory: build_app
+        continue-on-error: true
+        run: flutter analyze --no-pub
+
+      - name: Verify application version
+        working-directory: build_app
+        run: |
+          VER=$(grep -E "^version:" pubspec.yaml | head -1 | sed -E "s/^version:[[:space:]]*//")
+          echo "Building app version $VER"
+          echo "$VER" | grep -Eq "^[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+$"
+
+      - name: Build release APK
+        working-directory: build_app
+        run: flutter build apk --release --no-pub --verbose
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ananta-ott-android-tv-apk
+          path: build_app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NAME=$(grep -E "^version:" pubspec.yaml | head -1 | sed -E "s/^version:[[:space:]]*//; s/\+.*//")
+          TAG="v$NAME"
+          APK=build_app/build/app/outputs/flutter-apk/app-release.apk
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Same version already released: replace the APK with the new build.
+            echo "Release $TAG exists; replacing its APK with the new build."
+            if gh release upload "$TAG" "$APK" --clobber --repo "$GITHUB_REPOSITORY"; then
+              exit 0
+            fi
+            # Upload refused (e.g. draft/odd release state): recreate the release.
+            echo "Upload failed; deleting and recreating release $TAG."
+            gh release delete "$TAG" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          fi
+
+          gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT $TAG"             --notes "## Ananta OTT $TAG
+
+          - Premium glass (frosted) design across the whole app
+          - EPG files and the whole channel_logos folder are stored on the device and auto-updated (fast, works offline)
+          - Launcher icon now fits perfectly in round, squircle and square masks on every Android phone (no cropping)
+          - In-app update with download progress (no uninstall needed), audio stops on exit, smoother channel opening
+          - Automatic online error reporting (Sentry) so problems can be fixed faster
+          - Fixed white background on the app icon (bigger adaptive icon) and startup force close
+          - New animated launch screen: bigger logo, loading animation, Developed By Ananta and app version
+          - Fixed white screen on launch and in Picture-in-Picture; video stays visible in PiP
+          - Smoother live streams: bigger buffer, auto-reconnect when a stream stalls or stops
+          - Picture-in-Picture when minimizing the app while a stream is playing
+          - Video-only PiP window; playback pauses if the PiP window is closed
+          - APK automatically attached to this GitHub Release"             --latest || echo "::warning::Could not publish release $TAG (it may already exist and be locked). The APK is still available under this run's Artifacts. Increase the version number for a new release."
