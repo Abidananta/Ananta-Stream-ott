@@ -1,0 +1,384 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// Keeps an "Ananta OTT" folder in the device's internal storage:
+///
+///   Ananta OTT/
+///     epg/                 cached EPG files, one per source (+ sources.json)
+///     logos/<group>/       channel logos, one sub-folder per channel group
+///
+/// With "All files access" (Android 11+) / storage permission (Android 6-10)
+/// the folder is created at the top of the internal storage, so it shows up in
+/// the file manager. Without it the app-specific external folder is used.
+class StorageService {
+  StorageService._();
+
+  static const MethodChannel _channel = MethodChannel('com.ananta.ott/storage');
+
+  static String? _rootPath;
+  static bool _public = false;
+  static DateTime _resolvedAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Sync access for widgets (null until [root] resolved once).
+  static String? get rootPathSync => _rootPath;
+  static bool get isPublic => _public;
+
+  static String safeName(String value, {String fallback = 'Other', int max = 60}) {
+    var s = value.replaceAll(RegExp(r'[\\/:*?"<>|\x00-\x1f]+'), '_').trim();
+    s = s.replaceAll(RegExp(r'\s+'), ' ').replaceAll(RegExp(r'^\.+'), '');
+    if (s.length > max) s = s.substring(0, max).trim();
+    return s.isEmpty ? fallback : s;
+  }
+
+  /// Resolves (and creates) the root folder. Re-asks Android every 20 s so a
+  /// permission granted later in Settings is picked up without a restart.
+  static Future<Directory?> root({bool force = false}) async {
+    if (!Platform.isAndroid) return null;
+    final fresh = DateTime.now().difference(_resolvedAt).inSeconds < 20;
+    if (!force && fresh && _rootPath != null) return Directory(_rootPath!);
+    try {
+      final res = await _channel.invokeMapMethod<String, dynamic>('getStorageRoot');
+      final path = res?['path'] as String?;
+      if (path == null || path.isEmpty) return null;
+      _rootPath = path;
+      _public = res?['public'] == true;
+      _resolvedAt = DateTime.now();
+      final dir = Directory(path);
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      return dir;
+    } catch (e) {
+      debugPrint('Storage root error: $e');
+      return null;
+    }
+  }
+
+  static Future<Directory?> subDir(String name) async {
+    final r = await root();
+    if (r == null) return null;
+    try {
+      final d = Directory('${r.path}/$name');
+      if (!d.existsSync()) d.createSync(recursive: true);
+      return d;
+    } catch (e) {
+      debugPrint('Storage dir error ($name): $e');
+      return null;
+    }
+  }
+
+  /// Called once at startup: creates the folders and (once only) asks Android
+  /// for the access that makes the folder visible in the file manager.
+  static Future<void> setup() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await root(force: true);
+      final logos = await subDir('logos');
+      await subDir('epg');
+      if (logos != null) {
+        final nomedia = File('${logos.path}/.nomedia'); // keep logos out of the gallery
+        if (!nomedia.existsSync()) nomedia.createSync();
+      }
+      if (!_public) {
+        // Give the user a moment to see the app first, then ask once.
+        await Future<void>.delayed(const Duration(seconds: 4));
+        await _channel.invokeMethod<bool>('requestStorageAccessOnce');
+      }
+    } catch (e) {
+      debugPrint('Storage setup error: $e');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// EPG sources: every file in the repository's /epg folder
+// ---------------------------------------------------------------------------
+
+class EpgSource {
+  const EpgSource(this.name, this.url, {this.path = ''});
+  final String name;
+  final String url;
+
+  /// Path inside the repository's /epg folder (e.g. `tataplay/epg.xml.gz`).
+  /// Also the path of the copy bundled in the APK under assets/epg/.
+  final String path;
+}
+
+/// EPG files that ship inside the APK (assets/epg/...), used as an offline
+/// seed when a source can neither be downloaded nor read from the epg folder.
+class EpgBundled {
+  EpgBundled._();
+
+  static const List<String> paths = [
+    'epg.xml.gz',
+    'tataplay/epg.xml.gz',
+    'jiotv/epg.xml.gz',
+  ];
+
+  static Future<Uint8List?> read(String path) async {
+    if (path.isEmpty) return null;
+    try {
+      final data = await rootBundle.load('assets/epg/$path');
+      return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+class EpgSourceResolver {
+  EpgSourceResolver._();
+
+  static const String _api =
+      'https://api.github.com/repos/Abidananta/Ananta-Stream-ott/contents/epg?ref=main';
+  static const String _prefsKey = 'ananta_epg_sources_v2';
+
+  static bool _isData(String n) =>
+      n.endsWith('.xml') || n.endsWith('.xml.gz') || n.endsWith('.gz') || n.endsWith('.xmltv');
+  static bool _isList(String n) =>
+      n.endsWith('.txt') || n.endsWith('.list') || n.endsWith('.m3u') || n.endsWith('.csv');
+
+  static final RegExp _epgLikeUrl =
+      RegExp(r'(\.xml|\.xml\.gz|\.gz|\.xmltv)(\?.*)?$|epg', caseSensitive: false);
+
+  // The three well-known feeds and where their copy lives in /epg (and assets).
+  static const Map<String, String> _knownPaths = {
+    'epg.xml.gz': 'epg.xml.gz',
+    'tsepg.xml.gz': 'tataplay/epg.xml.gz',
+    'jioepg.xml.gz': 'jiotv/epg.xml.gz',
+  };
+
+  static String _pathForUrl(String url) {
+    final seg = Uri.tryParse(url)?.pathSegments;
+    if (seg == null || seg.isEmpty) return '';
+    return _knownPaths[seg.last] ?? '';
+  }
+
+  static const Map<String, String> _headers = {
+    'User-Agent': 'AnantaOTT/1.0',
+    'Accept': 'application/vnd.github+json',
+  };
+
+  /// All EPG sources found in /epg. Falls back to the last known list, then to
+  /// [fallbackUrls] when the folder cannot be read or is empty.
+  static Future<List<EpgSource>> resolve(List<String> fallbackUrls) async {
+    final found = <EpgSource>[];
+    try {
+      await _walk(_api, found, 0);
+    } catch (e) {
+      debugPrint('EPG folder listing failed: $e');
+    }
+    // De-duplicate by URL, keep order.
+    final seen = <String>{};
+    final unique = [for (final s in found) if (seen.add(s.url)) s];
+    if (unique.isNotEmpty) {
+      await _remember(unique);
+      return unique;
+    }
+    final saved = await _recall();
+    if (saved.isNotEmpty) return saved;
+    return [for (final u in fallbackUrls) EpgSource(_nameFromUrl(u), u, path: _pathForUrl(u))];
+  }
+
+  static Future<void> _walk(String apiUrl, List<EpgSource> out, int depth) async {
+    final res = await http.get(Uri.parse(apiUrl), headers: _headers).timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) return;
+    final decoded = jsonDecode(res.body);
+    if (decoded is! List) return;
+    for (final item in decoded) {
+      if (item is! Map) continue;
+      final type = item['type']?.toString();
+      final name = (item['name']?.toString() ?? '');
+      final lower = name.toLowerCase();
+      if (name.startsWith('.')) continue;
+      if (type == 'dir' && depth < 2) {
+        final next = item['url']?.toString();
+        if (next != null) await _walk(next, out, depth + 1);
+        continue;
+      }
+      if (type != 'file') continue;
+      final download = item['download_url']?.toString();
+      if (download == null || download.isEmpty) continue;
+      final repoPath = item['path']?.toString() ?? name;
+      final rel = repoPath.startsWith('epg/') ? repoPath.substring(4) : repoPath;
+      if (_isData(lower)) {
+        out.add(EpgSource(rel, download, path: rel));
+      } else if (_isList(lower)) {
+        // A text/JSON file that lists EPG source URLs.
+        try {
+          final listRes = await http
+              .get(Uri.parse(download), headers: const {'User-Agent': 'AnantaOTT/1.0'})
+              .timeout(const Duration(seconds: 15));
+          if (listRes.statusCode != 200) continue;
+          final urls = RegExp(r'''https?://[^\s"',<>\]\[]+''').allMatches(utf8.decode(listRes.bodyBytes, allowMalformed: true));
+          for (final m in urls) {
+            final u = m.group(0)!;
+            if (!_epgLikeUrl.hasMatch(u)) continue; // skip logos / websites
+            out.add(EpgSource(_nameFromUrl(u), u, path: _pathForUrl(u)));
+          }
+        } catch (e) {
+          debugPrint('EPG list file failed ($name): $e');
+        }
+      }
+    }
+  }
+
+  static String _nameFromUrl(String url) {
+    final uri = Uri.tryParse(url);
+    final seg = (uri != null && uri.pathSegments.isNotEmpty) ? uri.pathSegments.last : 'epg';
+    return '${uri?.host ?? 'src'}_${seg.isEmpty ? 'epg' : seg}';
+  }
+
+  static Future<void> _remember(List<EpgSource> sources) async {
+    try {
+      final data = jsonEncode([for (final s in sources) {'name': s.name, 'url': s.url, 'path': s.path}]);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefsKey, data);
+      final dir = await StorageService.subDir('epg');
+      if (dir != null) await File('${dir.path}/sources.json').writeAsString(data);
+    } catch (e) {
+      debugPrint('EPG sources save failed: $e');
+    }
+  }
+
+  static Future<List<EpgSource>> _recall() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_prefsKey);
+      if (raw == null) return const [];
+      final list = jsonDecode(raw) as List;
+      return [for (final e in list) EpgSource(e['name'].toString(), e['url'].toString(), path: (e['path'] ?? '').toString())];
+    } catch (_) {
+      return const [];
+    }
+  }
+}
+
+/// Raw EPG files kept in Ananta OTT/epg so the guide still loads offline.
+class EpgDiskCache {
+  EpgDiskCache._();
+
+  static String _fileName(EpgSource s) {
+    final base = StorageService.safeName(s.name, fallback: 'epg', max: 80);
+    final h = s.url.hashCode.toUnsigned(32).toRadixString(16);
+    final dot = base.lastIndexOf('.');
+    // keep the extension at the end: tsepg.xml.gz -> tsepg_<hash>.xml.gz
+    final ext = base.toLowerCase().endsWith('.xml.gz')
+        ? '.xml.gz'
+        : (dot > 0 ? base.substring(dot) : '');
+    final stem = ext.isEmpty ? base : base.substring(0, base.length - ext.length);
+    return '${stem}_$h$ext';
+  }
+
+  static Future<void> save(EpgSource s, List<int> bytes) async {
+    try {
+      final dir = await StorageService.subDir('epg');
+      if (dir == null) return;
+      final f = File('${dir.path}/${_fileName(s)}');
+      final tmp = File('${f.path}.part');
+      await tmp.writeAsBytes(bytes, flush: true);
+      await tmp.rename(f.path);
+    } catch (e) {
+      debugPrint('EPG file save failed (${s.name}): $e');
+    }
+  }
+
+  static Future<Uint8List?> read(EpgSource s) async {
+    try {
+      final dir = await StorageService.subDir('epg');
+      if (dir == null) return null;
+      final f = File('${dir.path}/${_fileName(s)}');
+      if (!f.existsSync()) return null;
+      return await f.readAsBytes();
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Channel logos: Ananta OTT/logos/<group>/<channel>.png
+// ---------------------------------------------------------------------------
+
+class LogoStore {
+  LogoStore._();
+
+  static final Map<String, String?> _known = {}; // url -> existing file path
+  static final Set<String> _failed = {};
+  static final Set<String> _queued = {};
+  static int _active = 0;
+  static final List<Future<void> Function()> _pending = [];
+
+  static String? _pathFor(String url, String group) {
+    final root = StorageService.rootPathSync;
+    if (root == null) return null;
+    final seg = Uri.tryParse(url)?.pathSegments;
+    final file = StorageService.safeName(
+        (seg != null && seg.isNotEmpty) ? seg.last : url.hashCode.toString(),
+        fallback: 'logo.png');
+    return '$root/logos/${StorageService.safeName(group)}/$file';
+  }
+
+  /// Local file when the logo is already stored, otherwise the network image
+  /// (and the logo is saved to the folder in the background).
+  static ImageProvider provider(String url, String group) {
+    final path = _pathFor(url, group);
+    if (path != null) {
+      final known = _known.putIfAbsent(url, () {
+        try {
+          final f = File(path);
+          return (f.existsSync() && f.lengthSync() > 0) ? path : null;
+        } catch (_) {
+          return null;
+        }
+      });
+      if (known != null) return FileImage(File(known));
+      _enqueue(url, group, path);
+    }
+    return CachedNetworkImageProvider(url);
+  }
+
+  static void _enqueue(String url, String group, String path) {
+    if (_failed.contains(url) || !_queued.add(url)) return;
+    _pending.add(() => _download(url, path));
+    _pump();
+  }
+
+  static void _pump() {
+    while (_active < 3 && _pending.isNotEmpty) {
+      final job = _pending.removeAt(0);
+      _active++;
+      job().whenComplete(() {
+        _active--;
+        _pump();
+      });
+    }
+  }
+
+  static Future<void> _download(String url, String path) async {
+    try {
+      final res = await http
+          .get(Uri.parse(url), headers: const {'User-Agent': 'AnantaOTT/1.0'})
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200 || res.bodyBytes.isEmpty) {
+        _failed.add(url);
+        return;
+      }
+      final f = File(path);
+      await f.parent.create(recursive: true);
+      await f.writeAsBytes(res.bodyBytes, flush: true);
+      _known[url] = path;
+    } catch (e) {
+      _failed.add(url);
+      debugPrint('Logo save failed ($url): $e');
+    } finally {
+      _queued.remove(url);
+    }
+  }
+}
