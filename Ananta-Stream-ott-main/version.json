@@ -1,0 +1,6 @@
+{
+  "version": "1.1.8",
+  "versionCode": 22,
+  "releaseNotes": "New frosted-glass design across the app (update dialog, app bar, search, cards, TV panels, notifications), round app icon on every Android phone, EPG sources from the /epg folder with an offline copy, day-wise TV guide, EPG and logo cache in the Ananta OTT folder, fixed update install error, Picture-in-Picture without blank screen.",
+  "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.8/app-release.apk"
+}
