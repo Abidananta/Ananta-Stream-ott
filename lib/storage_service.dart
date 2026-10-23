@@ -40,7 +40,18 @@ class StorageService {
 
   /// Resolves (and creates) the root folder. Re-asks Android every 20 s so a
   /// permission granted later in Settings is picked up without a restart.
-  static Future<Directory?> root({bool force = false}) async {
+  static Future<Directory?>? _inflight;
+
+  static Future<Directory?> root({bool force = false}) {
+    // Concurrent callers share one resolve, so the folder is created only once.
+    final running = _inflight;
+    if (running != null) return running;
+    final f = _resolve(force: force).whenComplete(() => _inflight = null);
+    _inflight = f;
+    return f;
+  }
+
+  static Future<Directory?> _resolve({required bool force}) async {
     if (!Platform.isAndroid) return null;
     final fresh = DateTime.now().difference(_resolvedAt).inSeconds < 20;
     if (!force && fresh && _rootPath != null) return Directory(_rootPath!);
@@ -48,6 +59,9 @@ class StorageService {
       final res = await _channel.invokeMapMethod<String, dynamic>('getStorageRoot');
       final path = res?['path'] as String?;
       if (path == null || path.isEmpty) return null;
+      if (_rootPath != null && _rootPath != path) {
+        LogoStore.reset(); // folder moved (e.g. access granted): forget old paths
+      }
       _rootPath = path;
       _public = res?['public'] == true;
       _resolvedAt = DateTime.now();
@@ -447,6 +461,13 @@ class LogoStore {
   static int _active = 0;
   static final List<Future<void> Function()> _pending = [];
 
+  static void reset() {
+    _known.clear();
+    _verifiedAt.clear();
+    _failed.clear();
+    _queued.clear();
+  }
+
   static String? _pathFor(String url, String group) {
     final root = StorageService.rootPathSync;
     if (root == null) return null;
@@ -496,8 +517,10 @@ class LogoStore {
   // Logos are shown at ~60px: decoding the full-size PNG for every row made
   // the channel list stutter on TV boxes.
   static const int _logoPx = 160;
-  static ImageProvider _small(ImageProvider p) =>
-      p is CachedNetworkImageProvider ? p : ResizeImage(p, width: _logoPx);
+  static ImageProvider _small(ImageProvider p) {
+    if (p is CachedNetworkImageProvider) return p;
+    return ResizeImage(p, width: _logoPx);
+  }
 
   static void _enqueue(String url, String group, String path) {
     if (_failed.contains(url) || !_queued.add(url)) return;

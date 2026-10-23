@@ -115,6 +115,29 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // Older builds also created "Android/data/<pkg>/files/Ananta OTT". Merge any such
+    // duplicate into the single active folder and delete it.
+    private fun mergeDuplicateStorageFolders(active: File) {
+        try {
+            val others = listOf(
+                getExternalFilesDir(null)?.let { File(it, "Ananta OTT") },
+                File(filesDir, "Ananta OTT")
+            )
+            for (other in others) {
+                if (other == null || !other.exists()) continue
+                if (other.canonicalPath == active.canonicalPath) continue
+                try {
+                    other.copyRecursively(active, overwrite = false)
+                } catch (e: Exception) {
+                    // keep going: the copy is best-effort
+                }
+                other.deleteRecursively()
+            }
+        } catch (e: Exception) {
+            // ignore
+        }
+    }
+
     private fun setupStorage(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.ananta.ott/storage")
             .setMethodCallHandler { call, result ->
@@ -131,10 +154,13 @@ class MainActivity : FlutterActivity() {
                                 }
                             }
                             if (dir == null) {
-                                val base = getExternalFilesDir(null) ?: filesDir
-                                dir = File(base, "Ananta OTT")
+                                // No file-manager access yet: use the app's PRIVATE folder
+                                // (not visible in the file manager) so the user never ends up
+                                // with a second visible "Ananta OTT" folder.
+                                dir = File(filesDir, "Ananta OTT")
                                 dir.mkdirs()
                             }
+                            mergeDuplicateStorageFolders(dir)
                             result.success(mapOf("path" to dir.absolutePath, "public" to isPublic))
                         } catch (e: Exception) {
                             result.error("STORAGE_FAILED", e.javaClass.simpleName + ": " + e.message, null)
