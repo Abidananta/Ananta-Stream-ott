@@ -57,7 +57,6 @@ jobs:
           done
           cp lib/*.dart build_app/lib/
           mkdir -p build_app/assets && cp assets/ananta_launcher_icon.png build_app/assets/
-          cp -r assets/epg build_app/assets/epg
           cp pubspec.yaml build_app/pubspec.yaml
           # Flutter's generated test imports package:ott and MyApp, which do not
           # exist in this app. Remove that template test from the temporary build.
@@ -77,70 +76,73 @@ jobs:
           mkdir -p build_app/android/app/src/main/res/drawable-nodpi
           cp assets/ananta_launcher_icon.png build_app/android/app/src/main/res/drawable-nodpi/ananta_launcher_icon.png
           cp assets/ananta_tv_banner.png build_app/android/app/src/main/res/drawable-nodpi/ananta_tv_banner.png
-          # Launcher icon: round logo as a transparent-background adaptive icon
-          # (shows complete on circle/squircle/square launchers) plus legacy PNGs.
+          # Launcher icon: adaptive icon (dark background + big logo) so Android
+          # does not draw a white box behind it, plus legacy PNG icons.
           RES=build_app/android/app/src/main/res
           rm -f $RES/mipmap-*/ic_launcher*.png $RES/mipmap-*/ic_launcher*.webp
           python3 -m pip install --quiet pillow || python3 -m pip install --quiet --break-system-packages pillow
           RES="$RES" python3 - <<'ICONPY'
           import os
           from pathlib import Path
-          from PIL import Image, ImageDraw, ImageFilter, ImageStat
+          from PIL import Image, ImageDraw, ImageFilter
           res = Path(os.environ['RES'])
+          BG = (7, 5, 31, 255)  # dark navy, same as the artwork's own background
           im = Image.open('assets/ananta_launcher_icon.png').convert('RGBA')
-          art = im.crop(im.getbbox())
-          S = 432  # adaptive canvas: 108dp @4x
-
-          def round_icon(size, g=0.90, inset=0.05, feather=0.08):
-              """Circular icon of `size` px: the logo artwork (without its square neon
-              border) feathered into a solid circle, nothing inside is clipped."""
-              ins = int(min(art.width, art.height) * inset)
-              inner = art.crop((ins, ins, art.width - ins, art.height - ins))
-              w, h = inner.size
-              strips = [inner.crop((0, 2, w, 12)), inner.crop((0, h - 12, w, h - 2)),
-                        inner.crop((2, 0, 12, h)), inner.crop((w - 12, 0, w - 2, h))]
-              meds = [ImageStat.Stat(s.convert('RGB')).median for s in strips]
-              bg = tuple(int(sum(m[i] for m in meds) / len(meds)) for i in range(3))
-              side = int(size * g)
-              inner = inner.resize((side, side), Image.LANCZOS)
-              fe = max(2, int(side * feather))
-              m = Image.new('L', (side, side), 0)
-              ImageDraw.Draw(m).rectangle((fe, fe, side - fe - 1, side - fe - 1), fill=255)
-              inner.putalpha(m.filter(ImageFilter.GaussianBlur(fe / 2)))
-              disc = Image.new('RGBA', (size, size), bg + (255,))
-              disc.alpha_composite(inner, ((size - side) // 2, (size - side) // 2))
-              sup = 4
-              mask = Image.new('L', (size * sup, size * sup), 0)
-              ImageDraw.Draw(mask).ellipse((0, 0, size * sup - 1, size * sup - 1), fill=255)
-              mask = mask.resize((size, size), Image.LANCZOS)
-              out = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-              out.paste(disc, (0, 0), mask)
-              return out
-
-          # Adaptive foreground: a circle that fits the launcher's 72dp visible mask
-          # (circle / squircle / square all show it complete). Background is transparent.
-          D = int(S * 0.66)
-          fg = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-          fg.alpha_composite(round_icon(D), ((S - D) // 2, (S - D) // 2))
+          # The artwork is a rounded square with its own frame. A circular or
+          # squircle launcher mask would cut its corners/text, so the adaptive
+          # icon uses only the inner emblem (globe + A + ANANTA OTT), softly
+          # feathered, on a solid dark adaptive background. It sits inside the
+          # 66dp safe zone, so every mask shape (circle, squircle, rounded
+          # square, teardrop) shows the full logo without cropping.
+          def emblem(size, frac):
+              c = im.crop((56, 56, 456, 352))
+              f = 8
+              m = Image.new('L', c.size, 0)
+              ImageDraw.Draw(m).rounded_rectangle((f, f, c.width - 1 - f, c.height - 1 - f), radius=60, fill=255)
+              c.putalpha(m.filter(ImageFilter.GaussianBlur(f)))
+              k = frac * size / c.width
+              return c.resize((max(1, int(c.width * k)), max(1, int(c.height * k))), Image.LANCZOS)
+          def canvas(size, frac, shape=None):
+              base = Image.new('RGBA', (size, size), BG)
+              e = emblem(size, frac)
+              base.alpha_composite(e, ((size - e.width) // 2, (size - e.height) // 2))
+              if shape == 'circle':
+                  mk = Image.new('L', (size * 4, size * 4), 0)
+                  ImageDraw.Draw(mk).ellipse((0, 0, size * 4 - 1, size * 4 - 1), fill=255)
+                  base.putalpha(mk.resize((size, size), Image.LANCZOS))
+              elif shape == 'round':
+                  mk = Image.new('L', (size * 4, size * 4), 0)
+                  ImageDraw.Draw(mk).rounded_rectangle((0, 0, size * 4 - 1, size * 4 - 1), radius=int(size * 4 * 0.22), fill=255)
+                  base.putalpha(mk.resize((size, size), Image.LANCZOS))
+              return base
           (res / 'drawable-nodpi').mkdir(parents=True, exist_ok=True)
+          # Adaptive foreground: 432px = 108dp @4x, emblem 60% wide (transparent
+          # elsewhere); adaptive background is the solid colour defined in XML.
+          fg = Image.new('RGBA', (432, 432), (0, 0, 0, 0))
+          e = emblem(432, 0.60)
+          fg.alpha_composite(e, ((432 - e.width) // 2, (432 - e.height) // 2))
           fg.save(res / 'drawable-nodpi/ic_launcher_foreground.png')
-          # Legacy icons (Android < 8, and the 7.1 round icon): same circle filling the icon.
+          # Legacy icons for Android < 8: rounded square + circular variant
+          # (roundIcon is used by Android 7.1 round launchers).
           for d, px in {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}.items():
-              c = Image.new('RGBA', (px, px), (0, 0, 0, 0))
-              r = round_icon(int(px * 0.98))
-              c.alpha_composite(r, ((px - r.width) // 2, (px - r.height) // 2))
               (res / f'mipmap-{d}').mkdir(parents=True, exist_ok=True)
-              c.save(res / f'mipmap-{d}/ic_launcher.png')
-              c.save(res / f'mipmap-{d}/ic_launcher_round.png')
+              canvas(px, 0.92, 'round').save(res / f'mipmap-{d}/ic_launcher.png')
+              canvas(px, 0.86, 'circle').save(res / f'mipmap-{d}/ic_launcher_round.png')
+          # Android 13+ themed (monochrome) icon: a simple silhouette of the emblem.
+          mono = Image.new('RGBA', (432, 432), (0, 0, 0, 0))
+          lum = e.convert('L').point(lambda v: 255 if v > 90 else 0)
+          sil = Image.new('RGBA', e.size, (0, 0, 0, 255)); sil.putalpha(Image.composite(lum, Image.new('L', e.size, 0), e.getchannel('A')))
+          mono.alpha_composite(sil, ((432 - e.width) // 2, (432 - e.height) // 2))
+          mono.save(res / 'drawable-nodpi/ic_launcher_monochrome.png')
           # Fully transparent image for the Android 12+ system splash icon, so no
           # still logo is shown before the Flutter launch animation starts.
           Image.new('RGBA', (288, 288), (0, 0, 0, 0)).save(res / 'drawable-nodpi/splash_transparent.png')
           ICONPY
           mkdir -p $RES/mipmap-anydpi-v26 $RES/values $RES/xml
-          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<paths>' '    <cache-path name="cache" path="." />' '    <external-cache-path name="ext_cache" path="." />' '    <files-path name="files" path="." />' '    <external-files-path name="ext_files" path="." />' '    <root-path name="root" path="." />' '</paths>' > $RES/xml/ananta_file_paths.xml
-          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">' '    <background android:drawable="@color/ic_launcher_background"/>' '    <foreground android:drawable="@drawable/ic_launcher_foreground"/>' '</adaptive-icon>' > $RES/mipmap-anydpi-v26/ic_launcher.xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<paths>' '    <cache-path name="cache" path="." />' '    <external-cache-path name="ext_cache" path="." />' '</paths>' > $RES/xml/ananta_file_paths.xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">' '    <background android:drawable="@color/ic_launcher_background"/>' '    <foreground android:drawable="@drawable/ic_launcher_foreground"/>' '    <monochrome android:drawable="@drawable/ic_launcher_monochrome"/>' '</adaptive-icon>' > $RES/mipmap-anydpi-v26/ic_launcher.xml
           cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml
-          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<resources>' '    <color name="ic_launcher_background">#00000000</color>' '</resources>' > $RES/values/ic_launcher_background.xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<resources>' '    <color name="ic_launcher_background">#FF07051F</color>' '</resources>' > $RES/values/ic_launcher_background.xml
           python3 - <<'PY'
           from pathlib import Path
           import xml.etree.ElementTree as ET
@@ -157,14 +159,7 @@ jobs:
               el = ET.Element('uses-feature'); el.set(ns + 'name', 'android.hardware.touchscreen'); el.set(ns + 'required', 'false'); root.insert(1, el)
           if not has_tag('uses-permission', 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'):
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'); root.insert(2, el)
-          # Storage: lets the app keep an "Ananta OTT" folder (EPG + logos) in the
-          # internal storage that is visible in the file manager.
-          if not has_tag('uses-permission', 'name', 'android.permission.WRITE_EXTERNAL_STORAGE'):
-              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.WRITE_EXTERNAL_STORAGE'); el.set(ns + 'maxSdkVersion', '29'); root.insert(3, el)
-          if not has_tag('uses-permission', 'name', 'android.permission.MANAGE_EXTERNAL_STORAGE'):
-              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.MANAGE_EXTERNAL_STORAGE'); root.insert(4, el)
           app = root.find('application')
-          app.set(ns + 'requestLegacyExternalStorage', 'true')
           # FileProvider so Android's installer can read the downloaded APK.
           prov = ET.SubElement(app, 'provider')
           prov.set(ns + 'name', 'androidx.core.content.FileProvider')
@@ -359,10 +354,9 @@ jobs:
 
           gh release create "$TAG"             build_app/build/app/outputs/flutter-apk/app-release.apk             --repo "$GITHUB_REPOSITORY"             --title "Ananta OTT $TAG"             --notes "## Ananta OTT $TAG
 
-          - Smoother launch animation and channel switching; no lag on the playing stream while another channel loads
-          - Ananta OTT folder (EPG + logos) visible in every file manager (Documents/Ananta OTT)
-          - TV guide: no overlapping NOW programmes, opens on the current programme, smooth scrolling
-          - Removed empty space in mobile mode
+          - Premium glass (frosted) design across the whole app
+          - EPG files and the whole channel_logos folder are stored on the device and auto-updated (fast, works offline)
+          - Launcher icon now fits perfectly in round, squircle and square masks on every Android phone (no cropping)
           - In-app update with download progress (no uninstall needed), audio stops on exit, smoother channel opening
           - Automatic online error reporting (Sentry) so problems can be fixed faster
           - Fixed white background on the app icon (bigger adaptive icon) and startup force close
