@@ -2855,7 +2855,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     padding: EdgeInsets.only(bottom: tvMode ? 0 : 58),
                     child: _glass(
                     radius: 28,
-                    blur: tvMode ? 0 : 12,
+                    blur: 12,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 4,
                       vertical: 1,
@@ -2922,10 +2922,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                   child: IgnorePointer(
                     child: _glass(
                       radius: 14,
-                      // No live blur over the moving video on TV: a backdrop
-                      // blur re-reads the video every frame and stutters it.
-                      blur: 0,
-                      opacity: 0.72,
+                      blur: 12,
+                      opacity: 0.5,
                       color: const Color(0xFF14122E),
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                       child: Row(

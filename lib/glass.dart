@@ -74,7 +74,7 @@ class Glass extends StatelessWidget {
 /// blur off on slow TV boxes.
 class GlassConfig {
   GlassConfig._();
-  static const double tvPanelBlur = 0; // live blur over moving video stutters scrolling; panels are opaque enough instead
+  static const double tvPanelBlur = 14; // frosted glass; set to 0 on very slow TV boxes
 }
 
 class GlassPanel extends StatelessWidget {
