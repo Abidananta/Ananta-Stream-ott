@@ -671,7 +671,6 @@ class AnantaOttApp extends StatelessWidget {
           contentTextStyle: const TextStyle(color: Colors.white),
           actionTextColor: const Color(0xFFC9BEFF),
           elevation: 10,
-          shadowColor: const Color(0xFF7C5CFF),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(18),
             side: BorderSide(color: Colors.white.withOpacity(0.34)),
@@ -1521,14 +1520,23 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           return AnimatedContainer(
             duration: const Duration(milliseconds: 120),
             decoration: BoxDecoration(
-              color: focused
-                  ? accentColor.withOpacity(0.34)
-                  : selected ? Colors.white.withOpacity(0.13) : Colors.white.withOpacity(0.035),
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: focused
+                    ? [accentColor.withOpacity(0.55), accentColor.withOpacity(0.22)]
+                    : selected
+                        ? [Colors.white.withOpacity(0.20), Colors.white.withOpacity(0.07)]
+                        : [Colors.white.withOpacity(0.10), Colors.white.withOpacity(0.03)],
+              ),
               border: Border.all(
-                color: focused ? accentColor : Colors.white.withOpacity(0.07),
+                color: focused ? Colors.white.withOpacity(0.85) : Colors.white.withOpacity(selected ? 0.30 : 0.14),
                 width: focused ? 2 : 1,
               ),
+              boxShadow: focused
+                  ? [BoxShadow(color: accentColor.withOpacity(0.55), blurRadius: 16, offset: const Offset(0, 4))]
+                  : null,
             ),
             child: ListTile(
               focusColor: Colors.transparent,
@@ -2208,10 +2216,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           padding: const EdgeInsets.all(9),
                           clipBehavior: Clip.hardEdge,
                           decoration: BoxDecoration(
-                            color: focused
-                                ? accentColor.withOpacity(0.32)
-                                : current ? accentColor.withOpacity(0.22) : Colors.white.withOpacity(0.045),
-                            borderRadius: BorderRadius.circular(10),
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: focused
+                                  ? [accentColor.withOpacity(0.55), accentColor.withOpacity(0.20)]
+                                  : current
+                                      ? [accentColor.withOpacity(0.38), accentColor.withOpacity(0.12)]
+                                      : [Colors.white.withOpacity(0.10), Colors.white.withOpacity(0.03)],
+                            ),
+                            borderRadius: BorderRadius.circular(12),
                             border: Border.all(
                               color: focused ? Colors.white : current ? accentColor.withOpacity(0.75) : Colors.white.withOpacity(0.07),
                               width: focused ? 2 : 1,
@@ -3010,37 +3024,26 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         itemBuilder: (context, index) {
           final category = _categories[index];
           final selected = _selectedCategory == category;
-          return Center(child: GestureDetector(
-            onTap: () => setState(() => _selectedCategory = category),
-            child: AnimatedContainer(
-              height: 36,
-              duration: const Duration(milliseconds: 160),
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(22),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: selected
-                      ? [const Color(0xFFB9A8FF).withOpacity(0.85), const Color(0xFF6D4DFF).withOpacity(0.70)]
-                      : [Colors.white.withOpacity(0.16), Colors.white.withOpacity(0.05)],
-                ),
-                border: Border.all(color: Colors.white.withOpacity(selected ? 0.55 : 0.22)),
-                boxShadow: selected
-                    ? [BoxShadow(color: const Color(0xFF7C5CFF).withOpacity(0.50), blurRadius: 14, offset: const Offset(0, 4))]
-                    : null,
-              ),
-              child: Text(
-                category,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: selected ? FontWeight.bold : FontWeight.w500,
-                ),
-              ),
+          return ChoiceChip(
+            label: Text(category),
+            selected: selected,
+            showCheckmark: false,
+            backgroundColor: Colors.white.withOpacity(0.08),
+            selectedColor: accentColor.withOpacity(0.55),
+            side: BorderSide(color: Colors.white.withOpacity(selected ? 0.45 : 0.18)),
+            elevation: selected ? 6 : 0,
+            shadowColor: accentColor,
+            pressElevation: 0,
+            surfaceTintColor: Colors.transparent,
+            labelStyle: TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
             ),
-         ));
+            onSelected: (_) {
+              setState(() => _selectedCategory = category);
+            },
+          );
         },
       ),
     );
