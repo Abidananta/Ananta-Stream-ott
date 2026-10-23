@@ -154,6 +154,9 @@ class EpgSourceResolver {
     'jioepg.xml.gz': 'jiotv/epg.xml.gz',
   };
 
+  /// Repo path (e.g. `jiotv/epg.xml.gz`) that belongs to a well-known live feed URL.
+  static String knownPathForUrl(String url) => _pathForUrl(url);
+
   static String _pathForUrl(String url) {
     final seg = Uri.tryParse(url)?.pathSegments;
     if (seg == null || seg.isEmpty) return '';

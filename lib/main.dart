@@ -1665,10 +1665,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (decoded.isEmpty) return false;
       final savedAt = decoded['savedAt'] as int;
       final age = DateTime.now().millisecondsSinceEpoch - savedAt;
-      final cacheIsFresh = savedAt > 0 && age >= 0 &&
-          age < const Duration(hours: 2).inMilliseconds;
       final byId = Map<String, List<EpgProgram>>.from(decoded['byId'] as Map);
       final byName = Map<String, List<EpgProgram>>.from(decoded['byName'] as Map);
+      // A cache saved from an outdated feed must not block a refresh: it only
+      // counts as fresh when programmes still air in the next 3 hours.
+      final horizon = DateTime.now().toUtc().add(const Duration(hours: 3));
+      final hasCurrentData = byId.values.any((l) => l.any((p) => p.stop.isAfter(horizon)));
+      final cacheIsFresh = savedAt > 0 && age >= 0 &&
+          age < const Duration(hours: 2).inMilliseconds && hasCurrentData;
       final logosById = Map<String, String>.from(decoded['logosById'] as Map);
       final logosByName = Map<String, String>.from(decoded['logosByName'] as Map);
       if (!mounted || (byId.isEmpty && byName.isEmpty && logosById.isEmpty)) return false;
@@ -1724,7 +1728,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     // Sources = all files in the repository's /epg folder (epgSourceUrls is
     // only the last-resort fallback).
     final epgSources = await EpgSourceResolver.resolve(epgSourceUrls);
-    for (final source in epgSources) {
+    // Downloads/reads one source and merges it. Returns the end time of the
+    // newest programme it contained (null when the source gave nothing).
+    // liveOnly = never fall back to the on-device / bundled copies, because
+    // those are exactly what is stale when we ask for a live replacement.
+    Future<DateTime?> ingest(EpgSource source, {bool liveOnly = false}) async {
       try {
         List<int>? payload;
         try {
@@ -1742,11 +1750,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         } catch (error) {
           debugPrint('EPG download failed (${source.url}): $error');
         }
-        // Offline / server problem: use the copy saved in the epg folder.
-        payload ??= await EpgDiskCache.read(source);
-        // Last resort: the copy that ships inside the APK (assets/epg).
-        payload ??= await EpgBundled.read(source.path);
-        if (payload == null) continue;
+        if (!liveOnly) {
+          // Offline / server problem: use the copy saved in the epg folder.
+          payload ??= await EpgDiskCache.read(source);
+          // Last resort: the copy that ships inside the APK (assets/epg).
+          payload ??= await EpgBundled.read(source.path);
+        }
+        if (payload == null) return null;
         final parsed = await compute(_parseEpgPayload, payload);
         final sourceNames = (parsed['namesById'] as Map).map<String, List<String>>(
           (key, value) => MapEntry(key.toString(), (value as List).map((item) => item.toString()).toList()),
@@ -1771,6 +1781,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           }
         }
         final sourcePrograms = parsed['programmes'] as List;
+        var newestStop = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
         for (final raw in sourcePrograms) {
           final item = raw as Map;
           final id = item['id'].toString();
@@ -1785,10 +1796,53 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           final key = '${program.start.millisecondsSinceEpoch}|${program.title}';
           final seen = seenProgramsById.putIfAbsent(id, () => <String>{});
           if (seen.add(key)) list.add(program);
+          if (program.stop.isAfter(newestStop)) newestStop = program.stop;
         }
         successfulSources++;
+        return newestStop;
       } catch (error) {
         debugPrint('EPG source failed (${source.url}): $error');
+        return null;
+      }
+    }
+
+    // A source is "stale" when nothing in it airs within the next 3 hours.
+    // The copies in the repository's /epg folder are only as new as the last
+    // time that folder was refreshed, so for a stale source we also pull the
+    // matching live feed (epgSourceUrls) straight from the generator.
+    final freshCutoff = DateTime.now().toUtc().add(const Duration(hours: 3));
+    final triedLive = <String>{};
+    var anyFresh = false;
+    for (final source in epgSources) {
+      final newest = await ingest(source);
+      if (newest != null && newest.isAfter(freshCutoff)) {
+        anyFresh = true;
+        continue;
+      }
+      debugPrint('EPG source is stale (${source.name}); trying live feed');
+      for (final url in epgSourceUrls) {
+        if (url == source.url || triedLive.contains(url)) continue;
+        final sameFeed = source.path.isNotEmpty &&
+            EpgSourceResolver.knownPathForUrl(url) == source.path;
+        if (!sameFeed) continue;
+        triedLive.add(url);
+        final liveNewest = await ingest(
+          EpgSource(Uri.tryParse(url)?.pathSegments.last ?? 'live_epg', url, path: source.path),
+          liveOnly: true,
+        );
+        if (liveNewest != null && liveNewest.isAfter(freshCutoff)) anyFresh = true;
+      }
+    }
+    // Nothing usable at all (e.g. unknown file names in /epg): try every live feed.
+    if (!anyFresh) {
+      for (final url in epgSourceUrls) {
+        if (triedLive.contains(url)) continue;
+        triedLive.add(url);
+        await ingest(
+          EpgSource(Uri.tryParse(url)?.pathSegments.last ?? 'live_epg', url,
+              path: EpgSourceResolver.knownPathForUrl(url)),
+          liveOnly: true,
+        );
       }
     }
 
