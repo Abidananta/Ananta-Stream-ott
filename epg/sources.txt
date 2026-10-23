@@ -1,0 +1,7 @@
+# Ananta OTT - EPG sources
+# One URL per line (lines starting with # are ignored). Every file in this
+# folder is read by the app: .xml / .xml.gz / .gz files directly, and .txt
+# files like this one as lists of EPG URLs.
+https://avkb.short.gy/tsepg.xml.gz
+https://avkb.short.gy/jioepg.xml.gz
+https://avkb.short.gy/epg.xml.gz

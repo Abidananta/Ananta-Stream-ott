@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'glass.dart';
 
 /// Animated launch screen: big logo (no white box), glowing rings, then
 /// "Developed By Ananta", app version and a loading animation at the bottom.
@@ -28,7 +27,7 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
   late final AnimationController _loop = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 2400))
     ..repeat();
-  String _version = '1.1.8';
+  String _version = '1.1.9';
 
   @override
   void initState() {
@@ -47,7 +46,7 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
     if (!mounted) return;
     try {
       Navigator.of(context).pushReplacement(PageRouteBuilder<void>(
-        transitionDuration: const Duration(milliseconds: 600),
+        transitionDuration: const Duration(milliseconds: 350),
         pageBuilder: (c, _, __) => widget.next(c),
         transitionsBuilder: (_, a, __, child) =>
             FadeTransition(opacity: a, child: child),
@@ -66,85 +65,97 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Decode the logo before the first animated frame so the pop-in never
+    // stalls on image decoding (the main cause of a laggy start on TV boxes).
+    precacheImage(const AssetImage('assets/ananta_launcher_icon.png'), context);
+  }
+
+  // Everything that moves is driven by transforms / opacity of layers that are
+  // painted ONCE (RepaintBoundary + static children). The old version rebuilt
+  // the whole tree every frame and re-rasterised a 100px blurred box-shadow,
+  // which is very slow on TV GPUs.
+  @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final logo = (math.min(size.width, size.height) * 0.62).clamp(180.0, 420.0);
-    final scale = CurvedAnimation(parent: _intro, curve: Curves.elasticOut);
+    final popScale = Tween<double>(begin: 0.3, end: 1).animate(
+        CurvedAnimation(parent: _intro, curve: Curves.easeOutBack));
     final fade = CurvedAnimation(
         parent: _intro, curve: const Interval(0, 0.5, curve: Curves.easeOut));
     final textFade = CurvedAnimation(
         parent: _intro, curve: const Interval(0.55, 1, curve: Curves.easeIn));
+    final breathe = Tween<double>(begin: 0.97, end: 1.03).animate(
+        CurvedAnimation(parent: _loop, curve: _SineCurve()));
+    final glowScale = Tween<double>(begin: 0.95, end: 1.08).animate(
+        CurvedAnimation(parent: _loop, curve: _SineCurve()));
 
     return Scaffold(
       backgroundColor: _bg,
-      body: GlassBackground(
-        child: SafeArea(
+      body: SafeArea(
         child: Column(
           children: [
             Expanded(
               child: Center(
-                child: AnimatedBuilder(
-                  animation: Listenable.merge([_intro, _loop]),
-                  builder: (context, _) {
-                    final t = _loop.value;
-                    final pulse = 0.5 + 0.5 * math.sin(t * 2 * math.pi);
-                    final float = math.sin(t * 2 * math.pi) * 6;
-                    return SizedBox(
-                      width: logo * 1.5,
-                      height: logo * 1.5,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          // Expanding ripple rings
-                          for (var i = 0; i < 3; i++)
-                            _ring(logo, (t + i / 3) % 1.0),
-                          // Soft pulsing glow
-                          Opacity(
-                            opacity: fade.value,
-                            child: Container(
-                              width: logo * (0.95 + 0.08 * pulse),
-                              height: logo * (0.95 + 0.08 * pulse),
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: const Color(0xFF9B87FF)
-                                        .withOpacity(0.25 + 0.2 * pulse),
-                                    blurRadius: 70 + 30 * pulse,
-                                    spreadRadius: 6,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          // Logo: pop-in + gentle float + slow tilt
-                          Transform.translate(
-                            offset: Offset(0, float),
-                            child: Transform.rotate(
-                              angle: (1 - _intro.value) * -0.5 +
-                                  math.sin(t * 2 * math.pi) * 0.025,
-                              child: Transform.scale(
-                                scale: (0.2 + 0.8 * scale.value) *
-                                    (1 + 0.025 * pulse),
-                                child: Opacity(
-                                  opacity: fade.value.clamp(0.0, 1.0),
-                                  child: Image.asset(
-                                    'assets/ananta_launcher_icon.png',
-                                    width: logo,
-                                    height: logo,
-                                    fit: BoxFit.contain,
-                                    filterQuality: FilterQuality.high,
-                                    errorBuilder: (_, __, ___) =>
-                                        const SizedBox.shrink(),
+                child: SizedBox(
+                  width: logo * 1.5,
+                  height: logo * 1.5,
+                  child: RepaintBoundary(
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        for (var i = 0; i < 2; i++) _ring(logo, i / 2),
+                        // Soft glow: a pre-drawn radial gradient that is only
+                        // scaled, never re-blurred.
+                        FadeTransition(
+                          opacity: fade,
+                          child: ScaleTransition(
+                            scale: glowScale,
+                            child: RepaintBoundary(
+                              child: Container(
+                                width: logo * 1.35,
+                                height: logo * 1.35,
+                                decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  gradient: RadialGradient(
+                                    colors: [
+                                      Color(0x669B87FF),
+                                      Color(0x229B87FF),
+                                      Color(0x009B87FF),
+                                    ],
+                                    stops: [0.45, 0.72, 1.0],
                                   ),
                                 ),
                               ),
                             ),
                           ),
-                        ],
-                      ),
-                    );
-                  },
+                        ),
+                        // Logo: pop-in + gentle breathing.
+                        FadeTransition(
+                          opacity: fade,
+                          child: ScaleTransition(
+                            scale: popScale,
+                            child: ScaleTransition(
+                              scale: breathe,
+                              child: RepaintBoundary(
+                                child: Image.asset(
+                                  'assets/ananta_launcher_icon.png',
+                                  width: logo,
+                                  height: logo,
+                                  fit: BoxFit.contain,
+                                  filterQuality: FilterQuality.medium,
+                                  gaplessPlayback: true,
+                                  errorBuilder: (_, __, ___) =>
+                                      const SizedBox.shrink(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -171,7 +182,7 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
                           color: Colors.white38, fontSize: 12, letterSpacing: 1),
                     ),
                     const SizedBox(height: 18),
-                    _LoadingBar(controller: _loop),
+                    RepaintBoundary(child: _LoadingBar(controller: _loop)),
                   ],
                 ),
               ),
@@ -179,24 +190,43 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
           ],
         ),
       ),
-      ),
     );
   }
 
-  Widget _ring(double logo, double p) {
-    final d = logo * (0.8 + 0.7 * p);
-    return Opacity(
-      opacity: (1 - p) * 0.5 * _intro.value,
-      child: Container(
-        width: d,
-        height: d,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(color: const Color(0xFF9B87FF), width: 2),
+  // Expanding ripple: scale + fade of a static ring (no per-frame layout).
+  Widget _ring(double logo, double phase) {
+    final anim = CurvedAnimation(parent: _loop, curve: _PhaseCurve(phase));
+    return RepaintBoundary(
+      child: FadeTransition(
+        opacity: Tween<double>(begin: 0.45, end: 0.0).animate(anim),
+        child: ScaleTransition(
+          scale: Tween<double>(begin: 0.8, end: 1.5).animate(anim),
+          child: Container(
+            width: logo,
+            height: logo,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xFF9B87FF), width: 2),
+            ),
+          ),
         ),
       ),
     );
   }
+}
+
+/// 0 → 1 → 0 smooth loop (sine), so repeating controllers have no jump.
+class _SineCurve extends Curve {
+  @override
+  double transformInternal(double t) => 0.5 - 0.5 * math.cos(t * 2 * math.pi);
+}
+
+/// Same 0..1 ramp as the loop, shifted by [phase] (wraps around).
+class _PhaseCurve extends Curve {
+  const _PhaseCurve(this.phase);
+  final double phase;
+  @override
+  double transformInternal(double t) => (t + phase) % 1.0;
 }
 
 /// Sliding gradient loading bar shown at the bottom of the splash screen.
