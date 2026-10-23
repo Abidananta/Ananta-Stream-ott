@@ -539,8 +539,12 @@ class LogoStore {
   // Logos are shown at ~60px: decoding the full-size PNG for every row made
   // the channel list stutter on TV boxes.
   static const int _logoPx = 160;
-  static ImageProvider _small(ImageProvider p) =>
-      p is CachedNetworkImageProvider ? p : ResizeImage(p, width: _logoPx);
+  static ImageProvider _small(ImageProvider p) {
+    // Separate returns: a single `a ? b : c` infers type Object with newer
+    // cached_network_image versions and fails to compile.
+    if (p is CachedNetworkImageProvider) return p;
+    return ResizeImage(p, width: _logoPx);
+  }
 
   static void _enqueue(String url, String group, String path) {
     if (_failed.contains(url) || !_queued.add(url)) return;
