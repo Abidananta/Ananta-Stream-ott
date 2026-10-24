@@ -30,7 +30,11 @@ const FirebaseOptions _options = FirebaseOptions(
 Future<void> pushBackgroundHandler(RemoteMessage message) async {
   try {
     if (_configured && Firebase.apps.isEmpty) {
-      await Firebase.initializeApp(options: _options);
+      try {
+        await Firebase.initializeApp();
+      } catch (_) {
+        await Firebase.initializeApp(options: _options);
+      }
     }
   } catch (_) {}
 }
@@ -43,7 +47,14 @@ class PushNotifications {
   static Future<void> init() async {
     if (!_configured || kIsWeb) return;
     try {
-      await Firebase.initializeApp(options: _options);
+      // The build writes the Firebase values into Android resources, so the
+      // native default app already exists (needed to show notifications while
+      // the app is closed). Fall back to explicit options if it does not.
+      try {
+        if (Firebase.apps.isEmpty) await Firebase.initializeApp();
+      } catch (_) {
+        if (Firebase.apps.isEmpty) await Firebase.initializeApp(options: _options);
+      }
       final messaging = FirebaseMessaging.instance;
       FirebaseMessaging.onBackgroundMessage(pushBackgroundHandler);
       // Android 13+ asks the user for notification permission here.
@@ -54,6 +65,9 @@ class PushNotifications {
       debugPrint('FCM token: $token');
     } catch (error) {
       debugPrint('Push notifications unavailable: $error');
+      pushMessengerKey.currentState?.showSnackBar(
+        SnackBar(content: Text('Notifications setup failed: $error', maxLines: 3)),
+      );
     }
   }
 
