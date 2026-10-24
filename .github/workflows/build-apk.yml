@@ -157,6 +157,8 @@ jobs:
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.INTERNET'); root.insert(0, el)
           if not has_tag('uses-feature', 'name', 'android.hardware.touchscreen'):
               el = ET.Element('uses-feature'); el.set(ns + 'name', 'android.hardware.touchscreen'); el.set(ns + 'required', 'false'); root.insert(1, el)
+          if not has_tag('uses-permission', 'name', 'android.permission.POST_NOTIFICATIONS'):
+              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.POST_NOTIFICATIONS'); root.insert(2, el)
           if not has_tag('uses-permission', 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'):
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'); root.insert(2, el)
           app = root.find('application')
@@ -305,6 +307,25 @@ jobs:
                   groovy.write_text(t); done = True
           print('::notice::persistent signing configured' if done else '::warning::could not patch Gradle signing config; APK will use the debug key')
           SIGNPY
+
+      - name: Raise minSdk for Firebase push notifications
+        run: |
+          python3 - <<'MINPY'
+          import re
+          from pathlib import Path
+          app = Path('build_app/android/app')
+          for name in ('build.gradle.kts', 'build.gradle'):
+              f = app / name
+              if not f.exists():
+                  continue
+              t = f.read_text()
+              if name.endswith('.kts'):
+                  n = re.sub(r'minSdk\s*=\s*flutter\.minSdkVersion', 'minSdk = maxOf(flutter.minSdkVersion, 23)', t)
+              else:
+                  n = re.sub(r'minSdkVersion\s+flutter\.minSdkVersion', 'minSdkVersion Math.max(flutter.minSdkVersion, 23)', t)
+              f.write_text(n)
+              print('::notice::minSdk is at least 23 in ' + name)
+          MINPY
 
       - name: Resolve dependencies
         working-directory: build_app
