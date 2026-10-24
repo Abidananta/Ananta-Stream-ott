@@ -2388,17 +2388,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _status = 'Buffering ${channel.name}...';
     });
     _showChannelInfoFor10Seconds();
-    // Freeze (not stop) the current channel while the next one loads: two
-    // live decoders at once is what made the picture stutter during a switch.
-    // The last frame stays on screen; it is resumed if the new stream fails.
-    if (oldPlayer != null) {
-      unawaited(oldPlayer.pause().catchError((Object e) { debugPrint('Old pause: $e'); }));
-    }
-    Future<void> resumeOld() async {
-      if (oldPlayer != null && !_userPaused && mounted && requestId == _playRequestId && _player == oldPlayer) {
-        try { await oldPlayer.play(); } catch (_) {}
-      }
-    }
+    // The current channel keeps playing untouched until the new stream has
+    // its first frame; only then is it swapped (and the old player released).
     try {
       _pendingPlayer = controller;
       if (mounted) setState(() {}); // Mount the hidden video surface before waiting for metadata.
@@ -2459,7 +2450,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
-      unawaited(resumeOld());
       setState(() {
         _playerError = retryAttempt < 6 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Stream timed out after 6 retries.';
         _status = 'Stream timed out';
@@ -2476,7 +2466,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
-      unawaited(resumeOld());
       setState(() {
         _playerError = retryAttempt < 6 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Unable to play after 6 retries.';
         _status = 'Playback failed';
