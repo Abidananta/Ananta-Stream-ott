@@ -16,6 +16,7 @@ import 'update_checker.dart';
 import 'splash_screen.dart';
 import 'glass.dart';
 import 'local_store.dart';
+import 'push_notifications.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
 const String appName = 'Ananta OTT';
@@ -264,6 +265,7 @@ Future<void> _startApp() async {
   }
   _startPlaylistPrefetch();
   runApp(const AnantaOttApp());
+  unawaited(PushNotifications.init());
 }
 
 Future<void> main() async {
@@ -568,6 +570,7 @@ class AnantaOttApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      scaffoldMessengerKey: pushMessengerKey,
       title: appName,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(

@@ -13,6 +13,7 @@ The source has not been compiled or tested on a physical TV box in this package.
 Audio compatibility update
 Playback is implemented with media_kit/libmpv rather than Flutter video_player. The bundled native playback libraries provide broader codec support, intended to address MPEG Audio Layer 1/2 (MPGA/MP2) streams. This source has not been compiled or device-tested in this environment; verify the GitHub Actions build and test on the target Android TV device.
 v1.1.9 notes
+Push notifications (Firebase FCM): fill the 4 values in lib/firebase_config.dart (Firebase console -> Project settings -> Android app com.ananta.ott: API key, App ID, Project number, Project ID). Every phone subscribes to the topic 'all'; send from Firebase console -> Messaging -> New notification -> target topic 'all'. Empty values = push disabled.
 Mobile: removed gap above channel list and the logo counter. TV EPG: overlapping duplicate programmes from multiple feeds are merged so one NOW entry shows, and the guide opens on the live programme. Logos + EPG cache live in an 'Ananta OTT' app folder (external app storage, falls back to private storage; old cache is migrated).
 
 v1.1.8 notes (glass UI + local storage)
