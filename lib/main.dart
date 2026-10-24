@@ -3402,32 +3402,45 @@ class _NowPlayingHeaderState extends State<_NowPlayingHeader>
     super.dispose();
   }
 
-  Widget _bars(double t) {
-    const phases = [0.0, 0.35, 0.7, 0.15];
-    return SizedBox(
-      width: 22,
-      height: 22,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          for (final ph in phases)
-            Container(
-              width: 3.5,
-              height: widget.active
-                  ? 5 + 17 * (0.5 + 0.5 * math.sin((t + ph) * 2 * math.pi))
-                  : 5,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(2),
-                gradient: const LinearGradient(
-                  begin: Alignment.bottomCenter,
-                  end: Alignment.topCenter,
-                  colors: [accentColor, Colors.white],
+  /// Pulsing red dot with an expanding ripple inside a small "LIVE" pill.
+  Widget _liveIndicator(double t, double glow) {
+    final color = widget.active ? const Color(0xFFFF3B4E) : Colors.white38;
+    final ripple = widget.active ? t : 0.0;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(6, 3, 8, 3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        color: color.withOpacity(0.16),
+        border: Border.all(color: color.withOpacity(0.55)),
+        boxShadow: widget.active
+            ? [BoxShadow(color: color.withOpacity(glow * 0.8), blurRadius: 10)]
+            : null,
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        SizedBox(
+          width: 14,
+          height: 14,
+          child: Stack(alignment: Alignment.center, children: [
+            if (widget.active)
+              Container(
+                width: 6 + 8 * ripple,
+                height: 6 + 8 * ripple,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: color.withOpacity(0.5 * (1 - ripple)),
                 ),
               ),
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(shape: BoxShape.circle, color: color),
             ),
-        ],
-      ),
+          ]),
+        ),
+        const SizedBox(width: 4),
+        Text('LIVE',
+            style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, letterSpacing: 1.2, color: widget.active ? Colors.white : Colors.white54)),
+      ]),
     );
   }
 
@@ -3440,36 +3453,11 @@ class _NowPlayingHeaderState extends State<_NowPlayingHeader>
         final t = _ctrl.value;
         final glow = 0.25 + 0.2 * (0.5 + 0.5 * math.sin(t * 2 * math.pi));
         return Row(children: [
-          Container(
-            padding: const EdgeInsets.all(9),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [accentColor.withOpacity(0.45), accentColor.withOpacity(0.12)],
-              ),
-              border: Border.all(color: Colors.white.withOpacity(0.25)),
-              boxShadow: [BoxShadow(color: accentColor.withOpacity(glow), blurRadius: 14, spreadRadius: 1)],
-            ),
-            child: _bars(t),
-          ),
-          const SizedBox(width: 12),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
-                Container(
-                  width: 7,
-                  height: 7,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: widget.active ? Colors.redAccent : Colors.white38,
-                    boxShadow: widget.active
-                        ? [BoxShadow(color: Colors.redAccent.withOpacity(glow + 0.2), blurRadius: 6)]
-                        : null,
-                  ),
-                ),
-                const SizedBox(width: 6),
+                _liveIndicator(t, glow),
+                const SizedBox(width: 8),
                 const Text('NOW PLAYING',
                     style: TextStyle(fontSize: 10, letterSpacing: 1.6, fontWeight: FontWeight.w700, color: Color(0xFFC9BEFF))),
               ]),
