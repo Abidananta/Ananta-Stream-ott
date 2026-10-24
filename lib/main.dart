@@ -3453,14 +3453,12 @@ class _NowPlayingHeaderState extends State<_NowPlayingHeader>
         final t = _ctrl.value;
         final glow = 0.25 + 0.2 * (0.5 + 0.5 * math.sin(t * 2 * math.pi));
         return Row(children: [
+          _liveIndicator(t, glow),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                _liveIndicator(t, glow),
-                const SizedBox(width: 8),
-                const Text('NOW PLAYING',
-                    style: TextStyle(fontSize: 10, letterSpacing: 1.6, fontWeight: FontWeight.w700, color: Color(0xFFC9BEFF))),
-              ]),
+              const Text('NOW PLAYING',
+                  style: TextStyle(fontSize: 10, letterSpacing: 1.6, fontWeight: FontWeight.w700, color: Color(0xFFC9BEFF))),
               const SizedBox(height: 2),
               Text(name,
                   maxLines: 1,
