@@ -323,7 +323,7 @@ class AnantaPlayerController {
   final Map<String, String> httpHeaders;
   // 96 MB demuxer buffer (default is 32 MB) so brief network stalls on live HLS
   // are absorbed by the cache instead of stopping the picture.
-  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 96 * 1024 * 1024));
+  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 48 * 1024 * 1024));
   late final VideoController _video = VideoController(_engine);
   bool _opened = false;
   bool _buffering = false;
@@ -388,18 +388,18 @@ class AnantaPlayerController {
       'cache': 'yes',
       // Read far ahead of the playback position (mpv default is only 1s), so
       // the picture keeps playing through network hiccups.
-      'cache-secs': '90',
-      'demuxer-readahead-secs': '90',
-      'demuxer-max-bytes': '96MiB',
-      'demuxer-max-back-bytes': '8MiB',
+      'cache-secs': '30',
+      'demuxer-readahead-secs': '30',
+      'demuxer-max-bytes': '48MiB',
+      'demuxer-max-back-bytes': '4MiB',
       // Pre-buffer before the first frame and after every stall instead of
       // playing 1 second and stuttering again. For live TS streams this is
       // the cache that absorbs jitter.
       'cache-pause': 'yes',
       'cache-pause-initial': 'yes',
-      'cache-pause-wait': '8',
+      'cache-pause-wait': '3',
       // Larger network read buffer (default 128 KiB).
-      'stream-buffer-size': '4MiB',
+      'stream-buffer-size': '2MiB',
       'network-timeout': '30',
       // Reconnect automatically when the server drops the connection.
       'stream-lavf-o': 'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=%7%4xx,5xx,reconnect_delay_max=5',
@@ -515,6 +515,7 @@ class VideoPlayer extends StatelessWidget {
                   key: ValueKey<AnantaPlayerController>(controller),
                   controller: controller._video,
                   controls: NoVideoControls,
+                  fill: Colors.transparent,
                   fit: BoxFit.fitHeight,
                 ),
               ),
@@ -2387,6 +2388,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _status = 'Buffering ${channel.name}...';
     });
     _showChannelInfoFor10Seconds();
+    // Freeze (not stop) the current channel while the next one loads: two
+    // live decoders at once is what made the picture stutter during a switch.
+    // The last frame stays on screen; it is resumed if the new stream fails.
+    if (oldPlayer != null) {
+      unawaited(oldPlayer.pause().catchError((Object e) { debugPrint('Old pause: $e'); }));
+    }
+    Future<void> resumeOld() async {
+      if (oldPlayer != null && !_userPaused && mounted && requestId == _playRequestId && _player == oldPlayer) {
+        try { await oldPlayer.play(); } catch (_) {}
+      }
+    }
     try {
       _pendingPlayer = controller;
       if (mounted) setState(() {}); // Mount the hidden video surface before waiting for metadata.
@@ -2447,6 +2459,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
+      unawaited(resumeOld());
       setState(() {
         _playerError = retryAttempt < 6 ? 'Connection interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Stream timed out after 6 retries.';
         _status = 'Stream timed out';
@@ -2463,6 +2476,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
+      unawaited(resumeOld());
       setState(() {
         _playerError = retryAttempt < 6 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Unable to play after 6 retries.';
         _status = 'Playback failed';
@@ -2647,13 +2661,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final tvMode = media.size.width >= 850 && media.size.width > media.size.height;
     final player = _player;
     final initialized = player?.value.isInitialized == true;
+    // In Picture-in-Picture nothing opaque is painted behind the video, so no
+    // white/black box shows before the first frame arrives.
+    final pipNow = _inPip || _looksLikePip(media.size);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: initialized ? _togglePlayerControls : null,
       child: Container(
         width: double.infinity,
-        height: fullscreen ? double.infinity : 220,
-        color: Colors.black,
+        height: fullscreen ? double.infinity : 250,
+        color: pipNow ? Colors.transparent : Colors.black,
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -2663,15 +2680,28 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             if (initialized)
               Positioned.fill(
                 child: ColoredBox(
-                  color: Colors.black,
-                  child: VideoPlayer(player!),
+                  color: pipNow ? Colors.transparent : Colors.black,
+                  child: TweenAnimationBuilder<double>(
+                    key: ValueKey<AnantaPlayerController>(player!),
+                    tween: Tween<double>(begin: 0, end: 1),
+                    duration: const Duration(milliseconds: 450),
+                    curve: Curves.easeOut,
+                    builder: (context, v, child) => Opacity(opacity: v, child: child),
+                    child: VideoPlayer(player),
+                  ),
                 ),
               )
-            else
+            else if (!pipNow)
               Center(
                 child: _connecting
-                    ? const CircularProgressIndicator(
-                        color: accentColor,
+                    ? Opacity(
+                        opacity: 0.35,
+                        child: Image.asset(
+                          'assets/ananta_launcher_icon.png',
+                          width: 72,
+                          height: 72,
+                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                        ),
                       )
                     : Icon(
                         _playerError == null
@@ -3182,7 +3212,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       child: WillPopScope(
       onWillPop: _handleBack,
       child: Scaffold(
-        backgroundColor: inPip ? Colors.black : null,
+        backgroundColor: inPip ? Colors.transparent : null,
         extendBodyBehindAppBar: !(_fullscreen || inPip || useTvLayout),
         appBar: (_fullscreen || inPip || useTvLayout)
             ? null
@@ -3402,44 +3432,57 @@ class _NowPlayingHeaderState extends State<_NowPlayingHeader>
     super.dispose();
   }
 
-  /// Pulsing red dot with an expanding ripple inside a small "LIVE" pill.
+  /// Compact animated LIVE badge: ripple dot + a light sweep across the pill.
   Widget _liveIndicator(double t, double glow) {
     final color = widget.active ? const Color(0xFFFF3B4E) : Colors.white38;
     final ripple = widget.active ? t : 0.0;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(6, 3, 8, 3),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        color: color.withOpacity(0.16),
-        border: Border.all(color: color.withOpacity(0.55)),
-        boxShadow: widget.active
-            ? [BoxShadow(color: color.withOpacity(glow * 0.8), blurRadius: 10)]
-            : null,
-      ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        SizedBox(
-          width: 14,
-          height: 14,
-          child: Stack(alignment: Alignment.center, children: [
-            if (widget.active)
-              Container(
-                width: 6 + 8 * ripple,
-                height: 6 + 8 * ripple,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: color.withOpacity(0.5 * (1 - ripple)),
-                ),
-              ),
-            Container(
-              width: 7,
-              height: 7,
-              decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: Stack(children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(4, 2, 6, 2),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            gradient: LinearGradient(colors: [color.withOpacity(0.28), color.withOpacity(0.10)]),
+            border: Border.all(color: color.withOpacity(0.6), width: 0.8),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            SizedBox(
+              width: 10,
+              height: 10,
+              child: Stack(alignment: Alignment.center, children: [
+                if (widget.active)
+                  Container(
+                    width: 4 + 6 * ripple,
+                    height: 4 + 6 * ripple,
+                    decoration: BoxDecoration(shape: BoxShape.circle, color: color.withOpacity(0.55 * (1 - ripple))),
+                  ),
+                Container(width: 4.5, height: 4.5, decoration: BoxDecoration(shape: BoxShape.circle, color: color)),
+              ]),
             ),
+            const SizedBox(width: 3),
+            Text('LIVE',
+                style: TextStyle(fontSize: 7.5, fontWeight: FontWeight.w800, letterSpacing: 1, color: widget.active ? Colors.white : Colors.white54)),
           ]),
         ),
-        const SizedBox(width: 4),
-        Text('LIVE',
-            style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, letterSpacing: 1.2, color: widget.active ? Colors.white : Colors.white54)),
+        if (widget.active)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: FractionallySizedBox(
+                alignment: Alignment(-1.6 + 3.2 * t, 0),
+                widthFactor: 0.35,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(colors: [
+                      Colors.white.withOpacity(0),
+                      Colors.white.withOpacity(0.28),
+                      Colors.white.withOpacity(0),
+                    ]),
+                  ),
+                ),
+              ),
+            ),
+          ),
       ]),
     );
   }
@@ -3454,17 +3497,12 @@ class _NowPlayingHeaderState extends State<_NowPlayingHeader>
         final glow = 0.25 + 0.2 * (0.5 + 0.5 * math.sin(t * 2 * math.pi));
         return Row(children: [
           _liveIndicator(t, glow),
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('NOW PLAYING',
-                  style: TextStyle(fontSize: 10, letterSpacing: 1.6, fontWeight: FontWeight.w700, color: Color(0xFFC9BEFF))),
-              const SizedBox(height: 2),
-              Text(name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-            ]),
+            child: Text(name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, letterSpacing: 0.9, fontWeight: FontWeight.w700, color: Color(0xFFC9BEFF))),
           ),
         ]);
       },
