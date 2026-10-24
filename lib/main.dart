@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter, PlatformDispatcher;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -3282,13 +3283,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                       ),
                       child: Row(
                         children: [
-                          const Expanded(
-                            child: Text(
-                              'Explore channels',
-                              style: TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.bold,
-                              ),
+                          Expanded(
+                            child: _NowPlayingHeader(
+                              channelName: _selectedChannel?.name.trim() ?? '',
+                              active: _selectedChannel != null && !_connecting,
                             ),
                           ),
                           Text(
@@ -3336,18 +3334,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     ),
                     const SizedBox(height: 10),
                     _buildCategories(),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
-                      child: Text(
-                        _status,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white54,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ),
                     Expanded(
                       child: channels.isEmpty
                           ? Center(
@@ -3388,6 +3374,114 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               ),
       ),
       ),
+    );
+  }
+}
+
+
+/// "Now playing" header: animated equalizer icon, small label and the
+/// current channel name.
+class _NowPlayingHeader extends StatefulWidget {
+  const _NowPlayingHeader({required this.channelName, required this.active});
+  final String channelName;
+  final bool active;
+
+  @override
+  State<_NowPlayingHeader> createState() => _NowPlayingHeaderState();
+}
+
+class _NowPlayingHeaderState extends State<_NowPlayingHeader>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 1400))
+    ..repeat();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Widget _bars(double t) {
+    const phases = [0.0, 0.35, 0.7, 0.15];
+    return SizedBox(
+      width: 22,
+      height: 22,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          for (final ph in phases)
+            Container(
+              width: 3.5,
+              height: widget.active
+                  ? 5 + 17 * (0.5 + 0.5 * math.sin((t + ph) * 2 * math.pi))
+                  : 5,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(2),
+                gradient: const LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [accentColor, Colors.white],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = widget.channelName.isEmpty ? 'Select a channel' : widget.channelName;
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, _) {
+        final t = _ctrl.value;
+        final glow = 0.25 + 0.2 * (0.5 + 0.5 * math.sin(t * 2 * math.pi));
+        return Row(children: [
+          Container(
+            padding: const EdgeInsets.all(9),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [accentColor.withOpacity(0.45), accentColor.withOpacity(0.12)],
+              ),
+              border: Border.all(color: Colors.white.withOpacity(0.25)),
+              boxShadow: [BoxShadow(color: accentColor.withOpacity(glow), blurRadius: 14, spreadRadius: 1)],
+            ),
+            child: _bars(t),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: widget.active ? Colors.redAccent : Colors.white38,
+                    boxShadow: widget.active
+                        ? [BoxShadow(color: Colors.redAccent.withOpacity(glow + 0.2), blurRadius: 6)]
+                        : null,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                const Text('NOW PLAYING',
+                    style: TextStyle(fontSize: 10, letterSpacing: 1.6, fontWeight: FontWeight.w700, color: Color(0xFFC9BEFF))),
+              ]),
+              const SizedBox(height: 2),
+              Text(name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            ]),
+          ),
+        ]);
+      },
     );
   }
 }
