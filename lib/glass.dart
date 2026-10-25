@@ -214,3 +214,101 @@ class GlassChip extends StatelessWidget {
     );
   }
 }
+
+
+/// Round glass button used in the app bar (heart, bell, refresh).
+class GlassIconButton extends StatelessWidget {
+  const GlassIconButton({
+    super.key,
+    required this.icon,
+    required this.onPressed,
+    this.tooltip,
+    this.color = Colors.white,
+    this.glow,
+    this.badge = 0,
+    this.busy = false,
+  });
+
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final String? tooltip;
+  final Color color;
+
+  /// Coloured halo behind the button (active state).
+  final Color? glow;
+  final int badge;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = glow != null;
+    final btn = Container(
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            (active ? glow! : Colors.white).withOpacity(active ? 0.34 : 0.20),
+            (active ? glow! : Colors.white).withOpacity(active ? 0.10 : 0.05),
+          ],
+        ),
+        border: Border.all(
+          color: (active ? glow! : Colors.white).withOpacity(active ? 0.65 : 0.26),
+        ),
+        boxShadow: [
+          if (active)
+            BoxShadow(color: glow!.withOpacity(0.45), blurRadius: 14, spreadRadius: 0.5),
+        ],
+      ),
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: kGlassAccent),
+                )
+              : Icon(icon, size: 20, color: color),
+          if (badge > 0)
+            Positioned(
+              right: -3,
+              top: -3,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(colors: [Color(0xFFFF6B8B), Color(0xFFFF3D71)]),
+                  borderRadius: BorderRadius.circular(9),
+                  border: Border.all(color: Colors.white.withOpacity(0.85), width: 1),
+                  boxShadow: [
+                    BoxShadow(color: const Color(0xFFFF3D71).withOpacity(0.55), blurRadius: 8),
+                  ],
+                ),
+                child: Text(
+                  badge > 9 ? '9+' : '$badge',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Colors.white),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 3),
+      child: Tooltip(
+        message: tooltip ?? '',
+        child: GestureDetector(
+          onTap: onPressed,
+          behavior: HitTestBehavior.opaque,
+          child: Opacity(opacity: onPressed == null && !busy ? 0.5 : 1, child: btn),
+        ),
+      ),
+    );
+  }
+}

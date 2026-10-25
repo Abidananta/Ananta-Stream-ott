@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'glass.dart';
+
 /// Polls the announcement manifest (notice.json in the repository) through the
 /// native side and slides a glass banner down from the top of the screen.
 /// While the app is in the background / PiP the native side posts a normal
@@ -192,7 +194,7 @@ class _NoticeBannerState extends State<_NoticeBanner>
     super.initState();
     HapticFeedback.lightImpact();
     _anim.forward();
-    _auto = Timer(const Duration(seconds: 20), _close);
+    _auto = Timer(const Duration(seconds: 13), _close);
   }
 
   @override
@@ -253,7 +255,7 @@ class _NoticeBannerState extends State<_NoticeBanner>
                 _close();
               } else {
                 setState(() => _drag = 0);
-                _auto = Timer(const Duration(seconds: 15), _close);
+                _auto = Timer(const Duration(seconds: 13), _close);
               }
             },
             child: Material(
@@ -398,38 +400,15 @@ class NoticeBell extends StatelessWidget {
     if (!Platform.isAndroid) return const SizedBox.shrink();
     return ValueListenableBuilder<int>(
       valueListenable: NoticeService.instance.unread,
-      builder: (context, count, _) => IconButton(
+      builder: (context, count, _) => GlassIconButton(
         tooltip: 'Notifications',
         onPressed: () => showNoticeList(context),
-        icon: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Icon(count > 0
-                ? Icons.notifications_active_rounded
-                : Icons.notifications_none_rounded),
-            if (count > 0)
-              Positioned(
-                right: -4,
-                top: -4,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                  constraints: const BoxConstraints(minWidth: 15, minHeight: 15),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFF4F7B),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    count > 9 ? '9+' : '$count',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontSize: 9.5,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white),
-                  ),
-                ),
-              ),
-          ],
-        ),
+        icon: count > 0
+            ? Icons.notifications_active_rounded
+            : Icons.notifications_none_rounded,
+        color: count > 0 ? const Color(0xFFFFD27A) : Colors.white,
+        glow: count > 0 ? const Color(0xFFFFB84D) : null,
+        badge: count,
       ),
     );
   }
@@ -448,11 +427,22 @@ String _ago(int ms) {
 Future<void> showNoticeList(BuildContext context) async {
   final svc = NoticeService.instance;
   unawaited(svc.markAllRead());
-  await showModalBottomSheet<void>(
+  await showGeneralDialog<void>(
     context: context,
-    isScrollControlled: true,
-    backgroundColor: Colors.transparent,
-    builder: (_) => const _NoticeListSheet(),
+    barrierDismissible: true,
+    barrierLabel: 'Close',
+    barrierColor: Colors.black.withOpacity(0.35),
+    transitionDuration: const Duration(milliseconds: 380),
+    pageBuilder: (_, __, ___) => const _NoticeListSheet(),
+    transitionBuilder: (_, anim, __, child) {
+      final curved = CurvedAnimation(
+          parent: anim, curve: Curves.easeOutCubic, reverseCurve: Curves.easeInCubic);
+      // Slides DOWN from the top of the screen.
+      return SlideTransition(
+        position: Tween<Offset>(begin: const Offset(0, -1), end: Offset.zero).animate(curved),
+        child: FadeTransition(opacity: anim, child: child),
+      );
+    },
   );
 }
 
@@ -484,88 +474,120 @@ class _NoticeListSheetState extends State<_NoticeListSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final h = MediaQuery.of(context).size.height;
+    final media = MediaQuery.of(context);
+    final h = media.size.height;
     final items = _items;
-    return ClipRRect(
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-        child: Container(
-          height: h * 0.78,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                const Color(0xFF2C2850).withOpacity(0.88),
-                const Color(0xFF0E0C20).withOpacity(0.94),
-              ],
-            ),
-            border: Border(
-                top: BorderSide(color: Colors.white.withOpacity(0.22))),
-          ),
-          child: SafeArea(
-            top: false,
-            child: Column(
-              children: [
-                const SizedBox(height: 10),
-                Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.white24,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 10, 6),
-                  child: Row(
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          'Notifications',
-                          style: TextStyle(
-                              fontSize: 19,
-                              fontWeight: FontWeight.w800,
-                              color: Colors.white),
-                        ),
-                      ),
-                      if (items != null && items.isNotEmpty)
-                        TextButton(
-                          onPressed: () async {
-                            await NoticeService.instance.clearAll();
-                            if (mounted) setState(() => _items = []);
-                          },
-                          child: const Text('Clear all'),
-                        ),
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Material(
+        type: MaterialType.transparency,
+        child: GestureDetector(
+          onVerticalDragEnd: (d) {
+            if ((d.primaryVelocity ?? 0) < -300) Navigator.of(context).maybePop();
+          },
+          child: ClipRRect(
+            borderRadius: const BorderRadius.vertical(bottom: Radius.circular(30)),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+              child: Container(
+                width: double.infinity,
+                constraints: BoxConstraints(maxHeight: h * 0.78),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Colors.white.withOpacity(0.20),
+                      const Color(0xFF7C5CFF).withOpacity(0.14),
+                      Colors.white.withOpacity(0.06),
                     ],
                   ),
+                  border: Border(
+                    bottom: BorderSide(color: Colors.white.withOpacity(0.32)),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF9B87FF).withOpacity(0.25),
+                      blurRadius: 30,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
                 ),
-                Expanded(
-                  child: items == null
-                      ? const Center(child: CircularProgressIndicator())
-                      : items.isEmpty
-                          ? const Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.notifications_off_outlined,
-                                      size: 44, color: Colors.white38),
-                                  SizedBox(height: 10),
-                                  Text('No notifications yet',
-                                      style: TextStyle(color: Colors.white54)),
-                                ],
-                              ),
-                            )
-                          : ListView.separated(
-                              padding: const EdgeInsets.fromLTRB(14, 6, 14, 16),
-                              itemCount: items.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(height: 10),
-                              itemBuilder: (_, i) => _tile(items[i]),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(height: media.padding.top + 10),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 4, 10, 6),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.notifications_active_rounded,
+                              color: Color(0xFFFFD27A), size: 22),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text(
+                              'Notifications',
+                              style: TextStyle(
+                                  fontSize: 19,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white),
                             ),
+                          ),
+                          if (items != null && items.isNotEmpty)
+                            TextButton(
+                              onPressed: () async {
+                                await NoticeService.instance.clearAll();
+                                if (mounted) setState(() => _items = []);
+                              },
+                              child: const Text('Clear all'),
+                            ),
+                        ],
+                      ),
+                    ),
+                    Flexible(
+                      child: items == null
+                          ? const Padding(
+                              padding: EdgeInsets.all(40),
+                              child: Center(child: CircularProgressIndicator()),
+                            )
+                          : items.isEmpty
+                              ? const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 40),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.notifications_off_outlined,
+                                          size: 44, color: Colors.white54),
+                                      SizedBox(height: 10),
+                                      Text('No notifications yet',
+                                          style: TextStyle(color: Colors.white60)),
+                                    ],
+                                  ),
+                                )
+                              : ListView.separated(
+                                  shrinkWrap: true,
+                                  padding: const EdgeInsets.fromLTRB(14, 6, 14, 12),
+                                  itemCount: items.length,
+                                  separatorBuilder: (_, __) =>
+                                      const SizedBox(height: 10),
+                                  itemBuilder: (_, i) => _tile(items[i]),
+                                ),
+                    ),
+                    // grab handle (drag up to close)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10, top: 2),
+                      child: Container(
+                        width: 44,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white38,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
@@ -584,9 +606,19 @@ class _NoticeListSheetState extends State<_NoticeListSheet> {
       child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.07),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: Colors.white.withOpacity(0.14)),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.white.withOpacity(0.18),
+              Colors.white.withOpacity(0.06),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white.withOpacity(0.24)),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withOpacity(0.18), blurRadius: 12, offset: const Offset(0, 4)),
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

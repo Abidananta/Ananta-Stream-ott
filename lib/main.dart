@@ -3263,59 +3263,94 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     ),
                   ),
                 ),
+                titleSpacing: 12,
                 title: Row(
                   children: [
-                    const Icon(
-                      Icons.blur_on,
-                      color: accentColor,
-                      size: 29,
-                    ),
-                    const SizedBox(width: 8),
-                    ShaderMask(
-                      shaderCallback: (rect) => const LinearGradient(
-                        colors: [Colors.white, Color(0xFFC9BEFF)],
-                      ).createShader(rect),
-                      child: const Text(
-                        'Ananta OTT',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.3,
-                          color: Colors.white,
+                    Container(
+                      width: 38,
+                      height: 38,
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [Color(0xFFB9A8FF), Color(0xFF6C4DFF), Color(0xFFFF6FB1)],
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: accentColor.withOpacity(0.55),
+                            blurRadius: 16,
+                            spreadRadius: 0.5,
+                          ),
+                        ],
+                      ),
+                      child: ClipOval(
+                        child: Image.asset(
+                          'assets/ananta_launcher_icon.png',
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const ColoredBox(
+                            color: Color(0xFF15122B),
+                            child: Icon(Icons.blur_on, color: accentColor, size: 22),
+                          ),
                         ),
                       ),
+                    ),
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ShaderMask(
+                          shaderCallback: (rect) => const LinearGradient(
+                            colors: [Colors.white, Color(0xFFD6CCFF), Color(0xFFFFB3D9)],
+                          ).createShader(rect),
+                          child: const Text(
+                            'Ananta OTT',
+                            style: TextStyle(
+                              fontSize: 21,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.6,
+                              height: 1.05,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                        const Text(
+                          'LIVE TV  •  STREAMING',
+                          style: TextStyle(
+                            fontSize: 8.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1.6,
+                            color: Color(0xAAC9BEFF),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
                 actions: [
-                  IconButton(
+                  GlassIconButton(
                     tooltip: 'Favorites',
                     onPressed: () {
                       setState(() {
                         _showFavoritesOnly = !_showFavoritesOnly;
                       });
                     },
-                    icon: Icon(
-                      _showFavoritesOnly
-                          ? Icons.favorite
-                          : Icons.favorite_border,
-                    ),
+                    icon: _showFavoritesOnly
+                        ? Icons.favorite_rounded
+                        : Icons.favorite_border_rounded,
+                    color: _showFavoritesOnly ? const Color(0xFFFF7BA9) : Colors.white,
+                    glow: _showFavoritesOnly ? const Color(0xFFFF4F8B) : null,
                   ),
                   const NoticeBell(),
-                  IconButton(
+                  GlassIconButton(
                     tooltip: 'Refresh playlist',
-                    onPressed:
-                        _loadingPlaylist ? null : _loadPlaylist,
-                    icon: _loadingPlaylist
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: accentColor,
-                            ),
-                          )
-                        : const Icon(Icons.refresh),
+                    onPressed: _loadingPlaylist ? null : _loadPlaylist,
+                    icon: Icons.refresh_rounded,
+                    busy: _loadingPlaylist,
                   ),
+                  const SizedBox(width: 8),
                 ],
               ),
         body: (_fullscreen || inPip)
