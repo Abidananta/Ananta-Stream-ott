@@ -25,3 +25,11 @@ Launcher icon redesigned as a safe-zone adaptive icon (dark background + inner e
 v1.1.7 notes
 `android_template/MainActivity.kt` now holds the native Android code (PiP + in-app installer). Upload this folder too.
 Update dialog: resumable download, PackageInstaller install with real error messages, full TV remote support.
+
+v1.2.0 notes (announcements)
+Edit `notice.json` in the repository root to send an announcement: `id` (raise it for every new message; 0 = nothing), `title`, `body`, optional `image` (https URL) and `url` (opened on tap). While the app is open a glass banner slides down from the top; when it is in the background/PiP/closed a heads-up system notification with the picture is posted (background check about every 15 min, Android's minimum). TV is untouched. For instant delivery to a closed app, Firebase Cloud Messaging would be needed.
+
+Push notifications (Firebase Cloud Messaging)
+1. Upload `google-services.json` (Firebase console > Project settings > Your apps > Ananta OTT) to the repository root. The build turns it into app config; without it the build still works but push is off.
+2. Firebase console > Project settings > Service accounts > Generate new private key. Save the whole JSON as the GitHub secret `FIREBASE_SERVICE_ACCOUNT_JSON`.
+3. Rebuild the app. To send: GitHub > Actions > "Send push notification" > Run workflow (title, text, optional image URL and link). Every phone that opened the new build once receives it, also when the app is closed.

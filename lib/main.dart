@@ -13,6 +13,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
+import 'notice_banner.dart';
 import 'splash_screen.dart';
 import 'glass.dart';
 import 'local_store.dart';
@@ -709,6 +710,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           if (mounted) _focusTvPlayer(); // give the remote back to the player
         });
       }
+    });
+    // Announcement banner (phones/tablets; the native side ignores TV).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) NoticeService.instance.start(context);
     });
     _loadFavorites();
     _loadPlaylist();
@@ -3176,6 +3181,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   @override
   void dispose() {
+    NoticeService.instance.stop();
     _pipChannel.setMethodCallHandler(null);
     unawaited(_pipChannel.invokeMethod('setPipAutoEnter', {'enabled': false}).catchError((Object e) { debugPrint('PiP cleanup error: $e'); }));
     _controlsTimer?.cancel();
