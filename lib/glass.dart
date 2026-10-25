@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -311,4 +312,168 @@ class GlassIconButton extends StatelessWidget {
       ),
     );
   }
+}
+
+
+/// Animated "TV streaming" logo: a glowing TV with a pulsing play button,
+/// radiating broadcast waves from the antenna and a light sweep over the screen.
+class AnimatedTvLogo extends StatefulWidget {
+  const AnimatedTvLogo({super.key, this.size = 42});
+  final double size;
+
+  @override
+  State<AnimatedTvLogo> createState() => _AnimatedTvLogoState();
+}
+
+class _AnimatedTvLogoState extends State<AnimatedTvLogo>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 2600))
+        ..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: _c,
+          builder: (_, __) => CustomPaint(
+            size: Size(widget.size, widget.size),
+            painter: _TvLogoPainter(_c.value),
+          ),
+        ),
+      );
+}
+
+class _TvLogoPainter extends CustomPainter {
+  _TvLogoPainter(this.t);
+  final double t;
+
+  // App palette only: accent violet with its light lavender and deep violet tones.
+  static const _violet = Color(0xFF9B87FF);
+  static const _pink = Color(0xFF7C5CFF); // deep violet
+  static const _cyan = Color(0xFFD6CCFF); // light lavender
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width / 44.0;
+    canvas.save();
+    canvas.scale(s, s);
+    final pulse = 0.5 + 0.5 * math.sin(t * 2 * math.pi);
+
+    // soft pulsing glow behind the TV
+    canvas.drawCircle(
+      const Offset(22, 26),
+      18,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          _violet.withOpacity(0.38 + 0.2 * pulse),
+          _pink.withOpacity(0.10),
+          Colors.transparent,
+        ]).createShader(Rect.fromCircle(center: const Offset(22, 26), radius: 18)),
+    );
+
+    final tv = RRect.fromRectAndRadius(
+        const Rect.fromLTWH(4, 16, 36, 25), const Radius.circular(8));
+    final grad = const LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [_cyan, _violet, _pink],
+    ).createShader(const Rect.fromLTWH(4, 16, 36, 25));
+
+    // antenna
+    final ant = Paint()
+      ..shader = grad
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(const Offset(22, 16), const Offset(14.5, 8), ant);
+    canvas.drawLine(const Offset(22, 16), const Offset(30, 8), ant);
+    canvas.drawCircle(const Offset(14.5, 8), 1.8, Paint()..color = _cyan);
+    canvas.drawCircle(const Offset(30, 8), 1.8, Paint()..color = _pink);
+
+    // broadcast waves from the right antenna tip
+    for (var i = 0; i < 3; i++) {
+      final p = (t + i / 3) % 1.0;
+      final r = 3 + 10 * p;
+      canvas.drawArc(
+        Rect.fromCircle(center: const Offset(30, 8), radius: r),
+        -math.pi * 0.42,
+        math.pi * 0.62,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = 1.7
+          ..color = _cyan.withOpacity((1 - p) * 0.9),
+      );
+    }
+
+    // body: glassy fill + gradient outline
+    canvas.drawRRect(
+      tv,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Colors.white.withOpacity(0.22), _violet.withOpacity(0.12)],
+        ).createShader(tv.outerRect),
+    );
+    canvas.drawRRect(
+      tv,
+      Paint()
+        ..shader = grad
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4,
+    );
+
+    // light sweep over the screen
+    canvas.save();
+    canvas.clipRRect(tv.deflate(2));
+    final sweepX = -14 + 64 * ((t * 1.0) % 1.0);
+    final sweep = Path()
+      ..moveTo(sweepX, 16)
+      ..lineTo(sweepX + 8, 16)
+      ..lineTo(sweepX - 2, 41)
+      ..lineTo(sweepX - 10, 41)
+      ..close();
+    canvas.drawPath(sweep, Paint()..color = Colors.white.withOpacity(0.20));
+    canvas.restore();
+
+    // pulsing play button
+    final k = 1 + 0.10 * pulse;
+    canvas.save();
+    canvas.translate(23, 28.5);
+    canvas.scale(k, k);
+    final play = Path()
+      ..moveTo(-3.8, -5.6)
+      ..lineTo(-3.8, 5.6)
+      ..lineTo(5.6, 0)
+      ..close();
+    canvas.drawPath(
+      play,
+      Paint()
+        ..shader = const LinearGradient(
+          colors: [Colors.white, Color(0xFFE6DEFF)],
+        ).createShader(const Rect.fromLTWH(-4, -6, 10, 12)),
+    );
+    canvas.restore();
+
+    // tiny stand
+    final stand = Paint()
+      ..color = _violet.withOpacity(0.9)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(const Offset(14, 42.5), const Offset(18, 42.5), stand);
+    canvas.drawLine(const Offset(26, 42.5), const Offset(30, 42.5), stand);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _TvLogoPainter old) => old.t != t;
 }

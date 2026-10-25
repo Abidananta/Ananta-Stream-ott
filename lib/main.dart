@@ -3266,35 +3266,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 titleSpacing: 12,
                 title: Row(
                   children: [
-                    // Transparent logo: no badge/background, just the emblem with
-                    // a soft violet-pink glow behind it.
-                    SizedBox(
-                      width: 42,
-                      height: 42,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          Container(
-                            width: 30,
-                            height: 30,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(color: accentColor.withOpacity(0.55), blurRadius: 18, spreadRadius: 1),
-                                BoxShadow(color: const Color(0xFFFF6FB1).withOpacity(0.28), blurRadius: 24, spreadRadius: 2),
-                              ],
-                            ),
-                          ),
-                          Image.asset(
-                            'assets/ananta_launcher_icon.png',
-                            width: 42,
-                            height: 42,
-                            fit: BoxFit.contain,
-                            errorBuilder: (_, __, ___) => const Icon(Icons.blur_on, color: accentColor, size: 30),
-                          ),
-                        ],
-                      ),
-                    ),
+                    // Animated TV-streaming logo (drawn in code, no image).
+                    const AnimatedTvLogo(size: 44),
                     const SizedBox(width: 10),
                     Column(
                       mainAxisSize: MainAxisSize.min,
@@ -3302,7 +3275,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                       children: [
                         ShaderMask(
                           shaderCallback: (rect) => const LinearGradient(
-                            colors: [Colors.white, Color(0xFFD6CCFF), Color(0xFFFFB3D9)],
+                            colors: [Colors.white, Color(0xFFD6CCFF), Color(0xFFAA98FF)],
                           ).createShader(rect),
                           child: const Text(
                             'Ananta OTT',
