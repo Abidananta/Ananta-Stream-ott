@@ -3266,34 +3266,33 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 titleSpacing: 12,
                 title: Row(
                   children: [
-                    Container(
-                      width: 38,
-                      height: 38,
-                      padding: const EdgeInsets.all(2),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [Color(0xFFB9A8FF), Color(0xFF6C4DFF), Color(0xFFFF6FB1)],
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: accentColor.withOpacity(0.55),
-                            blurRadius: 16,
-                            spreadRadius: 0.5,
+                    // Transparent logo: no badge/background, just the emblem with
+                    // a soft violet-pink glow behind it.
+                    SizedBox(
+                      width: 42,
+                      height: 42,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Container(
+                            width: 30,
+                            height: 30,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(color: accentColor.withOpacity(0.55), blurRadius: 18, spreadRadius: 1),
+                                BoxShadow(color: const Color(0xFFFF6FB1).withOpacity(0.28), blurRadius: 24, spreadRadius: 2),
+                              ],
+                            ),
+                          ),
+                          Image.asset(
+                            'assets/ananta_launcher_icon.png',
+                            width: 42,
+                            height: 42,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => const Icon(Icons.blur_on, color: accentColor, size: 30),
                           ),
                         ],
-                      ),
-                      child: ClipOval(
-                        child: Image.asset(
-                          'assets/ananta_launcher_icon.png',
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => const ColoredBox(
-                            color: Color(0xFF15122B),
-                            child: Icon(Icons.blur_on, color: accentColor, size: 22),
-                          ),
-                        ),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -3490,57 +3489,34 @@ class _NowPlayingHeaderState extends State<_NowPlayingHeader>
     super.dispose();
   }
 
-  /// Compact animated LIVE badge: ripple dot + a light sweep across the pill.
+  /// Just an animated live dot (pulsing ripple) shown before the channel name.
   Widget _liveIndicator(double t, double glow) {
     final color = widget.active ? const Color(0xFFFF3B4E) : Colors.white38;
     final ripple = widget.active ? t : 0.0;
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: Stack(children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(4, 2, 6, 2),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            gradient: LinearGradient(colors: [color.withOpacity(0.28), color.withOpacity(0.10)]),
-            border: Border.all(color: color.withOpacity(0.6), width: 0.8),
-          ),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            SizedBox(
-              width: 10,
-              height: 10,
-              child: Stack(alignment: Alignment.center, children: [
-                if (widget.active)
-                  Container(
-                    width: 4 + 6 * ripple,
-                    height: 4 + 6 * ripple,
-                    decoration: BoxDecoration(shape: BoxShape.circle, color: color.withOpacity(0.55 * (1 - ripple))),
-                  ),
-                Container(width: 4.5, height: 4.5, decoration: BoxDecoration(shape: BoxShape.circle, color: color)),
-              ]),
-            ),
-            const SizedBox(width: 3),
-            Text('LIVE',
-                style: TextStyle(fontSize: 7.5, fontWeight: FontWeight.w800, letterSpacing: 1, color: widget.active ? Colors.white : Colors.white54)),
-          ]),
-        ),
+    return SizedBox(
+      width: 16,
+      height: 16,
+      child: Stack(alignment: Alignment.center, children: [
         if (widget.active)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: FractionallySizedBox(
-                alignment: Alignment(-1.6 + 3.2 * t, 0),
-                widthFactor: 0.35,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(colors: [
-                      Colors.white.withOpacity(0),
-                      Colors.white.withOpacity(0.28),
-                      Colors.white.withOpacity(0),
-                    ]),
-                  ),
-                ),
-              ),
+          Container(
+            width: 6 + 10 * ripple,
+            height: 6 + 10 * ripple,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color.withOpacity(0.55 * (1 - ripple)),
             ),
           ),
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: color,
+            boxShadow: widget.active
+                ? [BoxShadow(color: color.withOpacity(glow + 0.2), blurRadius: 8)]
+                : null,
+          ),
+        ),
       ]),
     );
   }
@@ -3555,7 +3531,7 @@ class _NowPlayingHeaderState extends State<_NowPlayingHeader>
         final glow = 0.25 + 0.2 * (0.5 + 0.5 * math.sin(t * 2 * math.pi));
         return Row(children: [
           _liveIndicator(t, glow),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
           Expanded(
             child: Text(name,
                 maxLines: 1,

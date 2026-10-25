@@ -194,7 +194,7 @@ class _NoticeBannerState extends State<_NoticeBanner>
     super.initState();
     HapticFeedback.lightImpact();
     _anim.forward();
-    _auto = Timer(const Duration(seconds: 13), _close);
+    _auto = Timer(const Duration(seconds: 16), _close);
   }
 
   @override
@@ -255,7 +255,7 @@ class _NoticeBannerState extends State<_NoticeBanner>
                 _close();
               } else {
                 setState(() => _drag = 0);
-                _auto = Timer(const Duration(seconds: 13), _close);
+                _auto = Timer(const Duration(seconds: 16), _close);
               }
             },
             child: Material(
@@ -601,10 +601,13 @@ class _NoticeListSheetState extends State<_NoticeListSheet> {
     final image = '${n['image'] ?? ''}';
     final url = '${n['url'] ?? ''}';
     final time = (n['time'] as num?)?.toInt() ?? 0;
+    // Compact card (about channel-card size, slightly taller): thumbnail on
+    // the left, title + 2 lines of text on the right.
     return GestureDetector(
       onTap: url.isEmpty ? null : () => _open(url),
       child: Container(
-        padding: const EdgeInsets.all(12),
+        constraints: const BoxConstraints(minHeight: 84),
+        padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
@@ -620,64 +623,77 @@ class _NoticeListSheetState extends State<_NoticeListSheet> {
             BoxShadow(color: Colors.black.withOpacity(0.18), blurRadius: 12, offset: const Offset(0, 4)),
           ],
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(_ago(time),
-                    style: const TextStyle(fontSize: 11.5, color: Colors.white54)),
-              ],
-            ),
-            if (body.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(body,
-                  style: const TextStyle(
-                      fontSize: 13, height: 1.3, color: Colors.white70)),
-            ],
-            if (image.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: AspectRatio(
-                  aspectRatio: 16 / 8,
-                  child: CachedNetworkImage(
-                    imageUrl: image,
-                    fit: BoxFit.cover,
-                    placeholder: (_, __) =>
-                        Container(color: Colors.white.withOpacity(0.06)),
-                    errorWidget: (_, __, ___) => Container(
-                      color: Colors.white.withOpacity(0.06),
-                      child: const Icon(Icons.image_not_supported_outlined,
-                          color: Colors.white38),
-                    ),
-                  ),
-                ),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: SizedBox(
+                width: 64,
+                height: 64,
+                child: image.isEmpty
+                    ? Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(colors: [
+                            const Color(0xFF9B87FF).withOpacity(0.55),
+                            const Color(0xFFFF6FB1).withOpacity(0.35),
+                          ]),
+                        ),
+                        child: const Icon(Icons.notifications_rounded, color: Colors.white, size: 28),
+                      )
+                    : CachedNetworkImage(
+                        imageUrl: image,
+                        fit: BoxFit.cover,
+                        placeholder: (_, __) => Container(color: Colors.white.withOpacity(0.06)),
+                        errorWidget: (_, __, ___) => Container(
+                          color: Colors.white.withOpacity(0.06),
+                          child: const Icon(Icons.image_not_supported_outlined, color: Colors.white38),
+                        ),
+                      ),
               ),
-            ],
-            if (url.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              const Row(
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.open_in_new_rounded, size: 14, color: Color(0xFF9B87FF)),
-                  SizedBox(width: 4),
-                  Text('Open link',
-                      style: TextStyle(fontSize: 12, color: Color(0xFF9B87FF))),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Colors.white),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(_ago(time), style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                    ],
+                  ),
+                  if (body.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      body,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12.5, height: 1.25, color: Colors.white70),
+                    ),
+                  ],
+                  if (url.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    const Row(
+                      children: [
+                        Icon(Icons.open_in_new_rounded, size: 12, color: Color(0xFF9B87FF)),
+                        SizedBox(width: 4),
+                        Text('Open link', style: TextStyle(fontSize: 11, color: Color(0xFF9B87FF))),
+                      ],
+                    ),
+                  ],
                 ],
               ),
-            ],
+            ),
           ],
         ),
       ),
