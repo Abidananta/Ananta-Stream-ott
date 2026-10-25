@@ -148,7 +148,7 @@ class _NoticeBannerState extends State<_NoticeBanner>
     super.initState();
     HapticFeedback.lightImpact();
     _anim.forward();
-    _auto = Timer(const Duration(seconds: 20), _close);
+    _auto = Timer(const Duration(seconds: 16), _close);
   }
 
   @override
@@ -209,7 +209,7 @@ class _NoticeBannerState extends State<_NoticeBanner>
                 _close();
               } else {
                 setState(() => _drag = 0);
-                _auto = Timer(const Duration(seconds: 15), _close);
+                _auto = Timer(const Duration(seconds: 12), _close);
               }
             },
             child: Material(
