@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
@@ -18,6 +19,46 @@ class NoticeService {
 
   static const MethodChannel _channel = MethodChannel('com.ananta.ott/notice');
 
+  /// Number of notifications not yet seen in the list (bell badge).
+  final ValueNotifier<int> unread = ValueNotifier<int>(0);
+
+  Future<List<Map<String, dynamic>>> loadHistory() async {
+    try {
+      final raw = await _channel.invokeMethod<String>('getHistory') ?? '[]';
+      final list = jsonDecode(raw);
+      if (list is List) {
+        return list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      }
+    } catch (e) {
+      debugPrint('Notice history failed: $e');
+    }
+    return [];
+  }
+
+  Future<void> refreshUnread() async {
+    try {
+      final lastRead = (await _channel.invokeMethod<num>('getLastRead'))?.toInt() ?? 0;
+      final items = await loadHistory();
+      unread.value = items
+          .where((e) => ((e['time'] as num?)?.toInt() ?? 0) > lastRead)
+          .length;
+    } catch (_) {}
+  }
+
+  Future<void> markAllRead() async {
+    try {
+      await _channel.invokeMethod<void>('markRead');
+    } catch (_) {}
+    unread.value = 0;
+  }
+
+  Future<void> clearAll() async {
+    try {
+      await _channel.invokeMethod<void>('clearHistory');
+    } catch (_) {}
+    unread.value = 0;
+  }
+
   Timer? _timer;
   OverlayEntry? _entry;
   BuildContext? _context;
@@ -30,6 +71,7 @@ class NoticeService {
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'showNotice' && call.arguments is Map) {
         final r = call.arguments as Map;
+        unawaited(refreshUnread());
         final ctx = _context;
         if (ctx != null && ctx.mounted) {
           _show(
@@ -44,6 +86,7 @@ class NoticeService {
       return null;
     });
     _timer?.cancel();
+    unawaited(refreshUnread());
     Future<void>.delayed(const Duration(seconds: 5), _check);
     _timer = Timer.periodic(const Duration(seconds: 45), (_) => _check());
   }
@@ -62,6 +105,7 @@ class NoticeService {
     try {
       final r = await _channel.invokeMethod<Map<dynamic, dynamic>>('checkNotice');
       if (r == null) return;
+      unawaited(refreshUnread());
       final ctx = _context;
       if (ctx == null || !ctx.mounted) return;
       _show(
@@ -148,7 +192,7 @@ class _NoticeBannerState extends State<_NoticeBanner>
     super.initState();
     HapticFeedback.lightImpact();
     _anim.forward();
-    _auto = Timer(const Duration(seconds: 16), _close);
+    _auto = Timer(const Duration(seconds: 20), _close);
   }
 
   @override
@@ -209,7 +253,7 @@ class _NoticeBannerState extends State<_NoticeBanner>
                 _close();
               } else {
                 setState(() => _drag = 0);
-                _auto = Timer(const Duration(seconds: 12), _close);
+                _auto = Timer(const Duration(seconds: 15), _close);
               }
             },
             child: Material(
@@ -338,6 +382,271 @@ class _NoticeBannerState extends State<_NoticeBanner>
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+
+/// Bell icon for the app bar: opens the list of all received notifications.
+class NoticeBell extends StatelessWidget {
+  const NoticeBell({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Platform.isAndroid) return const SizedBox.shrink();
+    return ValueListenableBuilder<int>(
+      valueListenable: NoticeService.instance.unread,
+      builder: (context, count, _) => IconButton(
+        tooltip: 'Notifications',
+        onPressed: () => showNoticeList(context),
+        icon: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Icon(count > 0
+                ? Icons.notifications_active_rounded
+                : Icons.notifications_none_rounded),
+            if (count > 0)
+              Positioned(
+                right: -4,
+                top: -4,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  constraints: const BoxConstraints(minWidth: 15, minHeight: 15),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF4F7B),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    count > 9 ? '9+' : '$count',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _ago(int ms) {
+  final diff = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
+  if (diff.inMinutes < 1) return 'now';
+  if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+  if (diff.inHours < 24) return '${diff.inHours}h ago';
+  if (diff.inDays < 7) return '${diff.inDays}d ago';
+  final d = DateTime.fromMillisecondsSinceEpoch(ms);
+  return '${d.day}/${d.month}/${d.year}';
+}
+
+Future<void> showNoticeList(BuildContext context) async {
+  final svc = NoticeService.instance;
+  unawaited(svc.markAllRead());
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => const _NoticeListSheet(),
+  );
+}
+
+class _NoticeListSheet extends StatefulWidget {
+  const _NoticeListSheet();
+  @override
+  State<_NoticeListSheet> createState() => _NoticeListSheetState();
+}
+
+class _NoticeListSheetState extends State<_NoticeListSheet> {
+  List<Map<String, dynamic>>? _items;
+
+  @override
+  void initState() {
+    super.initState();
+    NoticeService.instance.loadHistory().then((v) {
+      if (mounted) setState(() => _items = v);
+    });
+  }
+
+  Future<void> _open(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri != null && uri.hasScheme) {
+      try {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {}
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final h = MediaQuery.of(context).size.height;
+    final items = _items;
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        child: Container(
+          height: h * 0.78,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                const Color(0xFF2C2850).withOpacity(0.88),
+                const Color(0xFF0E0C20).withOpacity(0.94),
+              ],
+            ),
+            border: Border(
+                top: BorderSide(color: Colors.white.withOpacity(0.22))),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 14, 10, 6),
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Notifications',
+                          style: TextStyle(
+                              fontSize: 19,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white),
+                        ),
+                      ),
+                      if (items != null && items.isNotEmpty)
+                        TextButton(
+                          onPressed: () async {
+                            await NoticeService.instance.clearAll();
+                            if (mounted) setState(() => _items = []);
+                          },
+                          child: const Text('Clear all'),
+                        ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: items == null
+                      ? const Center(child: CircularProgressIndicator())
+                      : items.isEmpty
+                          ? const Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.notifications_off_outlined,
+                                      size: 44, color: Colors.white38),
+                                  SizedBox(height: 10),
+                                  Text('No notifications yet',
+                                      style: TextStyle(color: Colors.white54)),
+                                ],
+                              ),
+                            )
+                          : ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(14, 6, 14, 16),
+                              itemCount: items.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(height: 10),
+                              itemBuilder: (_, i) => _tile(items[i]),
+                            ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _tile(Map<String, dynamic> n) {
+    final title = '${n['title'] ?? ''}';
+    final body = '${n['body'] ?? ''}';
+    final image = '${n['image'] ?? ''}';
+    final url = '${n['url'] ?? ''}';
+    final time = (n['time'] as num?)?.toInt() ?? 0;
+    return GestureDetector(
+      onTap: url.isEmpty ? null : () => _open(url),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.07),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.white.withOpacity(0.14)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(_ago(time),
+                    style: const TextStyle(fontSize: 11.5, color: Colors.white54)),
+              ],
+            ),
+            if (body.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(body,
+                  style: const TextStyle(
+                      fontSize: 13, height: 1.3, color: Colors.white70)),
+            ],
+            if (image.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: AspectRatio(
+                  aspectRatio: 16 / 8,
+                  child: CachedNetworkImage(
+                    imageUrl: image,
+                    fit: BoxFit.cover,
+                    placeholder: (_, __) =>
+                        Container(color: Colors.white.withOpacity(0.06)),
+                    errorWidget: (_, __, ___) => Container(
+                      color: Colors.white.withOpacity(0.06),
+                      child: const Icon(Icons.image_not_supported_outlined,
+                          color: Colors.white38),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+            if (url.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              const Row(
+                children: [
+                  Icon(Icons.open_in_new_rounded, size: 14, color: Color(0xFF9B87FF)),
+                  SizedBox(width: 4),
+                  Text('Open link',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF9B87FF))),
+                ],
+              ),
+            ],
+          ],
         ),
       ),
     );

@@ -3300,6 +3300,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           : Icons.favorite_border,
                     ),
                   ),
+                  const NoticeBell(),
                   IconButton(
                     tooltip: 'Refresh playlist',
                     onPressed:

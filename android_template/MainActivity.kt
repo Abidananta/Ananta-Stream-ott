@@ -159,6 +159,7 @@ class MainActivity : FlutterActivity() {
                             if (n != null && AnantaNotice.isNew(applicationContext, n)) {
                                 AnantaNotice.markSeen(applicationContext, n)
                                 if (inApp) {
+                                    AnantaNotice.save(applicationContext, n)
                                     out = mapOf("id" to n.id, "title" to n.title, "body" to n.body, "image" to n.image, "url" to n.url)
                                 } else {
                                     AnantaNotice.post(applicationContext, n)
@@ -170,6 +171,11 @@ class MainActivity : FlutterActivity() {
                         runOnUiThread { result.success(out) }
                     }.start()
                 }
+                "getHistory" -> result.success(
+                    if (isTvDevice) "[]" else AnantaNotice.history(applicationContext))
+                "getLastRead" -> result.success(AnantaNotice.lastRead(applicationContext))
+                "markRead" -> { AnantaNotice.markRead(applicationContext); result.success(true) }
+                "clearHistory" -> { AnantaNotice.clearHistory(applicationContext); result.success(true) }
                 else -> result.notImplemented()
             }
         }
@@ -487,6 +493,35 @@ object AnantaNotice {
         }
     }
 
+    // ---- history (shown by the bell icon in the app) ----
+    fun save(ctx: Context, n: Notice) {
+        try {
+            val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val old = org.json.JSONArray(prefs.getString("history", "[]") ?: "[]")
+            val arr = org.json.JSONArray()
+            arr.put(JSONObject().put("id", n.id).put("title", n.title).put("body", n.body)
+                .put("image", n.image).put("url", n.url).put("time", System.currentTimeMillis()))
+            for (i in 0 until minOf(old.length(), 49)) arr.put(old.get(i))
+            prefs.edit().putString("history", arr.toString()).apply()
+        } catch (e: Exception) {
+            // ignore
+        }
+    }
+
+    fun history(ctx: Context): String =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("history", "[]") ?: "[]"
+
+    fun lastRead(ctx: Context): Long =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("last_read", 0)
+
+    fun markRead(ctx: Context) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong("last_read", System.currentTimeMillis()).apply()
+    }
+
+    fun clearHistory(ctx: Context) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("history", "[]").apply()
+    }
+
     fun isNew(ctx: Context, n: Notice): Boolean =
         n.id > ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("last_id", 0)
 
@@ -570,6 +605,7 @@ object AnantaNotice {
 
     @Suppress("DEPRECATION")
     fun post(ctx: Context, n: Notice) {
+        save(ctx, n)
         ensureChannel(ctx)
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val bmp = loadBitmap(n.image)
@@ -657,6 +693,7 @@ class AnantaMessagingService : FirebaseMessagingService() {
         val n = AnantaNotice.Notice(id, title, body, image, url)
         val l = AnantaNotice.listener
         if (AnantaNotice.resumed && !AnantaNotice.pip && l != null) {
+            AnantaNotice.save(ctx, n)
             l(n)
         } else {
             try { AnantaNotice.post(ctx, n) } catch (e: Exception) { }
