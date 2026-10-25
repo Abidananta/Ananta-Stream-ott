@@ -1,0 +1,59 @@
+name: Send push notification
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: Notification title
+        required: true
+      body:
+        description: Notification text
+        required: true
+      image:
+        description: Optional image URL (https)
+        required: false
+        default: ''
+      url:
+        description: Optional link opened when tapped
+        required: false
+        default: ''
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Send to all devices (topic "all")
+        env:
+          SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          N_TITLE: ${{ github.event.inputs.title }}
+          N_BODY: ${{ github.event.inputs.body }}
+          N_IMAGE: ${{ github.event.inputs.image }}
+          N_URL: ${{ github.event.inputs.url }}
+        run: |
+          pip install -q google-auth requests
+          python3 - <<'PY'
+          import json, os, sys
+          import requests
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import Request
+          raw = os.environ.get('SA_JSON', '')
+          if not raw.strip():
+              sys.exit('Secret FIREBASE_SERVICE_ACCOUNT_JSON is missing.')
+          info = json.loads(raw)
+          creds = service_account.Credentials.from_service_account_info(
+              info, scopes=['https://www.googleapis.com/auth/firebase.messaging'])
+          creds.refresh(Request())
+          data = {k: os.environ.get(v, '') for k, v in
+                  {'title': 'N_TITLE', 'body': 'N_BODY', 'image': 'N_IMAGE', 'url': 'N_URL'}.items()}
+          msg = {'message': {'topic': 'all', 'data': data,
+                             'android': {'priority': 'HIGH', 'ttl': '86400s'}}}
+          r = requests.post(
+              f"https://fcm.googleapis.com/v1/projects/{info['project_id']}/messages:send",
+              headers={'Authorization': 'Bearer ' + creds.token, 'Content-Type': 'application/json'},
+              data=json.dumps(msg), timeout=30)
+          print(r.status_code, r.text)
+          r.raise_for_status()
+          PY
