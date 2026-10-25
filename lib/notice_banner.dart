@@ -209,7 +209,7 @@ class _NoticeBannerState extends State<_NoticeBanner>
                 _close();
               } else {
                 setState(() => _drag = 0);
-                _auto = Timer(const Duration(seconds: 6), _close);
+                _auto = Timer(const Duration(seconds: 15), _close);
               }
             },
             child: Material(
