@@ -20,6 +20,8 @@ import android.content.res.Configuration
 import android.os.Build
 import android.util.Rational
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.RenderMode
+import io.flutter.embedding.android.TransparencyMode
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
@@ -32,12 +34,47 @@ class MainActivity : FlutterActivity() {
     // Video area (screen pixels) used as PiP source rect for a smooth start.
     private var sourceRect: Rect? = null
 
+    // Android TV / no-touchscreen boxes keep Flutter's default rendering (TV
+    // mode is untouched). Phones and tablets render through a transparent
+    // TextureView, so PiP resizing never exposes a white/solid surface.
+    private val isTvDevice: Boolean by lazy {
+        val ui = resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK
+        ui == Configuration.UI_MODE_TYPE_TELEVISION ||
+            !packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
+    }
+
+    override fun getRenderMode(): RenderMode =
+        if (isTvDevice) super.getRenderMode() else RenderMode.texture
+
+    override fun getTransparencyMode(): TransparencyMode =
+        if (isTvDevice) super.getTransparencyMode() else TransparencyMode.transparent
+
+    private fun makeWindowTransparent() {
+        if (isTvDevice) return
+        try {
+            window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window.decorView.setBackgroundColor(Color.TRANSPARENT)
+        } catch (e: Exception) {
+            // best effort
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Transparent behind Flutter: no white (or any solid) box can show while
         // the PiP window resizes / before the first video frame is drawn.
         window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         window.decorView.setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        makeWindowTransparent()
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        makeWindowTransparent()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -274,6 +311,7 @@ class MainActivity : FlutterActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        window.decorView.setBackgroundColor(Color.TRANSPARENT)
         channel?.invokeMethod("pipChanged", isInPictureInPictureMode)
     }
 

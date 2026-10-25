@@ -488,38 +488,65 @@ Widget _qualityBadge(Size size) {
   );
 }
 
+/// Sizes the player to the device: full screen when [fullscreen], otherwise a
+/// 16:9 box spanning the full width (capped so it never eats the whole screen).
+class _PlayerBox extends StatelessWidget {
+  final bool fullscreen;
+  final Color color;
+  final Widget child;
+  const _PlayerBox({required this.fullscreen, required this.color, required this.child});
+  @override
+  Widget build(BuildContext context) {
+    if (fullscreen) {
+      return Container(width: double.infinity, height: double.infinity, color: color, child: child);
+    }
+    final media = MediaQuery.of(context);
+    final w = media.size.width;
+    final maxH = media.size.height * 0.45;
+    final h = (w * 9 / 16).clamp(0.0, maxH).toDouble();
+    return Container(width: double.infinity, height: h, color: color, child: child);
+  }
+}
+
 class VideoPlayer extends StatelessWidget {
   final AnantaPlayerController controller;
   const VideoPlayer(this.controller, {super.key});
   @override
   Widget build(BuildContext context) => LayoutBuilder(
         builder: (context, constraints) {
-          // Preserve the source video height and aspect ratio vertically.
-          // Expand only along X to cover the side bars, then clip any horizontal
-          // overflow at the screen edges. Never scale the Y axis.
-          final aspect = controller.value.aspectRatio > 0
-              ? controller.value.aspectRatio
-              : 16 / 9;
-          final height = constraints.maxHeight;
-          final widthAtSourceAspect = height * aspect;
-          final scaleX = widthAtSourceAspect > 0
-              ? constraints.maxWidth / widthAtSourceAspect
-              : 1.0;
-          return ClipRect(
-            child: Transform.scale(
-              scaleX: scaleX,
-              scaleY: 1.0,
-              child: SizedBox.expand(
-                child: Video(
-                  // Rebind the video surface for each channel controller.
-                  key: ValueKey<AnantaPlayerController>(controller),
-                  controller: controller._video,
-                  controls: NoVideoControls,
-                  fill: Colors.transparent,
-                  fit: BoxFit.fitHeight,
+          // Rebuild whenever libmpv reports the real decoded size, so the fit
+          // never depends on a stale/default aspect ratio.
+          return ValueListenableBuilder<Size>(
+            valueListenable: controller.videoSize,
+            builder: (context, size, _) {
+              final srcAspect = (size.width > 0 && size.height > 0)
+                  ? size.width / size.height
+                  : 16 / 9;
+              final boxAspect =
+                  constraints.hasBoundedWidth && constraints.hasBoundedHeight &&
+                          constraints.maxHeight > 0
+                      ? constraints.maxWidth / constraints.maxHeight
+                      : srcAspect;
+              // Fill the whole box (no black side bars) on every screen size.
+              // If the source is wildly different from the box (e.g. 4:3 on a
+              // 20:9 phone) fall back to "contain" so the picture isn't mangled.
+              final mismatch = boxAspect / srcAspect;
+              final fit = (mismatch >= 0.7 && mismatch <= 1.5)
+                  ? BoxFit.fill
+                  : BoxFit.contain;
+              return ClipRect(
+                child: SizedBox.expand(
+                  child: Video(
+                    // Rebind the video surface for each channel controller.
+                    key: ValueKey<AnantaPlayerController>(controller),
+                    controller: controller._video,
+                    controls: NoVideoControls,
+                    fill: Colors.transparent,
+                    fit: fit,
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           );
         },
       );
@@ -2656,9 +2683,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: initialized ? _togglePlayerControls : null,
-      child: Container(
-        width: double.infinity,
-        height: fullscreen ? double.infinity : 250,
+      child: _PlayerBox(
+        fullscreen: fullscreen,
         color: pipNow ? Colors.transparent : Colors.black,
         child: Stack(
           fit: StackFit.expand,
@@ -3202,6 +3228,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       onWillPop: _handleBack,
       child: Scaffold(
         backgroundColor: inPip ? Colors.transparent : null,
+        resizeToAvoidBottomInset: !inPip,
         extendBodyBehindAppBar: !(_fullscreen || inPip || useTvLayout),
         appBar: (_fullscreen || inPip || useTvLayout)
             ? null
