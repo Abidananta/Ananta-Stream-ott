@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "585456937879",
+    "project_id": "anantaott",
+    "storage_bucket": "anantaott.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:585456937879:android:474ace233c789681d0b2d2",
+        "android_client_info": {
+          "package_name": "com.ananta.ott"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyADyGffwOiIegiVo-gQe5p_h3HXVfSi90A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
