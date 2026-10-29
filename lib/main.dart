@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 import 'dart:ui' show ImageFilter, PlatformDispatcher;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -13,7 +12,6 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
-import 'notice_banner.dart';
 import 'splash_screen.dart';
 import 'glass.dart';
 import 'local_store.dart';
@@ -175,6 +173,49 @@ Map<String, dynamic> _decodeEpgCacheIsolate(String cached) {
 }
 
 // ---- Playlist prefetch (runs while the splash animation plays) ------------
+// Every stream type libmpv/FFmpeg can open is accepted (the same FFmpeg-based
+// engine PotPlayer uses): HLS, DASH, TS, FLV, MP4, MKV over http(s), plus
+// rtmp/rtsp/udp/rtp/srt/mms.
+const Set<String> _playableSchemes = {
+  'http', 'https', 'rtmp', 'rtmps', 'rtmpe', 'rtmpt', 'rtmpte', 'rtsp', 'rtsps',
+  'udp', 'rtp', 'srt', 'mms', 'mmsh', 'mmst', 'tcp', 'tls', 'ftp',
+};
+
+String _canonHeader(String key) {
+  final k = key.trim();
+  switch (k.toLowerCase()) {
+    case 'user-agent':
+    case 'http-user-agent':
+    case 'useragent':
+      return 'User-Agent';
+    case 'referer':
+    case 'referrer':
+    case 'http-referer':
+    case 'http-referrer':
+      return 'Referer';
+    case 'origin':
+    case 'http-origin':
+      return 'Origin';
+    case 'cookie':
+    case 'http-cookie':
+      return 'Cookie';
+    default:
+      return k;
+  }
+}
+
+// "User-Agent=Foo&Referer=https%3A%2F%2Fsite" (Kodi / pipe style).
+void _addHeaderPairs(Map<String, String> into, String raw) {
+  for (final part in raw.split('&')) {
+    final eq = part.indexOf('=');
+    if (eq <= 0) continue;
+    final key = _canonHeader(part.substring(0, eq));
+    var value = part.substring(eq + 1).trim();
+    try { value = Uri.decodeComponent(value); } catch (_) {}
+    if (key.isNotEmpty && value.isNotEmpty) into[key] = value;
+  }
+}
+
 List<Channel> _parseM3uIsolate(String content) {
   String attr(String line, String attribute) {
     final pattern = RegExp('$attribute\\s*=\\s*["\\x27]([^"\\x27]*)', caseSensitive: false);
@@ -186,27 +227,87 @@ List<Channel> _parseM3uIsolate(String content) {
   String logo = '';
   String tvgId = '';
   String tvgName = '';
+  var headers = <String, String>{};
+  void reset() {
+    name = null;
+    group = 'Live TV';
+    logo = '';
+    tvgId = '';
+    tvgName = '';
+    headers = <String, String>{};
+  }
   for (final rawLine in content.split(RegExp(r'\r?\n'))) {
     final line = rawLine.trim();
     if (line.isEmpty) continue;
     if (line.startsWith('#EXTINF')) {
       final comma = line.lastIndexOf(',');
       name = comma >= 0 ? line.substring(comma + 1).trim() : 'Unknown channel';
+      if (name!.isEmpty) name = 'Unknown channel';
       group = attr(line, 'group-title');
       logo = attr(line, 'tvg-logo');
       tvgId = attr(line, 'tvg-id');
       tvgName = attr(line, 'tvg-name');
       if (group.isEmpty) group = 'Live TV';
-    } else if (!line.startsWith('#') && name != null) {
-      final uri = Uri.tryParse(line);
-      if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) {
-        result.add(Channel(name: name, url: line, group: group, logo: logo, tvgId: tvgId, tvgName: tvgName));
+      headers = <String, String>{};
+    } else if (line.startsWith('#EXTVLCOPT:')) {
+      final body = line.substring(11);
+      final eq = body.indexOf('=');
+      if (eq > 0) {
+        final key = body.substring(0, eq).trim().toLowerCase();
+        final value = body.substring(eq + 1).trim();
+        const known = {'http-user-agent', 'http-referrer', 'http-referer', 'http-origin', 'http-cookie'};
+        if (known.contains(key) && value.isNotEmpty) headers[_canonHeader(key)] = value;
       }
-      name = null;
-      group = 'Live TV';
-      logo = '';
-      tvgId = '';
-      tvgName = '';
+    } else if (line.startsWith('#EXTHTTP:')) {
+      try {
+        final decoded = jsonDecode(line.substring(9).trim());
+        if (decoded is Map) {
+          decoded.forEach((k, v) {
+            if (v != null && v.toString().isNotEmpty) headers[_canonHeader(k.toString())] = v.toString();
+          });
+        }
+      } catch (_) {}
+    } else if (line.startsWith('#KODIPROP:')) {
+      final body = line.substring(10);
+      final eq = body.indexOf('=');
+      if (eq > 0) {
+        final key = body.substring(0, eq).trim().toLowerCase();
+        if (key.endsWith('stream_headers') || key.endsWith('manifest_headers')) {
+          _addHeaderPairs(headers, body.substring(eq + 1));
+        }
+      }
+    } else if (!line.startsWith('#')) {
+      // Optional "url|Header=Value&Header2=Value2" suffix.
+      var url = line;
+      final pipe = line.indexOf('|');
+      if (pipe > 0) {
+        url = line.substring(0, pipe).trim();
+        _addHeaderPairs(headers, line.substring(pipe + 1));
+      }
+      final uri = Uri.tryParse(url) ?? Uri.tryParse(Uri.encodeFull(url));
+      final scheme = uri?.scheme.toLowerCase() ?? '';
+      final ok = uri != null &&
+          _playableSchemes.contains(scheme) &&
+          (uri.host.isNotEmpty || (scheme != 'http' && scheme != 'https'));
+      if (ok) {
+        var channelName = name;
+        if (channelName == null || channelName.isEmpty) {
+          // Playlist without #EXTINF lines: name the entry after its URL.
+          final u = uri!;
+          final seg = u.pathSegments.where((e) => e.isNotEmpty).toList();
+          channelName = seg.isNotEmpty ? seg.last : u.host;
+        }
+        result.add(Channel(
+          name: channelName,
+          url: url,
+          group: group,
+          logo: logo,
+          tvgId: tvgId,
+          tvgName: tvgName,
+          headers: Map<String, String>.unmodifiable(headers),
+        ));
+      }
+      reset();
     }
   }
   return result;
@@ -324,8 +425,17 @@ class AnantaPlayerController {
   final Map<String, String> httpHeaders;
   // 96 MB demuxer buffer (default is 32 MB) so brief network stalls on live HLS
   // are absorbed by the cache instead of stopping the picture.
-  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 48 * 1024 * 1024));
-  late final VideoController _video = VideoController(_engine);
+  // [safeMode] = compatibility profile used by the automatic retries: software
+  // decoding, smaller buffers and no live-edge tricks, for streams the tuned
+  // (hardware) profile cannot open.
+  final bool safeMode;
+  late final Player _engine = Player(
+      configuration: PlayerConfiguration(
+          bufferSize: (safeMode ? 32 : 96) * 1024 * 1024));
+  late final VideoController _video = VideoController(
+      _engine,
+      configuration: VideoControllerConfiguration(
+          enableHardwareAcceleration: !safeMode));
   bool _opened = false;
   bool _buffering = false;
   String? _error;
@@ -337,7 +447,7 @@ class AnantaPlayerController {
   StreamSubscription<int?>? _widthSubscription;
   StreamSubscription<int?>? _heightSubscription;
   StreamSubscription<String>? _errorSubscription;
-  AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, dynamic videoPlayerOptions}) {
+  AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, this.safeMode = false, dynamic videoPlayerOptions}) {
     _bufferingSubscription = _engine.stream.buffering.listen((value) {
       _buffering = value;
     }, onError: (Object error) {
@@ -385,30 +495,49 @@ class AnantaPlayerController {
   // platform player (dynamic, so it never breaks compilation); any property a
   // given libmpv build rejects is simply skipped.
   Future<void> _tuneForLiveStreams() async {
-    const props = <String, String>{
+    // Common to every profile: PotPlayer-like tolerance for broken
+    // certificates and odd TS/FLV/HLS streams.
+    const common = <String, String>{
       'cache': 'yes',
-      // Read far ahead of the playback position (mpv default is only 1s), so
-      // the picture keeps playing through network hiccups.
-      'cache-secs': '30',
-      'demuxer-readahead-secs': '30',
-      'demuxer-max-bytes': '48MiB',
-      'demuxer-max-back-bytes': '4MiB',
-      // Pre-buffer before the first frame and after every stall instead of
-      // playing 1 second and stuttering again. For live TS streams this is
-      // the cache that absorbs jitter.
-      'cache-pause': 'yes',
-      'cache-pause-initial': 'yes',
-      'cache-pause-wait': '3',
-      // Larger network read buffer (default 128 KiB).
-      'stream-buffer-size': '2MiB',
       'network-timeout': '30',
+      'tls-verify': 'no',
+      'demuxer-lavf-probesize': '5000000',
+      'demuxer-lavf-analyzeduration': '5',
       // Reconnect automatically when the server drops the connection.
       'stream-lavf-o': 'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=%7%4xx,5xx,reconnect_delay_max=5',
-      // Live HLS: start a few segments behind the live edge so there is
-      // already something to buffer ahead of the playhead.
-      'demuxer-lavf-o': 'live_start_index=-5',
+    };
+    const tuned = <String, String>{
+      // Read far ahead of the playback position (mpv default is only 1s), so
+      // the picture keeps playing through network hiccups.
+      'cache-secs': '90',
+      'demuxer-readahead-secs': '90',
+      'demuxer-max-bytes': '96MiB',
+      'demuxer-max-back-bytes': '8MiB',
+      // Pre-buffer before the first frame and after every stall instead of
+      // playing 1 second and stuttering again.
+      'cache-pause': 'yes',
+      'cache-pause-initial': 'yes',
+      'cache-pause-wait': '8',
+      'stream-buffer-size': '4MiB',
+      // Live HLS: start a few segments behind the live edge.
+      'demuxer-lavf-o': 'live_start_index=-5,allowed_extensions=ALL',
       'hls-bitrate': 'max',
     };
+    // Compatibility profile: start immediately, small buffers, default HLS
+    // behaviour, software decoding (see safeMode above).
+    const safe = <String, String>{
+      'cache-secs': '20',
+      'demuxer-readahead-secs': '20',
+      'demuxer-max-bytes': '32MiB',
+      'demuxer-max-back-bytes': '4MiB',
+      'cache-pause': 'yes',
+      'cache-pause-initial': 'no',
+      'cache-pause-wait': '2',
+      'stream-buffer-size': '1MiB',
+      'demuxer-lavf-o': 'allowed_extensions=ALL',
+      'hwdec': 'no',
+    };
+    final props = <String, String>{...common, ...(safeMode ? safe : tuned)};
     final dynamic platform = _engine.platform;
     for (final entry in props.entries) {
       try {
@@ -428,12 +557,20 @@ class AnantaPlayerController {
   Future<void> waitForVideoReady() async {
     final state = _engine.state;
     if ((state.width ?? 0) > 0 && (state.height ?? 0) > 0) return;
-    await _engine.stream.width.firstWhere((value) => value != null && value > 0)
-        .timeout(const Duration(seconds: 15));
-    final latest = _engine.state;
-    if ((latest.height ?? 0) > 0) return;
-    await _engine.stream.height.firstWhere((value) => value != null && value > 0)
-        .timeout(const Duration(seconds: 5));
+    try {
+      await _engine.stream.width.firstWhere((value) => value != null && value > 0)
+          .timeout(const Duration(seconds: 10));
+      final latest = _engine.state;
+      if ((latest.height ?? 0) > 0) return;
+      await _engine.stream.height.firstWhere((value) => value != null && value > 0)
+          .timeout(const Duration(seconds: 4));
+    } on TimeoutException {
+      // Audio-only streams (radio) and streams that report their size very
+      // late never give dimensions. If the media is really advancing, accept it
+      // instead of treating it as a failure.
+      if (_engine.state.position > const Duration(milliseconds: 500) && _engine.state.playing) return;
+      rethrow;
+    }
   }
 
   Future<void> pause() => _engine.pause();
@@ -489,65 +626,37 @@ Widget _qualityBadge(Size size) {
   );
 }
 
-/// Sizes the player to the device: full screen when [fullscreen], otherwise a
-/// 16:9 box spanning the full width (capped so it never eats the whole screen).
-class _PlayerBox extends StatelessWidget {
-  final bool fullscreen;
-  final Color color;
-  final Widget child;
-  const _PlayerBox({required this.fullscreen, required this.color, required this.child});
-  @override
-  Widget build(BuildContext context) {
-    if (fullscreen) {
-      return Container(width: double.infinity, height: double.infinity, color: color, child: child);
-    }
-    final media = MediaQuery.of(context);
-    final w = media.size.width;
-    final maxH = media.size.height * 0.45;
-    final h = (w * 9 / 16).clamp(0.0, maxH).toDouble();
-    return Container(width: double.infinity, height: h, color: color, child: child);
-  }
-}
-
 class VideoPlayer extends StatelessWidget {
   final AnantaPlayerController controller;
   const VideoPlayer(this.controller, {super.key});
   @override
   Widget build(BuildContext context) => LayoutBuilder(
         builder: (context, constraints) {
-          // Rebuild whenever libmpv reports the real decoded size, so the fit
-          // never depends on a stale/default aspect ratio.
-          return ValueListenableBuilder<Size>(
-            valueListenable: controller.videoSize,
-            builder: (context, size, _) {
-              final srcAspect = (size.width > 0 && size.height > 0)
-                  ? size.width / size.height
-                  : 16 / 9;
-              final boxAspect =
-                  constraints.hasBoundedWidth && constraints.hasBoundedHeight &&
-                          constraints.maxHeight > 0
-                      ? constraints.maxWidth / constraints.maxHeight
-                      : srcAspect;
-              // Fill the whole box (no black side bars) on every screen size.
-              // If the source is wildly different from the box (e.g. 4:3 on a
-              // 20:9 phone) fall back to "contain" so the picture isn't mangled.
-              final mismatch = boxAspect / srcAspect;
-              final fit = (mismatch >= 0.7 && mismatch <= 1.5)
-                  ? BoxFit.fill
-                  : BoxFit.contain;
-              return ClipRect(
-                child: SizedBox.expand(
-                  child: Video(
-                    // Rebind the video surface for each channel controller.
-                    key: ValueKey<AnantaPlayerController>(controller),
-                    controller: controller._video,
-                    controls: NoVideoControls,
-                    fill: Colors.transparent,
-                    fit: fit,
-                  ),
+          // Preserve the source video height and aspect ratio vertically.
+          // Expand only along X to cover the side bars, then clip any horizontal
+          // overflow at the screen edges. Never scale the Y axis.
+          final aspect = controller.value.aspectRatio > 0
+              ? controller.value.aspectRatio
+              : 16 / 9;
+          final height = constraints.maxHeight;
+          final widthAtSourceAspect = height * aspect;
+          final scaleX = widthAtSourceAspect > 0
+              ? constraints.maxWidth / widthAtSourceAspect
+              : 1.0;
+          return ClipRect(
+            child: Transform.scale(
+              scaleX: scaleX,
+              scaleY: 1.0,
+              child: SizedBox.expand(
+                child: Video(
+                  // Rebind the video surface for each channel controller.
+                  key: ValueKey<AnantaPlayerController>(controller),
+                  controller: controller._video,
+                  controls: NoVideoControls,
+                  fit: BoxFit.fitHeight,
                 ),
-              );
-            },
+              ),
+            ),
           );
         },
       );
@@ -560,6 +669,9 @@ class Channel {
   final String logo;
   final String tvgId;
   final String tvgName;
+  /// Extra HTTP headers for this stream (from #EXTVLCOPT / #EXTHTTP / #KODIPROP
+  /// lines or a `url|User-Agent=..&Referer=..` suffix in the playlist).
+  final Map<String, String> headers;
   const Channel({
     required this.name,
     required this.url,
@@ -567,6 +679,7 @@ class Channel {
     this.logo = '',
     this.tvgId = '',
     this.tvgName = '',
+    this.headers = const {},
   });
 }
 
@@ -711,10 +824,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         });
       }
     });
-    // Announcement banner (phones/tablets; the native side ignores TV).
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) NoticeService.instance.start(context);
-    });
     _loadFavorites();
     _loadPlaylist();
     // Local storage for the EPG files and the channel_logos folder. Logos that
@@ -781,7 +890,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _bufferingStartedAt = null;
         _lastHealthPosition = null;
         debugPrint('Stream stalled; reconnecting (attempt $_runtimeRetryCount)');
-        _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
+        _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount, rotateProfiles: false);
       }
     });
   }
@@ -1515,52 +1624,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     return pattern.firstMatch(line)?.group(1) ?? '';
   }
 
-  List<Channel> _parseM3u(String content) {
-    final result = <Channel>[];
-    final lines = content.split(RegExp(r'\r?\n'));
-    String? name;
-    String group = 'Live TV';
-    String logo = '';
-    String tvgId = '';
-    String tvgName = '';
-    for (final rawLine in lines) {
-      final line = rawLine.trim();
-      if (line.isEmpty) continue;
-      if (line.startsWith('#EXTINF')) {
-        final comma = line.lastIndexOf(',');
-        name = comma >= 0
-            ? line.substring(comma + 1).trim()
-            : 'Unknown channel';
-        group = _attribute(line, 'group-title');
-        logo = _attribute(line, 'tvg-logo');
-        tvgId = _attribute(line, 'tvg-id');
-        tvgName = _attribute(line, 'tvg-name');
-        if (group.isEmpty) group = 'Live TV';
-      } else if (!line.startsWith('#') && name != null) {
-        final uri = Uri.tryParse(line);
-        if (uri != null &&
-            (uri.scheme == 'http' || uri.scheme == 'https') &&
-            uri.host.isNotEmpty) {
-          result.add(
-            Channel(
-              name: name,
-              url: line,
-              group: group,
-              logo: logo,
-              tvgId: tvgId,
-              tvgName: tvgName,
-            ),
-          );
-        }
-        name = null;
-        group = 'Live TV';
-        logo = '';
-        tvgId = '';
-        tvgName = '';
-      }
-    }
-    return result;
-  }
+  List<Channel> _parseM3u(String content) => _parseM3uIsolate(content);
 
   // --------------------------------------------------
   // EPG / XMLTV
@@ -2359,7 +2423,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   // PLAYBACK
   // --------------------------------------------------
-  Future<void> _playChannel(Channel channel, {int retryAttempt = 0}) async {
+  Future<void> _playChannel(Channel channel, {int retryAttempt = 0, bool rotateProfiles = true}) async {
     if (!mounted) return;
     // Every selection supersedes the previous pending request. Do not block
     // channel changes while a stream is buffering, and keep the current player
@@ -2395,13 +2459,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     // the replacement has successfully started.
     if (!mounted || requestId != _playRequestId) return;
     _controlsTimer?.cancel();
+    // Compatibility profile (0..5): header set = profile % 3, safe decoding =
+    // profile >= 3. The profile that worked last time for this channel is tried
+    // first; every failed attempt moves on to the next one.
+    final profile = ((_goodProfile[channel.url] ?? 0) + (rotateProfiles ? retryAttempt : 0)) % 6;
     final controller = AnantaPlayerController.networkUrl(
-      Uri.parse(channel.url),
-      httpHeaders: const {
-        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
-        'Accept': '*/*',
-        'Connection': 'keep-alive',
-      },
+      Uri.tryParse(channel.url) ?? Uri.parse(Uri.encodeFull(channel.url)),
+      httpHeaders: _streamHeaders(channel, profile % 3),
+      safeMode: profile >= 3,
       videoPlayerOptions: null,
     );
     _pendingPlayer = controller;
@@ -2420,8 +2485,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _status = 'Buffering ${channel.name}...';
     });
     _showChannelInfoFor10Seconds();
-    // The current channel keeps playing untouched until the new stream has
-    // its first frame; only then is it swapped (and the old player released).
     try {
       _pendingPlayer = controller;
       if (mounted) setState(() {}); // Mount the hidden video surface before waiting for metadata.
@@ -2444,7 +2507,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       // stays black with a permanent buffering spinner.
       await controller.setVolume(0.0);
       await controller.play();
-      await controller.waitForVideoReady().timeout(const Duration(seconds: 12));
+      await controller.waitForVideoReady().timeout(const Duration(seconds: 18));
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
@@ -2456,6 +2519,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         return;
       }
       _pendingPlayer = null;
+      _goodProfile[channel.url] = profile;
       setState(() {
         _player = controller;
         _selectedChannel = channel;
@@ -2511,6 +2575,41 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }
     }
 
+  }
+
+  // Some CDNs (CloudFront/Wowza, etc.) accept one client signature but reject
+  // another, so retries of the same channel try different ones.
+  final Map<String, int> _goodProfile = {};
+
+  Map<String, String> _streamHeaders(Channel channel, int headerSet) {
+    final base = _streamHeaderSet(channel.url, headerSet);
+    // Headers declared in the playlist for this channel always win.
+    return channel.headers.isEmpty ? base : {...base, ...channel.headers};
+  }
+
+  Map<String, String> _streamHeaderSet(String url, int set) {
+    final uri = Uri.tryParse(url);
+    final origin = (uri != null && uri.hasScheme && uri.host.isNotEmpty)
+        ? '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}'
+        : '';
+    switch (set % 3) {
+      case 0:
+        return const {
+          'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+          'Accept': '*/*',
+          'Connection': 'keep-alive',
+        };
+      case 1:
+        return {
+          'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': '*/*',
+          if (origin.isNotEmpty) 'Referer': '$origin/',
+          if (origin.isNotEmpty) 'Origin': origin,
+        };
+      default:
+        return const {'Accept': '*/*'};
+    }
   }
 
   Future<void> _togglePlayback() async {
@@ -2682,15 +2781,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final tvMode = media.size.width >= 850 && media.size.width > media.size.height;
     final player = _player;
     final initialized = player?.value.isInitialized == true;
-    // In Picture-in-Picture nothing opaque is painted behind the video, so no
-    // white/black box shows before the first frame arrives.
-    final pipNow = _inPip || _looksLikePip(media.size);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: initialized ? _togglePlayerControls : null,
-      child: _PlayerBox(
-        fullscreen: fullscreen,
-        color: pipNow ? Colors.transparent : Colors.black,
+      child: Container(
+        width: double.infinity,
+        height: fullscreen ? double.infinity : 220,
+        color: Colors.black,
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -2700,28 +2797,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             if (initialized)
               Positioned.fill(
                 child: ColoredBox(
-                  color: pipNow ? Colors.transparent : Colors.black,
-                  child: TweenAnimationBuilder<double>(
-                    key: ValueKey<AnantaPlayerController>(player!),
-                    tween: Tween<double>(begin: 0, end: 1),
-                    duration: const Duration(milliseconds: 450),
-                    curve: Curves.easeOut,
-                    builder: (context, v, child) => Opacity(opacity: v, child: child),
-                    child: VideoPlayer(player),
-                  ),
+                  color: Colors.black,
+                  child: VideoPlayer(player!),
                 ),
               )
-            else if (!pipNow)
+            else
               Center(
                 child: _connecting
-                    ? Opacity(
-                        opacity: 0.35,
-                        child: Image.asset(
-                          'assets/ananta_launcher_icon.png',
-                          width: 72,
-                          height: 72,
-                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                        ),
+                    ? const CircularProgressIndicator(
+                        color: accentColor,
                       )
                     : Icon(
                         _playerError == null
@@ -3181,7 +3265,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   @override
   void dispose() {
-    NoticeService.instance.stop();
     _pipChannel.setMethodCallHandler(null);
     unawaited(_pipChannel.invokeMethod('setPipAutoEnter', {'enabled': false}).catchError((Object e) { debugPrint('PiP cleanup error: $e'); }));
     _controlsTimer?.cancel();
@@ -3233,8 +3316,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       child: WillPopScope(
       onWillPop: _handleBack,
       child: Scaffold(
-        backgroundColor: inPip ? Colors.transparent : null,
-        resizeToAvoidBottomInset: !inPip,
+        backgroundColor: inPip ? Colors.black : null,
         extendBodyBehindAppBar: !(_fullscreen || inPip || useTvLayout),
         appBar: (_fullscreen || inPip || useTvLayout)
             ? null
@@ -3263,66 +3345,58 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     ),
                   ),
                 ),
-                titleSpacing: 12,
                 title: Row(
                   children: [
-                    // Animated TV-streaming logo (drawn in code, no image).
-                    const AnimatedTvLogo(size: 44),
-                    const SizedBox(width: 10),
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        ShaderMask(
-                          shaderCallback: (rect) => const LinearGradient(
-                            colors: [Colors.white, Color(0xFFD6CCFF), Color(0xFFAA98FF)],
-                          ).createShader(rect),
-                          child: const Text(
-                            'Ananta OTT',
-                            style: TextStyle(
-                              fontSize: 21,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 0.6,
-                              height: 1.05,
-                              color: Colors.white,
-                            ),
-                          ),
+                    const Icon(
+                      Icons.blur_on,
+                      color: accentColor,
+                      size: 29,
+                    ),
+                    const SizedBox(width: 8),
+                    ShaderMask(
+                      shaderCallback: (rect) => const LinearGradient(
+                        colors: [Colors.white, Color(0xFFC9BEFF)],
+                      ).createShader(rect),
+                      child: const Text(
+                        'Ananta OTT',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.3,
+                          color: Colors.white,
                         ),
-                        const Text(
-                          'LIVE TV  •  STREAMING',
-                          style: TextStyle(
-                            fontSize: 8.5,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 1.6,
-                            color: Color(0xAAC9BEFF),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ],
                 ),
                 actions: [
-                  GlassIconButton(
+                  IconButton(
                     tooltip: 'Favorites',
                     onPressed: () {
                       setState(() {
                         _showFavoritesOnly = !_showFavoritesOnly;
                       });
                     },
-                    icon: _showFavoritesOnly
-                        ? Icons.favorite_rounded
-                        : Icons.favorite_border_rounded,
-                    color: _showFavoritesOnly ? const Color(0xFFFF7BA9) : Colors.white,
-                    glow: _showFavoritesOnly ? const Color(0xFFFF4F8B) : null,
+                    icon: Icon(
+                      _showFavoritesOnly
+                          ? Icons.favorite
+                          : Icons.favorite_border,
+                    ),
                   ),
-                  const NoticeBell(),
-                  GlassIconButton(
+                  IconButton(
                     tooltip: 'Refresh playlist',
-                    onPressed: _loadingPlaylist ? null : _loadPlaylist,
-                    icon: Icons.refresh_rounded,
-                    busy: _loadingPlaylist,
+                    onPressed:
+                        _loadingPlaylist ? null : _loadPlaylist,
+                    icon: _loadingPlaylist
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: accentColor,
+                            ),
+                          )
+                        : const Icon(Icons.refresh),
                   ),
-                  const SizedBox(width: 8),
                 ],
               ),
         body: (_fullscreen || inPip)
@@ -3343,10 +3417,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                       ),
                       child: Row(
                         children: [
-                          Expanded(
-                            child: _NowPlayingHeader(
-                              channelName: _selectedChannel?.name.trim() ?? '',
-                              active: _selectedChannel != null && !_connecting,
+                          const Expanded(
+                            child: Text(
+                              'Explore channels',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
                           Text(
@@ -3394,6 +3471,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     ),
                     const SizedBox(height: 10),
                     _buildCategories(),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
+                      child: Text(
+                        _status,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
                     Expanded(
                       child: channels.isEmpty
                           ? Center(
@@ -3434,85 +3523,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               ),
       ),
       ),
-    );
-  }
-}
-
-
-/// "Now playing" header: animated equalizer icon, small label and the
-/// current channel name.
-class _NowPlayingHeader extends StatefulWidget {
-  const _NowPlayingHeader({required this.channelName, required this.active});
-  final String channelName;
-  final bool active;
-
-  @override
-  State<_NowPlayingHeader> createState() => _NowPlayingHeaderState();
-}
-
-class _NowPlayingHeaderState extends State<_NowPlayingHeader>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 1400))
-    ..repeat();
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  /// Just an animated live dot (pulsing ripple) shown before the channel name.
-  Widget _liveIndicator(double t, double glow) {
-    final color = widget.active ? const Color(0xFFFF3B4E) : Colors.white38;
-    final ripple = widget.active ? t : 0.0;
-    return SizedBox(
-      width: 16,
-      height: 16,
-      child: Stack(alignment: Alignment.center, children: [
-        if (widget.active)
-          Container(
-            width: 6 + 10 * ripple,
-            height: 6 + 10 * ripple,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: color.withOpacity(0.55 * (1 - ripple)),
-            ),
-          ),
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: color,
-            boxShadow: widget.active
-                ? [BoxShadow(color: color.withOpacity(glow + 0.2), blurRadius: 8)]
-                : null,
-          ),
-        ),
-      ]),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final name = widget.channelName.isEmpty ? 'Select a channel' : widget.channelName;
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (context, _) {
-        final t = _ctrl.value;
-        final glow = 0.25 + 0.2 * (0.5 + 0.5 * math.sin(t * 2 * math.pi));
-        return Row(children: [
-          _liveIndicator(t, glow),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, letterSpacing: 0.9, fontWeight: FontWeight.w700, color: Color(0xFFC9BEFF))),
-          ),
-        ]);
-      },
     );
   }
 }
