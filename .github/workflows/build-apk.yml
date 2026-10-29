@@ -46,16 +46,13 @@ jobs:
           test -f android_template/MainActivity.kt || { echo "::error::android_template/MainActivity.kt is missing. Upload the android_template folder."; exit 1; }
           mkdir -p build_app/android/app/src/main/kotlin/com/ananta/ott
           cp android_template/MainActivity.kt build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt
-          # Notification card layouts (lock screen / heads-up).
-          mkdir -p build_app/android/app/src/main/res
-          cp -r android_template/res/. build_app/android/app/src/main/res/
 
       - name: Copy app source and configure Android TV icon and manifest
         run: |
           test -f lib/main.dart
           test -f lib/update_checker.dart
           # Every Dart file the app imports must be uploaded to lib/.
-          for f in splash_screen.dart app_updater.dart notice_banner.dart; do
+          for f in splash_screen.dart app_updater.dart; do
             test -f "lib/$f" || { echo "::error::lib/$f is missing in the repository. Upload it to the lib folder."; exit 1; }
           done
           cp lib/*.dart build_app/lib/
@@ -162,20 +159,7 @@ jobs:
               el = ET.Element('uses-feature'); el.set(ns + 'name', 'android.hardware.touchscreen'); el.set(ns + 'required', 'false'); root.insert(1, el)
           if not has_tag('uses-permission', 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'):
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'); root.insert(2, el)
-          if not has_tag('uses-permission', 'name', 'android.permission.POST_NOTIFICATIONS'):
-              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.POST_NOTIFICATIONS'); root.insert(3, el)
           app = root.find('application')
-          # Background announcement check (notice.json) about every 15 minutes.
-          svc = ET.SubElement(app, 'service')
-          svc.set(ns + 'name', 'com.ananta.ott.NoticeJobService')
-          svc.set(ns + 'permission', 'android.permission.BIND_JOB_SERVICE')
-          svc.set(ns + 'exported', 'true')
-          # Firebase Cloud Messaging receiver.
-          fcm = ET.SubElement(app, 'service')
-          fcm.set(ns + 'name', 'com.ananta.ott.AnantaMessagingService')
-          fcm.set(ns + 'exported', 'false')
-          fcm_filter = ET.SubElement(fcm, 'intent-filter')
-          fcm_action = ET.SubElement(fcm_filter, 'action'); fcm_action.set(ns + 'name', 'com.google.firebase.MESSAGING_EVENT')
           # FileProvider so Android's installer can read the downloaded APK.
           prov = ET.SubElement(app, 'provider')
           prov.set(ns + 'name', 'androidx.core.content.FileProvider')
@@ -259,46 +243,6 @@ jobs:
                            '    <item android:drawable="@color/ananta_bg" />\n'
                            '</layer-list>\n')
           PYCODE
-
-      - name: Configure Firebase Cloud Messaging
-        run: |
-          python3 - <<'PYFCM'
-          import json, re
-          from pathlib import Path
-          from xml.sax.saxutils import escape
-          app = Path('build_app/android/app')
-          # 1) Firebase Messaging SDK (works for build.gradle and build.gradle.kts).
-          gradle = app / 'build.gradle.kts'
-          if not gradle.exists():
-              gradle = app / 'build.gradle'
-          with gradle.open('a') as f:
-              f.write('\ndependencies {\n    implementation("com.google.firebase:firebase-messaging:24.1.0")\n}\n')
-          # 2) Firebase options from google-services.json (no Gradle plugin needed).
-          src = Path('google-services.json')
-          if not src.exists():
-              print('::warning::google-services.json not found in the repository root: push notifications are disabled in this build.')
-          else:
-              d = json.loads(src.read_text())
-              pi = d['project_info']
-              client = next(c for c in d['client'] if c['client_info']['android_client_info']['package_name'] == 'com.ananta.ott')
-              vals = {
-                  'google_app_id': client['client_info']['mobilesdk_app_id'],
-                  'gcm_defaultSenderId': pi['project_number'],
-                  'google_api_key': client['api_key'][0]['current_key'],
-                  'google_crash_reporting_api_key': client['api_key'][0]['current_key'],
-                  'project_id': pi['project_id'],
-              }
-              if pi.get('storage_bucket'):
-                  vals['google_storage_bucket'] = pi['storage_bucket']
-              res = Path('build_app/android/app/src/main/res/values')
-              res.mkdir(parents=True, exist_ok=True)
-              lines = ['<?xml version="1.0" encoding="utf-8"?>', '<resources>']
-              for k, v in vals.items():
-                  lines.append(f'    <string name="{k}" translatable="false">{escape(v)}</string>')
-              lines.append('</resources>')
-              (res / 'firebase_config.xml').write_text('\n'.join(lines) + '\n')
-              print('Firebase configured for project', pi['project_id'])
-          PYFCM
 
       - name: Configure persistent release signing
         env:
