@@ -1,3 +1,6 @@
+v1.1.9 - ExoPlayer engine (UI unchanged)
+Playback now uses native AndroidX Media3 ExoPlayer (same engine family as TiviMate) instead of media_kit/libmpv. HLS, DASH, SmoothStreaming, RTSP and raw MPEG-TS/progressive streams are supported; URLs without an extension are probed (progressive -> HLS -> DASH). An FFmpeg software audio decoder (org.jellyfin.media3) is the automatic fallback for MP2/MPGA, AC3, E-AC3, DTS, Opus, etc. Native code: android_template/ExoEngine.kt (upload it with the rest of android_template). media_kit dependencies were removed. Not compiled or device-tested in this environment - verify the GitHub Actions build.
+
 Ananta OTT — EPG remote navigation update
 Remote controls
 Enter/Select while the sidebar is hidden opens the channel list only.
@@ -25,6 +28,3 @@ Launcher icon redesigned as a safe-zone adaptive icon (dark background + inner e
 v1.1.7 notes
 `android_template/MainActivity.kt` now holds the native Android code (PiP + in-app installer). Upload this folder too.
 Update dialog: resumable download, PackageInstaller install with real error messages, full TV remote support.
-
-Player compatibility (auto fallback)
-If a channel does not open, the app retries it with up to 6 profiles: 3 header sets (VLC, browser + Referer/Origin, plain) x 2 decoding modes (tuned hardware, compatibility/software). The profile that works is remembered per channel. Headers from the playlist (#EXTVLCOPT, #EXTHTTP, #KODIPROP, url|Header=Value) are applied automatically; rtmp/rtsp/udp/srt links are accepted.

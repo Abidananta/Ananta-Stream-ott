@@ -8,8 +8,6 @@ import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
 import 'splash_screen.dart';
@@ -173,49 +171,6 @@ Map<String, dynamic> _decodeEpgCacheIsolate(String cached) {
 }
 
 // ---- Playlist prefetch (runs while the splash animation plays) ------------
-// Every stream type libmpv/FFmpeg can open is accepted (the same FFmpeg-based
-// engine PotPlayer uses): HLS, DASH, TS, FLV, MP4, MKV over http(s), plus
-// rtmp/rtsp/udp/rtp/srt/mms.
-const Set<String> _playableSchemes = {
-  'http', 'https', 'rtmp', 'rtmps', 'rtmpe', 'rtmpt', 'rtmpte', 'rtsp', 'rtsps',
-  'udp', 'rtp', 'srt', 'mms', 'mmsh', 'mmst', 'tcp', 'tls', 'ftp',
-};
-
-String _canonHeader(String key) {
-  final k = key.trim();
-  switch (k.toLowerCase()) {
-    case 'user-agent':
-    case 'http-user-agent':
-    case 'useragent':
-      return 'User-Agent';
-    case 'referer':
-    case 'referrer':
-    case 'http-referer':
-    case 'http-referrer':
-      return 'Referer';
-    case 'origin':
-    case 'http-origin':
-      return 'Origin';
-    case 'cookie':
-    case 'http-cookie':
-      return 'Cookie';
-    default:
-      return k;
-  }
-}
-
-// "User-Agent=Foo&Referer=https%3A%2F%2Fsite" (Kodi / pipe style).
-void _addHeaderPairs(Map<String, String> into, String raw) {
-  for (final part in raw.split('&')) {
-    final eq = part.indexOf('=');
-    if (eq <= 0) continue;
-    final key = _canonHeader(part.substring(0, eq));
-    var value = part.substring(eq + 1).trim();
-    try { value = Uri.decodeComponent(value); } catch (_) {}
-    if (key.isNotEmpty && value.isNotEmpty) into[key] = value;
-  }
-}
-
 List<Channel> _parseM3uIsolate(String content) {
   String attr(String line, String attribute) {
     final pattern = RegExp('$attribute\\s*=\\s*["\\x27]([^"\\x27]*)', caseSensitive: false);
@@ -227,87 +182,27 @@ List<Channel> _parseM3uIsolate(String content) {
   String logo = '';
   String tvgId = '';
   String tvgName = '';
-  var headers = <String, String>{};
-  void reset() {
-    name = null;
-    group = 'Live TV';
-    logo = '';
-    tvgId = '';
-    tvgName = '';
-    headers = <String, String>{};
-  }
   for (final rawLine in content.split(RegExp(r'\r?\n'))) {
     final line = rawLine.trim();
     if (line.isEmpty) continue;
     if (line.startsWith('#EXTINF')) {
       final comma = line.lastIndexOf(',');
       name = comma >= 0 ? line.substring(comma + 1).trim() : 'Unknown channel';
-      if (name!.isEmpty) name = 'Unknown channel';
       group = attr(line, 'group-title');
       logo = attr(line, 'tvg-logo');
       tvgId = attr(line, 'tvg-id');
       tvgName = attr(line, 'tvg-name');
       if (group.isEmpty) group = 'Live TV';
-      headers = <String, String>{};
-    } else if (line.startsWith('#EXTVLCOPT:')) {
-      final body = line.substring(11);
-      final eq = body.indexOf('=');
-      if (eq > 0) {
-        final key = body.substring(0, eq).trim().toLowerCase();
-        final value = body.substring(eq + 1).trim();
-        const known = {'http-user-agent', 'http-referrer', 'http-referer', 'http-origin', 'http-cookie'};
-        if (known.contains(key) && value.isNotEmpty) headers[_canonHeader(key)] = value;
+    } else if (!line.startsWith('#') && name != null) {
+      final uri = Uri.tryParse(line);
+      if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) {
+        result.add(Channel(name: name, url: line, group: group, logo: logo, tvgId: tvgId, tvgName: tvgName));
       }
-    } else if (line.startsWith('#EXTHTTP:')) {
-      try {
-        final decoded = jsonDecode(line.substring(9).trim());
-        if (decoded is Map) {
-          decoded.forEach((k, v) {
-            if (v != null && v.toString().isNotEmpty) headers[_canonHeader(k.toString())] = v.toString();
-          });
-        }
-      } catch (_) {}
-    } else if (line.startsWith('#KODIPROP:')) {
-      final body = line.substring(10);
-      final eq = body.indexOf('=');
-      if (eq > 0) {
-        final key = body.substring(0, eq).trim().toLowerCase();
-        if (key.endsWith('stream_headers') || key.endsWith('manifest_headers')) {
-          _addHeaderPairs(headers, body.substring(eq + 1));
-        }
-      }
-    } else if (!line.startsWith('#')) {
-      // Optional "url|Header=Value&Header2=Value2" suffix.
-      var url = line;
-      final pipe = line.indexOf('|');
-      if (pipe > 0) {
-        url = line.substring(0, pipe).trim();
-        _addHeaderPairs(headers, line.substring(pipe + 1));
-      }
-      final uri = Uri.tryParse(url) ?? Uri.tryParse(Uri.encodeFull(url));
-      final scheme = uri?.scheme.toLowerCase() ?? '';
-      final ok = uri != null &&
-          _playableSchemes.contains(scheme) &&
-          (uri.host.isNotEmpty || (scheme != 'http' && scheme != 'https'));
-      if (ok) {
-        var channelName = name;
-        if (channelName == null || channelName.isEmpty) {
-          // Playlist without #EXTINF lines: name the entry after its URL.
-          final u = uri!;
-          final seg = u.pathSegments.where((e) => e.isNotEmpty).toList();
-          channelName = seg.isNotEmpty ? seg.last : u.host;
-        }
-        result.add(Channel(
-          name: channelName,
-          url: url,
-          group: group,
-          logo: logo,
-          tvgId: tvgId,
-          tvgName: tvgName,
-          headers: Map<String, String>.unmodifiable(headers),
-        ));
-      }
-      reset();
+      name = null;
+      group = 'Live TV';
+      logo = '';
+      tvgId = '';
+      tvgName = '';
     }
   }
   return result;
@@ -356,14 +251,6 @@ String _scrub(String? v) => (v ?? '').replaceAll(_urlPattern, '[url]');
 Future<void> _startApp() async {
   WidgetsFlutterBinding.ensureInitialized();
   ErrorWidget.builder = (details) => const SizedBox.shrink();
-  try {
-    MediaKit.ensureInitialized();
-  } catch (e) {
-    debugPrint('MediaKit init failed: $e');
-    if (_sentryDsn.isNotEmpty) {
-      await Sentry.captureException(e);
-    }
-  }
   _startPlaylistPrefetch();
   runApp(const AnantaOttApp());
 }
@@ -402,189 +289,151 @@ Future<void> main() async {
 }
 
 // Compatibility wrapper keeps the existing Ananta OTT UI and channel logic
-// while using libmpv/FFmpeg-backed media_kit for broader audio codec support.
+// while playing through native AndroidX Media3 ExoPlayer (the same engine
+// family TiviMate uses) with an FFmpeg software audio-decoder fallback.
+// The native side lives in android_template/ExoEngine.kt.
 class _AnantaPlayerValue {
   final AnantaPlayerController owner;
   const _AnantaPlayerValue(this.owner);
   bool get isInitialized => owner._opened;
   bool get hasError => owner._error != null;
   String? get errorDescription => owner._error;
-  bool get isPlaying => owner._engine.state.playing;
+  bool get isPlaying => owner._playing;
   bool get isBuffering => owner._buffering;
-  Duration get position => owner._engine.state.position;
-  bool get isCompleted => owner._engine.state.completed;
+  Duration get position => owner._position;
+  bool get isCompleted => owner._completed;
   double get aspectRatio {
-    final w = owner._engine.state.width ?? 0;
-    final h = owner._engine.state.height ?? 0;
+    final w = owner._vw;
+    final h = owner._vh;
     return w > 0 && h > 0 ? w / h : 16 / 9;
   }
 }
 
 class AnantaPlayerController {
+  static const MethodChannel _exo = MethodChannel('com.ananta.ott/exo');
+  static final Map<int, AnantaPlayerController> _live = <int, AnantaPlayerController>{};
+  static bool _handlerSet = false;
+  static void _ensureHandler() {
+    if (_handlerSet) return;
+    _handlerSet = true;
+    _exo.setMethodCallHandler((call) async {
+      if (call.method != 'event') return;
+      final args = Map<dynamic, dynamic>.from(call.arguments as Map);
+      _live[args['id'] as int]?._onEvent(args);
+    });
+  }
+
   final Uri uri;
   final Map<String, String> httpHeaders;
-  // 96 MB demuxer buffer (default is 32 MB) so brief network stalls on live HLS
-  // are absorbed by the cache instead of stopping the picture.
-  // [safeMode] = compatibility profile used by the automatic retries: software
-  // decoding, smaller buffers and no live-edge tricks, for streams the tuned
-  // (hardware) profile cannot open.
-  final bool safeMode;
-  late final Player _engine = Player(
-      configuration: PlayerConfiguration(
-          bufferSize: (safeMode ? 32 : 96) * 1024 * 1024));
-  late final VideoController _video = VideoController(
-      _engine,
-      configuration: VideoControllerConfiguration(
-          enableHardwareAcceleration: !safeMode));
+  int? _id;
+  int? textureId;
   bool _opened = false;
   bool _buffering = false;
+  bool _playing = false;
+  bool _completed = false;
+  Duration _position = Duration.zero;
   String? _error;
-  StreamSubscription<bool>? _bufferingSubscription;
-  // Decoded video size reported by libmpv; drives the HD/FHD/4K badge.
+  // Decoded video size reported by ExoPlayer; drives the HD/FHD/4K badge.
   final ValueNotifier<Size> videoSize = ValueNotifier<Size>(Size.zero);
   int _vw = 0;
   int _vh = 0;
-  StreamSubscription<int?>? _widthSubscription;
-  StreamSubscription<int?>? _heightSubscription;
-  StreamSubscription<String>? _errorSubscription;
-  AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, this.safeMode = false, dynamic videoPlayerOptions}) {
-    _bufferingSubscription = _engine.stream.buffering.listen((value) {
-      _buffering = value;
-    }, onError: (Object error) {
-      debugPrint('Player buffering-state error: $error');
-    });
-    _widthSubscription = _engine.stream.width.listen((value) {
-      debugPrint('Ananta video width: $value for $uri');
-      _vw = value ?? 0;
-      if (!_disposed) videoSize.value = Size(_vw.toDouble(), _vh.toDouble());
-    }, onError: (Object error) {
-      debugPrint('Ananta video-width stream error: $error');
-    });
-    _heightSubscription = _engine.stream.height.listen((value) {
-      debugPrint('Ananta video height: $value for $uri');
-      _vh = value ?? 0;
-      if (!_disposed) videoSize.value = Size(_vw.toDouble(), _vh.toDouble());
-    }, onError: (Object error) {
-      debugPrint('Ananta video-height stream error: $error');
-    });
-    _errorSubscription = _engine.stream.error.listen((value) {
-      debugPrint('Ananta media engine error for $uri: $value');
-    }, onError: (Object error) {
-      debugPrint('Ananta media error stream failure: $error');
-    });
+  final Completer<void> _ready = Completer<void>();
+
+  AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, dynamic videoPlayerOptions}) {
+    _ensureHandler();
+    _ready.future.ignore(); // an error before anyone awaits it must not be unhandled
   }
+
   _AnantaPlayerValue get value => _AnantaPlayerValue(this);
+
+  void _onEvent(Map<dynamic, dynamic> e) {
+    if (_disposed) return;
+    switch (e['type']) {
+      case 'size':
+        _vw = (e['w'] as num).toInt();
+        _vh = (e['h'] as num).toInt();
+        videoSize.value = Size(_vw.toDouble(), _vh.toDouble());
+        break;
+      case 'buffering':
+        _buffering = e['value'] == true;
+        break;
+      case 'playing':
+        _playing = e['value'] == true;
+        break;
+      case 'position':
+        _position = Duration(milliseconds: (e['ms'] as num).toInt());
+        break;
+      case 'ended':
+        _completed = true;
+        break;
+      case 'firstFrame':
+      case 'audioOnly':
+        if (!_ready.isCompleted) _ready.complete();
+        break;
+      case 'error':
+        _error = e['message']?.toString() ?? 'Player error';
+        debugPrint('Ananta ExoPlayer error for $uri: $_error');
+        if (!_ready.isCompleted) _ready.completeError(Exception(_error));
+        break;
+    }
+  }
+
   Future<void> initialize() async {
     try {
-      // Give live HLS streams a modest demux cache so brief network stalls
-      // can recover without immediately dropping the picture. These options
-      // are best-effort because support can vary by libmpv build.
-      // The media_kit Player API used by this project does not expose
-      // setProperty(). Keep initialization compatible with the pinned API.
-      // Buffering recovery is handled by the player's buffering state and
-      // retry logic elsewhere in the app.
-      await _tuneForLiveStreams();
-      await _engine.open(Media(uri.toString(), httpHeaders: httpHeaders), play: false);
+      final res = await _exo.invokeMapMethod<String, dynamic>('create', {
+        'url': uri.toString(),
+        'headers': httpHeaders,
+      });
+      _id = res!['id'] as int;
+      textureId = (res['textureId'] as num).toInt();
+      _live[_id!] = this;
+      if (_disposed) {
+        await dispose();
+        return;
+      }
       _opened = true;
     } catch (e) {
       _error = e.toString();
       rethrow;
     }
   }
-  // Best-effort libmpv tuning for smooth live HLS. Set through the native
-  // platform player (dynamic, so it never breaks compilation); any property a
-  // given libmpv build rejects is simply skipped.
-  Future<void> _tuneForLiveStreams() async {
-    // Common to every profile: PotPlayer-like tolerance for broken
-    // certificates and odd TS/FLV/HLS streams.
-    const common = <String, String>{
-      'cache': 'yes',
-      'network-timeout': '30',
-      'tls-verify': 'no',
-      'demuxer-lavf-probesize': '5000000',
-      'demuxer-lavf-analyzeduration': '5',
-      // Reconnect automatically when the server drops the connection.
-      'stream-lavf-o': 'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=%7%4xx,5xx,reconnect_delay_max=5',
-    };
-    const tuned = <String, String>{
-      // Read far ahead of the playback position (mpv default is only 1s), so
-      // the picture keeps playing through network hiccups.
-      'cache-secs': '90',
-      'demuxer-readahead-secs': '90',
-      'demuxer-max-bytes': '96MiB',
-      'demuxer-max-back-bytes': '8MiB',
-      // Pre-buffer before the first frame and after every stall instead of
-      // playing 1 second and stuttering again.
-      'cache-pause': 'yes',
-      'cache-pause-initial': 'yes',
-      'cache-pause-wait': '8',
-      'stream-buffer-size': '4MiB',
-      // Live HLS: start a few segments behind the live edge.
-      'demuxer-lavf-o': 'live_start_index=-5,allowed_extensions=ALL',
-      'hls-bitrate': 'max',
-    };
-    // Compatibility profile: start immediately, small buffers, default HLS
-    // behaviour, software decoding (see safeMode above).
-    const safe = <String, String>{
-      'cache-secs': '20',
-      'demuxer-readahead-secs': '20',
-      'demuxer-max-bytes': '32MiB',
-      'demuxer-max-back-bytes': '4MiB',
-      'cache-pause': 'yes',
-      'cache-pause-initial': 'no',
-      'cache-pause-wait': '2',
-      'stream-buffer-size': '1MiB',
-      'demuxer-lavf-o': 'allowed_extensions=ALL',
-      'hwdec': 'no',
-    };
-    final props = <String, String>{...common, ...(safeMode ? safe : tuned)};
-    final dynamic platform = _engine.platform;
-    for (final entry in props.entries) {
-      try {
-        await platform.setProperty(entry.key, entry.value);
-      } catch (e) {
-        debugPrint('mpv property ${entry.key} not applied: $e');
-      }
-    }
+
+  Future<void> setVolume(double volume) async {
+    final id = _id;
+    if (id == null || _disposed) return;
+    await _exo.invokeMethod('setVolume', {'id': id, 'volume': volume});
   }
 
-  Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
-  Future<void> play() => _engine.play();
-
-  // Wait until libmpv reports real video dimensions before committing a new
-  // channel to the UI. Opening a media item is not the same as having a frame
-  // ready; swapping players earlier exposes the black startup texture.
-  Future<void> waitForVideoReady() async {
-    final state = _engine.state;
-    if ((state.width ?? 0) > 0 && (state.height ?? 0) > 0) return;
-    try {
-      await _engine.stream.width.firstWhere((value) => value != null && value > 0)
-          .timeout(const Duration(seconds: 10));
-      final latest = _engine.state;
-      if ((latest.height ?? 0) > 0) return;
-      await _engine.stream.height.firstWhere((value) => value != null && value > 0)
-          .timeout(const Duration(seconds: 4));
-    } on TimeoutException {
-      // Audio-only streams (radio) and streams that report their size very
-      // late never give dimensions. If the media is really advancing, accept it
-      // instead of treating it as a failure.
-      if (_engine.state.position > const Duration(milliseconds: 500) && _engine.state.playing) return;
-      rethrow;
-    }
+  Future<void> play() async {
+    final id = _id;
+    if (id == null || _disposed) return;
+    _completed = false;
+    await _exo.invokeMethod('play', {'id': id});
   }
 
-  Future<void> pause() => _engine.pause();
+  Future<void> pause() async {
+    final id = _id;
+    if (id == null || _disposed) return;
+    await _exo.invokeMethod('pause', {'id': id});
+  }
+
+  // Wait until ExoPlayer has rendered the first video frame (or the stream is
+  // audio-only) before committing a new channel to the UI, so no black
+  // startup texture is exposed. Throws if the player reports an error.
+  Future<void> waitForVideoReady() => _ready.future;
+
   bool _disposed = false;
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
-    // Stop playback before releasing libmpv so audio does not linger on exit.
-    try { await _engine.stop(); } catch (e) { debugPrint('Player stop during dispose: $e'); }
-    try { await _bufferingSubscription?.cancel(); } catch (_) {}
-    try { await _widthSubscription?.cancel(); } catch (_) {}
-    try { await _heightSubscription?.cancel(); } catch (_) {}
-    try { await _errorSubscription?.cancel(); } catch (_) {}
-    try { await _engine.dispose(); } catch (e) { debugPrint('Player dispose error: $e'); }
+    final id = _id;
+    if (id != null) {
+      _live.remove(id);
+      // The native side stops playback before releasing so audio does not
+      // linger on exit.
+      try { await _exo.invokeMethod('dispose', {'id': id}); } catch (e) { debugPrint('Player dispose error: $e'); }
+    }
+    if (!_ready.isCompleted) _ready.complete();
   }
 }
 
@@ -648,12 +497,28 @@ class VideoPlayer extends StatelessWidget {
               scaleX: scaleX,
               scaleY: 1.0,
               child: SizedBox.expand(
-                child: Video(
-                  // Rebind the video surface for each channel controller.
-                  key: ValueKey<AnantaPlayerController>(controller),
-                  controller: controller._video,
-                  controls: NoVideoControls,
-                  fit: BoxFit.fitHeight,
+                child: ValueListenableBuilder<Size>(
+                  valueListenable: controller.videoSize,
+                  builder: (context, size, _) {
+                    final tid = controller.textureId;
+                    if (tid == null) return const SizedBox.shrink();
+                    final vw = size.width > 0 ? size.width : 1280.0;
+                    final vh = size.height > 0 ? size.height : 720.0;
+                    // Same fit as before: fit the source height, centre, clip.
+                    return ClipRect(
+                      child: FittedBox(
+                        fit: BoxFit.fitHeight,
+                        child: SizedBox(
+                          width: vw,
+                          height: vh,
+                          child: Texture(
+                            key: ValueKey<AnantaPlayerController>(controller),
+                            textureId: tid,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
@@ -669,9 +534,6 @@ class Channel {
   final String logo;
   final String tvgId;
   final String tvgName;
-  /// Extra HTTP headers for this stream (from #EXTVLCOPT / #EXTHTTP / #KODIPROP
-  /// lines or a `url|User-Agent=..&Referer=..` suffix in the playlist).
-  final Map<String, String> headers;
   const Channel({
     required this.name,
     required this.url,
@@ -679,7 +541,6 @@ class Channel {
     this.logo = '',
     this.tvgId = '',
     this.tvgName = '',
-    this.headers = const {},
   });
 }
 
@@ -890,7 +751,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _bufferingStartedAt = null;
         _lastHealthPosition = null;
         debugPrint('Stream stalled; reconnecting (attempt $_runtimeRetryCount)');
-        _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount, rotateProfiles: false);
+        _playChannel(_selectedChannel!, retryAttempt: _runtimeRetryCount);
       }
     });
   }
@@ -1624,7 +1485,52 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     return pattern.firstMatch(line)?.group(1) ?? '';
   }
 
-  List<Channel> _parseM3u(String content) => _parseM3uIsolate(content);
+  List<Channel> _parseM3u(String content) {
+    final result = <Channel>[];
+    final lines = content.split(RegExp(r'\r?\n'));
+    String? name;
+    String group = 'Live TV';
+    String logo = '';
+    String tvgId = '';
+    String tvgName = '';
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
+      if (line.isEmpty) continue;
+      if (line.startsWith('#EXTINF')) {
+        final comma = line.lastIndexOf(',');
+        name = comma >= 0
+            ? line.substring(comma + 1).trim()
+            : 'Unknown channel';
+        group = _attribute(line, 'group-title');
+        logo = _attribute(line, 'tvg-logo');
+        tvgId = _attribute(line, 'tvg-id');
+        tvgName = _attribute(line, 'tvg-name');
+        if (group.isEmpty) group = 'Live TV';
+      } else if (!line.startsWith('#') && name != null) {
+        final uri = Uri.tryParse(line);
+        if (uri != null &&
+            (uri.scheme == 'http' || uri.scheme == 'https') &&
+            uri.host.isNotEmpty) {
+          result.add(
+            Channel(
+              name: name,
+              url: line,
+              group: group,
+              logo: logo,
+              tvgId: tvgId,
+              tvgName: tvgName,
+            ),
+          );
+        }
+        name = null;
+        group = 'Live TV';
+        logo = '';
+        tvgId = '';
+        tvgName = '';
+      }
+    }
+    return result;
+  }
 
   // --------------------------------------------------
   // EPG / XMLTV
@@ -2423,7 +2329,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   // PLAYBACK
   // --------------------------------------------------
-  Future<void> _playChannel(Channel channel, {int retryAttempt = 0, bool rotateProfiles = true}) async {
+  Future<void> _playChannel(Channel channel, {int retryAttempt = 0}) async {
     if (!mounted) return;
     // Every selection supersedes the previous pending request. Do not block
     // channel changes while a stream is buffering, and keep the current player
@@ -2459,14 +2365,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     // the replacement has successfully started.
     if (!mounted || requestId != _playRequestId) return;
     _controlsTimer?.cancel();
-    // Compatibility profile (0..5): header set = profile % 3, safe decoding =
-    // profile >= 3. The profile that worked last time for this channel is tried
-    // first; every failed attempt moves on to the next one.
-    final profile = ((_goodProfile[channel.url] ?? 0) + (rotateProfiles ? retryAttempt : 0)) % 6;
     final controller = AnantaPlayerController.networkUrl(
-      Uri.tryParse(channel.url) ?? Uri.parse(Uri.encodeFull(channel.url)),
-      httpHeaders: _streamHeaders(channel, profile % 3),
-      safeMode: profile >= 3,
+      Uri.parse(channel.url),
+      httpHeaders: const {
+        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+        'Accept': '*/*',
+        'Connection': 'keep-alive',
+      },
       videoPlayerOptions: null,
     );
     _pendingPlayer = controller;
@@ -2501,13 +2406,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
       // Start playback, then mount the new Video widget immediately. Do not
       // wait for width/height metadata before committing the player: on some
-      // Android TV streams libmpv starts audio first and reports video
+      // Android TV streams audio can start first and reports video
       // dimensions late (or not at all). Keeping that player pending means its
       // Video widget is never mounted, so audio can be heard while the screen
       // stays black with a permanent buffering spinner.
       await controller.setVolume(0.0);
       await controller.play();
-      await controller.waitForVideoReady().timeout(const Duration(seconds: 18));
+      await controller.waitForVideoReady().timeout(const Duration(seconds: 12));
       if (!mounted || requestId != _playRequestId) {
         await controller.dispose();
         return;
@@ -2519,7 +2424,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         return;
       }
       _pendingPlayer = null;
-      _goodProfile[channel.url] = profile;
       setState(() {
         _player = controller;
         _selectedChannel = channel;
@@ -2575,41 +2479,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }
     }
 
-  }
-
-  // Some CDNs (CloudFront/Wowza, etc.) accept one client signature but reject
-  // another, so retries of the same channel try different ones.
-  final Map<String, int> _goodProfile = {};
-
-  Map<String, String> _streamHeaders(Channel channel, int headerSet) {
-    final base = _streamHeaderSet(channel.url, headerSet);
-    // Headers declared in the playlist for this channel always win.
-    return channel.headers.isEmpty ? base : {...base, ...channel.headers};
-  }
-
-  Map<String, String> _streamHeaderSet(String url, int set) {
-    final uri = Uri.tryParse(url);
-    final origin = (uri != null && uri.hasScheme && uri.host.isNotEmpty)
-        ? '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}'
-        : '';
-    switch (set % 3) {
-      case 0:
-        return const {
-          'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
-          'Accept': '*/*',
-          'Connection': 'keep-alive',
-        };
-      case 1:
-        return {
-          'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          'Accept': '*/*',
-          if (origin.isNotEmpty) 'Referer': '$origin/',
-          if (origin.isNotEmpty) 'Origin': origin,
-        };
-      default:
-        return const {'Accept': '*/*'};
-    }
   }
 
   Future<void> _togglePlayback() async {
@@ -2819,7 +2688,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               ),
             // Keep the pending decoder's Video widget mounted but invisible.
             // On Android TV, video output metadata may not arrive until the
-            // media_kit Video surface is attached. This lets the current channel
+            // video surface is attached. This lets the current channel
             // remain visible while the replacement warms up off-screen.
             if (_pendingPlayer != null && _pendingPlayer != player)
               Positioned.fill(

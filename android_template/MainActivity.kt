@@ -22,8 +22,11 @@ import android.util.Rational
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import androidx.media3.common.util.UnstableApi
 
+@UnstableApi
 class MainActivity : FlutterActivity() {
+    private var exoEngine: ExoEngine? = null
     private val channelName = "com.ananta.ott/pip"
     private var channel: MethodChannel? = null
     // True only while a stream is playing; gates Home/Recents auto-PiP.
@@ -41,6 +44,9 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         setupInstaller(flutterEngine)
+        // Native Media3 ExoPlayer (+ FFmpeg audio fallback) used by the Dart player wrapper.
+        exoEngine?.release()
+        exoEngine = ExoEngine(applicationContext, flutterEngine.dartExecutor.binaryMessenger, flutterEngine.renderer)
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).also { ch ->
             ch.setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -257,6 +263,8 @@ class MainActivity : FlutterActivity() {
             // ignore
         }
         installReceiver = null
+        exoEngine?.release()
+        exoEngine = null
         super.onDestroy()
         if (finishing) {
             android.os.Process.killProcess(android.os.Process.myPid())
