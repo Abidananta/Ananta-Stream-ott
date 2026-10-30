@@ -46,6 +46,8 @@ jobs:
           test -f android_template/MainActivity.kt || { echo "::error::android_template/MainActivity.kt is missing. Upload the android_template folder."; exit 1; }
           mkdir -p build_app/android/app/src/main/kotlin/com/ananta/ott
           cp android_template/MainActivity.kt build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt
+          test -f android_template/ExoEngine.kt || { echo "::error::android_template/ExoEngine.kt is missing. Upload the android_template folder."; exit 1; }
+          cp android_template/ExoEngine.kt build_app/android/app/src/main/kotlin/com/ananta/ott/ExoEngine.kt
 
       - name: Copy app source and configure Android TV icon and manifest
         run: |
@@ -305,6 +307,27 @@ jobs:
                   groovy.write_text(t); done = True
           print('::notice::persistent signing configured' if done else '::warning::could not patch Gradle signing config; APK will use the debug key')
           SIGNPY
+
+      - name: Add native ExoPlayer (Media3) + FFmpeg audio decoder dependencies
+        run: |
+          python3 - <<'EXOPY'
+          from pathlib import Path
+          app = Path('build_app/android/app')
+          M3 = '1.9.0'
+          FF = '1.9.0+1'  # org.jellyfin.media3 FFmpeg decoder built for Media3 1.9.0
+          mods = ['exoplayer', 'exoplayer-hls', 'exoplayer-dash', 'exoplayer-smoothstreaming', 'exoplayer-rtsp']
+          kts = app / 'build.gradle.kts'
+          groovy = app / 'build.gradle'
+          if kts.exists():
+              lines = ['    implementation("androidx.media3:media3-%s:%s")' % (m, M3) for m in mods]
+              lines.append('    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:%s")' % FF)
+              kts.write_text(kts.read_text() + '\ndependencies {\n' + '\n'.join(lines) + '\n}\n')
+          else:
+              lines = ['    implementation "androidx.media3:media3-%s:%s"' % (m, M3) for m in mods]
+              lines.append('    implementation "org.jellyfin.media3:media3-ffmpeg-decoder:%s"' % FF)
+              groovy.write_text(groovy.read_text() + '\ndependencies {\n' + '\n'.join(lines) + '\n}\n')
+          print('::notice::Media3 ExoPlayer %s + FFmpeg decoder %s added' % (M3, FF))
+          EXOPY
 
       - name: Resolve dependencies
         working-directory: build_app
