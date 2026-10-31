@@ -218,7 +218,6 @@ class _AnimatedBrandTitleState extends State<AnimatedBrandTitle>
           // Shimmer travels left -> right during the first 55% of the loop.
           final p = (t / 0.55).clamp(0.0, 1.0);
           final x = -0.4 + 1.8 * p;
-          final blink = 0.35 + 0.65 * (0.5 + 0.5 * math.sin(t * 4 * math.pi));
           return Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -258,21 +257,6 @@ class _AnimatedBrandTitleState extends State<AnimatedBrandTitle>
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(
-                    width: 5,
-                    height: 5,
-                    margin: const EdgeInsets.only(right: 5),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xFFFF4F6B).withOpacity(blink),
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFFFF4F6B).withOpacity(0.6 * blink),
-                          blurRadius: 5,
-                        ),
-                      ],
-                    ),
-                  ),
                   const Text(
                     'LIVE TV  •  STREAMING',
                     style: TextStyle(
