@@ -157,14 +157,14 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     final s = widget.size;
     final showLogo = _loaded != null && !_failed;
     final sel = widget.selected;
-    final ring = s * 0.06;
+    final ring = s * 0.105; // thick ring
     // Ring colours are derived from the app accent colour.
     final hsl = HSLColor.fromColor(widget.accent);
-    final light = hsl.withLightness((hsl.lightness + 0.22).clamp(0.0, 0.92)).toColor();
-    final deep = hsl.withLightness((hsl.lightness - 0.12).clamp(0.08, 0.9)).toColor();
+    final light = hsl.withLightness((hsl.lightness + 0.10).clamp(0.0, 0.8)).toColor();
+    final deep = hsl.withLightness((hsl.lightness * 0.55).clamp(0.06, 0.6)).toColor();
     final colors = sel
         ? <Color>[Colors.white, light, widget.accent, deep, light, Colors.white]
-        : <Color>[light.withOpacity(0.95), widget.accent.withOpacity(0.85), deep.withOpacity(0.7), widget.accent.withOpacity(0.85), light.withOpacity(0.95)];
+        : <Color>[light.withOpacity(0.9), widget.accent.withOpacity(0.75), deep.withOpacity(0.9), widget.accent.withOpacity(0.75), light.withOpacity(0.9)];
     return AnimatedBuilder(
       animation: _spin,
       builder: (context, child) => Container(
