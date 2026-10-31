@@ -58,7 +58,7 @@ jobs:
           test -f lib/main.dart
           test -f lib/update_checker.dart
           # Every Dart file the app imports must be uploaded to lib/.
-          for f in splash_screen.dart app_updater.dart notice_banner.dart exo_player.dart animated_tv_logo.dart glass.dart local_store.dart; do
+          for f in splash_screen.dart app_updater.dart notice_banner.dart exo_player.dart animated_tv_logo.dart glass.dart local_store.dart logo_badge.dart; do
             test -f "lib/$f" || { echo "::error::lib/$f is missing in the repository. Upload it to the lib folder."; exit 1; }
           done
           cp lib/*.dart build_app/lib/
