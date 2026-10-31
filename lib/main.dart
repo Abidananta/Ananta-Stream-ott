@@ -1737,11 +1737,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       padding: const EdgeInsets.all(2.5),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Colors.white.withOpacity(0.55), accentColor.withOpacity(0.25)],
-        ),
+        color: LogoBadge.kRingColor,
       ),
       child: CircleAvatar(
         radius: radius - 2.5,

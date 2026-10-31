@@ -96,9 +96,11 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   }
 
   // Neutral dark greys (no blue) for the loading state and the ring.
-  Color get _darkAccent => const Color(0xFF4A4955);
-  static const Color _ringGrey = Color(0xFF3C3B47);
-  static const Color _ringGreySelected = Color(0xFF6A6978);
+  // Ring colour #85819c everywhere (loading, loaded and selected).
+  static const Color kRingColor = Color(0xFF85819C);
+  Color get _darkAccent => kRingColor;
+  static const Color _ringGrey = kRingColor;
+  static const Color _ringGreySelected = kRingColor;
 
   Widget _placeholder() {
     final s = widget.size;
