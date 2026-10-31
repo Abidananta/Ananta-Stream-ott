@@ -406,7 +406,7 @@ class NoticeBell extends StatelessWidget {
         icon: count > 0
             ? Icons.notifications_active_rounded
             : Icons.notifications_none_rounded,
-        color: count > 0 ? const Color(0xFFFFD27A) : Colors.white,
+        color: count > 0 ? const Color(0xFFFFD27A) : const Color(0xFFD6CCFF),
         glow: count > 0 ? const Color(0xFFFFB84D) : null,
         badge: count,
       ),
@@ -431,7 +431,7 @@ Future<void> showNoticeList(BuildContext context) async {
     context: context,
     barrierDismissible: true,
     barrierLabel: 'Close',
-    barrierColor: Colors.black.withOpacity(0.35),
+    barrierColor: Colors.black.withOpacity(0.18),
     transitionDuration: const Duration(milliseconds: 380),
     pageBuilder: (_, __, ___) => const _NoticeListSheet(),
     transitionBuilder: (_, anim, __, child) {
@@ -488,7 +488,7 @@ class _NoticeListSheetState extends State<_NoticeListSheet> {
           child: ClipRRect(
             borderRadius: const BorderRadius.vertical(bottom: Radius.circular(30)),
             child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+              filter: ImageFilter.blur(sigmaX: 11, sigmaY: 11),
               child: Container(
                 width: double.infinity,
                 constraints: BoxConstraints(maxHeight: h * 0.78),
@@ -497,13 +497,13 @@ class _NoticeListSheetState extends State<_NoticeListSheet> {
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                     colors: [
-                      Colors.white.withOpacity(0.20),
-                      const Color(0xFF7C5CFF).withOpacity(0.14),
-                      Colors.white.withOpacity(0.06),
+                      Colors.white.withOpacity(0.15),
+                      const Color(0xFF7C5CFF).withOpacity(0.08),
+                      Colors.white.withOpacity(0.03),
                     ],
                   ),
                   border: Border(
-                    bottom: BorderSide(color: Colors.white.withOpacity(0.32)),
+                    bottom: BorderSide(color: Colors.white.withOpacity(0.42), width: 1.2),
                   ),
                   boxShadow: [
                     BoxShadow(
@@ -613,12 +613,12 @@ class _NoticeListSheetState extends State<_NoticeListSheet> {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              Colors.white.withOpacity(0.18),
-              Colors.white.withOpacity(0.06),
+              Colors.white.withOpacity(0.16),
+              Colors.white.withOpacity(0.04),
             ],
           ),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withOpacity(0.24)),
+          border: Border.all(color: Colors.white.withOpacity(0.30)),
           boxShadow: [
             BoxShadow(color: Colors.black.withOpacity(0.18), blurRadius: 12, offset: const Offset(0, 4)),
           ],

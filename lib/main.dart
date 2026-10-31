@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter, PlatformDispatcher;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
+import 'notice_banner.dart';
 import 'splash_screen.dart';
 import 'glass.dart';
 import 'local_store.dart';
@@ -322,7 +324,7 @@ class AnantaPlayerController {
   final Map<String, String> httpHeaders;
   // 96 MB demuxer buffer (default is 32 MB) so brief network stalls on live HLS
   // are absorbed by the cache instead of stopping the picture.
-  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 96 * 1024 * 1024));
+  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 48 * 1024 * 1024));
   late final VideoController _video = VideoController(_engine);
   bool _opened = false;
   bool _buffering = false;
@@ -387,18 +389,18 @@ class AnantaPlayerController {
       'cache': 'yes',
       // Read far ahead of the playback position (mpv default is only 1s), so
       // the picture keeps playing through network hiccups.
-      'cache-secs': '90',
-      'demuxer-readahead-secs': '90',
-      'demuxer-max-bytes': '96MiB',
-      'demuxer-max-back-bytes': '8MiB',
+      'cache-secs': '30',
+      'demuxer-readahead-secs': '30',
+      'demuxer-max-bytes': '48MiB',
+      'demuxer-max-back-bytes': '4MiB',
       // Pre-buffer before the first frame and after every stall instead of
       // playing 1 second and stuttering again. For live TS streams this is
       // the cache that absorbs jitter.
       'cache-pause': 'yes',
       'cache-pause-initial': 'yes',
-      'cache-pause-wait': '8',
+      'cache-pause-wait': '3',
       // Larger network read buffer (default 128 KiB).
-      'stream-buffer-size': '4MiB',
+      'stream-buffer-size': '2MiB',
       'network-timeout': '30',
       // Reconnect automatically when the server drops the connection.
       'stream-lavf-o': 'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=%7%4xx,5xx,reconnect_delay_max=5',
@@ -487,37 +489,65 @@ Widget _qualityBadge(Size size) {
   );
 }
 
+/// Sizes the player to the device: full screen when [fullscreen], otherwise a
+/// 16:9 box spanning the full width (capped so it never eats the whole screen).
+class _PlayerBox extends StatelessWidget {
+  final bool fullscreen;
+  final Color color;
+  final Widget child;
+  const _PlayerBox({required this.fullscreen, required this.color, required this.child});
+  @override
+  Widget build(BuildContext context) {
+    if (fullscreen) {
+      return Container(width: double.infinity, height: double.infinity, color: color, child: child);
+    }
+    final media = MediaQuery.of(context);
+    final w = media.size.width;
+    final maxH = media.size.height * 0.45;
+    final h = (w * 9 / 16).clamp(0.0, maxH).toDouble();
+    return Container(width: double.infinity, height: h, color: color, child: child);
+  }
+}
+
 class VideoPlayer extends StatelessWidget {
   final AnantaPlayerController controller;
   const VideoPlayer(this.controller, {super.key});
   @override
   Widget build(BuildContext context) => LayoutBuilder(
         builder: (context, constraints) {
-          // Preserve the source video height and aspect ratio vertically.
-          // Expand only along X to cover the side bars, then clip any horizontal
-          // overflow at the screen edges. Never scale the Y axis.
-          final aspect = controller.value.aspectRatio > 0
-              ? controller.value.aspectRatio
-              : 16 / 9;
-          final height = constraints.maxHeight;
-          final widthAtSourceAspect = height * aspect;
-          final scaleX = widthAtSourceAspect > 0
-              ? constraints.maxWidth / widthAtSourceAspect
-              : 1.0;
-          return ClipRect(
-            child: Transform.scale(
-              scaleX: scaleX,
-              scaleY: 1.0,
-              child: SizedBox.expand(
-                child: Video(
-                  // Rebind the video surface for each channel controller.
-                  key: ValueKey<AnantaPlayerController>(controller),
-                  controller: controller._video,
-                  controls: NoVideoControls,
-                  fit: BoxFit.fitHeight,
+          // Rebuild whenever libmpv reports the real decoded size, so the fit
+          // never depends on a stale/default aspect ratio.
+          return ValueListenableBuilder<Size>(
+            valueListenable: controller.videoSize,
+            builder: (context, size, _) {
+              final srcAspect = (size.width > 0 && size.height > 0)
+                  ? size.width / size.height
+                  : 16 / 9;
+              final boxAspect =
+                  constraints.hasBoundedWidth && constraints.hasBoundedHeight &&
+                          constraints.maxHeight > 0
+                      ? constraints.maxWidth / constraints.maxHeight
+                      : srcAspect;
+              // Fill the whole box (no black side bars) on every screen size.
+              // If the source is wildly different from the box (e.g. 4:3 on a
+              // 20:9 phone) fall back to "contain" so the picture isn't mangled.
+              final mismatch = boxAspect / srcAspect;
+              final fit = (mismatch >= 0.7 && mismatch <= 1.5)
+                  ? BoxFit.fill
+                  : BoxFit.contain;
+              return ClipRect(
+                child: SizedBox.expand(
+                  child: Video(
+                    // Rebind the video surface for each channel controller.
+                    key: ValueKey<AnantaPlayerController>(controller),
+                    controller: controller._video,
+                    controls: NoVideoControls,
+                    fill: Colors.transparent,
+                    fit: fit,
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           );
         },
       );
@@ -680,6 +710,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           if (mounted) _focusTvPlayer(); // give the remote back to the player
         });
       }
+    });
+    // Announcement banner (phones/tablets; the native side ignores TV).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) NoticeService.instance.start(context);
     });
     _loadFavorites();
     _loadPlaylist();
@@ -2386,6 +2420,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _status = 'Buffering ${channel.name}...';
     });
     _showChannelInfoFor10Seconds();
+    // The current channel keeps playing untouched until the new stream has
+    // its first frame; only then is it swapped (and the old player released).
     try {
       _pendingPlayer = controller;
       if (mounted) setState(() {}); // Mount the hidden video surface before waiting for metadata.
@@ -2646,13 +2682,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final tvMode = media.size.width >= 850 && media.size.width > media.size.height;
     final player = _player;
     final initialized = player?.value.isInitialized == true;
+    // In Picture-in-Picture nothing opaque is painted behind the video, so no
+    // white/black box shows before the first frame arrives.
+    final pipNow = _inPip || _looksLikePip(media.size);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: initialized ? _togglePlayerControls : null,
-      child: Container(
-        width: double.infinity,
-        height: fullscreen ? double.infinity : 220,
-        color: Colors.black,
+      child: _PlayerBox(
+        fullscreen: fullscreen,
+        color: pipNow ? Colors.transparent : Colors.black,
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -2662,15 +2700,28 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             if (initialized)
               Positioned.fill(
                 child: ColoredBox(
-                  color: Colors.black,
-                  child: VideoPlayer(player!),
+                  color: pipNow ? Colors.transparent : Colors.black,
+                  child: TweenAnimationBuilder<double>(
+                    key: ValueKey<AnantaPlayerController>(player!),
+                    tween: Tween<double>(begin: 0, end: 1),
+                    duration: const Duration(milliseconds: 450),
+                    curve: Curves.easeOut,
+                    builder: (context, v, child) => Opacity(opacity: v, child: child),
+                    child: VideoPlayer(player),
+                  ),
                 ),
               )
-            else
+            else if (!pipNow)
               Center(
                 child: _connecting
-                    ? const CircularProgressIndicator(
-                        color: accentColor,
+                    ? Opacity(
+                        opacity: 0.35,
+                        child: Image.asset(
+                          'assets/ananta_launcher_icon.png',
+                          width: 72,
+                          height: 72,
+                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                        ),
                       )
                     : Icon(
                         _playerError == null
@@ -3130,6 +3181,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // --------------------------------------------------
   @override
   void dispose() {
+    NoticeService.instance.stop();
     _pipChannel.setMethodCallHandler(null);
     unawaited(_pipChannel.invokeMethod('setPipAutoEnter', {'enabled': false}).catchError((Object e) { debugPrint('PiP cleanup error: $e'); }));
     _controlsTimer?.cancel();
@@ -3181,7 +3233,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       child: WillPopScope(
       onWillPop: _handleBack,
       child: Scaffold(
-        backgroundColor: inPip ? Colors.black : null,
+        backgroundColor: inPip ? Colors.transparent : null,
+        resizeToAvoidBottomInset: !inPip,
         extendBodyBehindAppBar: !(_fullscreen || inPip || useTvLayout),
         appBar: (_fullscreen || inPip || useTvLayout)
             ? null
@@ -3210,58 +3263,67 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     ),
                   ),
                 ),
+                titleSpacing: 12,
                 title: Row(
                   children: [
-                    const Icon(
-                      Icons.blur_on,
-                      color: accentColor,
-                      size: 29,
-                    ),
-                    const SizedBox(width: 8),
-                    ShaderMask(
-                      shaderCallback: (rect) => const LinearGradient(
-                        colors: [Colors.white, Color(0xFFC9BEFF)],
-                      ).createShader(rect),
-                      child: const Text(
-                        'Ananta OTT',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.3,
-                          color: Colors.white,
+                    // Animated TV-streaming logo (drawn in code, no image).
+                    const AnimatedTvLogo(size: 44),
+                    const SizedBox(width: 10),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ShaderMask(
+                          shaderCallback: (rect) => const LinearGradient(
+                            colors: [Colors.white, Color(0xFFD6CCFF), Color(0xFFAA98FF)],
+                          ).createShader(rect),
+                          child: const Text(
+                            'Ananta OTT',
+                            style: TextStyle(
+                              fontSize: 21,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.6,
+                              height: 1.05,
+                              color: Colors.white,
+                            ),
+                          ),
                         ),
-                      ),
+                        const Text(
+                          'LIVE TV  •  STREAMING',
+                          style: TextStyle(
+                            fontSize: 8.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1.6,
+                            color: Color(0xAAC9BEFF),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
                 actions: [
-                  IconButton(
+                  GlassIconButton(
                     tooltip: 'Favorites',
                     onPressed: () {
                       setState(() {
                         _showFavoritesOnly = !_showFavoritesOnly;
                       });
                     },
-                    icon: Icon(
-                      _showFavoritesOnly
-                          ? Icons.favorite
-                          : Icons.favorite_border,
-                    ),
+                    icon: _showFavoritesOnly
+                        ? Icons.favorite_rounded
+                        : Icons.favorite_border_rounded,
+                    color: _showFavoritesOnly ? const Color(0xFFFF7BA9) : const Color(0xFFD6CCFF),
+                    glow: _showFavoritesOnly ? const Color(0xFFFF4F8B) : null,
                   ),
-                  IconButton(
+                  const NoticeBell(),
+                  GlassIconButton(
                     tooltip: 'Refresh playlist',
-                    onPressed:
-                        _loadingPlaylist ? null : _loadPlaylist,
-                    icon: _loadingPlaylist
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: accentColor,
-                            ),
-                          )
-                        : const Icon(Icons.refresh),
+                    onPressed: _loadingPlaylist ? null : _loadPlaylist,
+                    icon: Icons.sync_rounded,
+                    color: const Color(0xFFD6CCFF),
+                    busy: _loadingPlaylist,
                   ),
+                  const SizedBox(width: 8),
                 ],
               ),
         body: (_fullscreen || inPip)
@@ -3282,13 +3344,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                       ),
                       child: Row(
                         children: [
-                          const Expanded(
-                            child: Text(
-                              'Explore channels',
-                              style: TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.bold,
-                              ),
+                          Expanded(
+                            child: _NowPlayingHeader(
+                              channelName: _selectedChannel?.name.trim() ?? '',
+                              active: _selectedChannel != null && !_connecting,
                             ),
                           ),
                           Text(
@@ -3336,18 +3395,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     ),
                     const SizedBox(height: 10),
                     _buildCategories(),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
-                      child: Text(
-                        _status,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white54,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ),
                     Expanded(
                       child: channels.isEmpty
                           ? Center(
@@ -3388,6 +3435,85 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               ),
       ),
       ),
+    );
+  }
+}
+
+
+/// "Now playing" header: animated equalizer icon, small label and the
+/// current channel name.
+class _NowPlayingHeader extends StatefulWidget {
+  const _NowPlayingHeader({required this.channelName, required this.active});
+  final String channelName;
+  final bool active;
+
+  @override
+  State<_NowPlayingHeader> createState() => _NowPlayingHeaderState();
+}
+
+class _NowPlayingHeaderState extends State<_NowPlayingHeader>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 1400))
+    ..repeat();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  /// Just an animated live dot (pulsing ripple) shown before the channel name.
+  Widget _liveIndicator(double t, double glow) {
+    final color = widget.active ? const Color(0xFFFF3B4E) : Colors.white38;
+    final ripple = widget.active ? t : 0.0;
+    return SizedBox(
+      width: 16,
+      height: 16,
+      child: Stack(alignment: Alignment.center, children: [
+        if (widget.active)
+          Container(
+            width: 6 + 10 * ripple,
+            height: 6 + 10 * ripple,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color.withOpacity(0.55 * (1 - ripple)),
+            ),
+          ),
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: color,
+            boxShadow: widget.active
+                ? [BoxShadow(color: color.withOpacity(glow + 0.2), blurRadius: 8)]
+                : null,
+          ),
+        ),
+      ]),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = widget.channelName.isEmpty ? 'Select a channel' : widget.channelName;
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, _) {
+        final t = _ctrl.value;
+        final glow = 0.25 + 0.2 * (0.5 + 0.5 * math.sin(t * 2 * math.pi));
+        return Row(children: [
+          _liveIndicator(t, glow),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, letterSpacing: 0.9, fontWeight: FontWeight.w700, color: Color(0xFFC9BEFF))),
+          ),
+        ]);
+      },
     );
   }
 }

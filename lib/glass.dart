@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -209,6 +210,148 @@ class GlassChip extends StatelessWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+
+/// Small round glass button used in the app bar (heart, bell, refresh).
+class GlassIconButton extends StatefulWidget {
+  const GlassIconButton({
+    super.key,
+    required this.icon,
+    required this.onPressed,
+    this.tooltip,
+    this.color = Colors.white,
+    this.glow,
+    this.badge = 0,
+    this.busy = false,
+  });
+
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final String? tooltip;
+  final Color color;
+
+  /// Coloured halo behind the button (active state).
+  final Color? glow;
+  final int badge;
+  final bool busy;
+
+  @override
+  State<GlassIconButton> createState() => _GlassIconButtonState();
+}
+
+class _GlassIconButtonState extends State<GlassIconButton> {
+  bool _down = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = widget.glow != null;
+    final base = active ? widget.glow! : kGlassAccent;
+    final enabled = widget.onPressed != null;
+    final btn = AnimatedScale(
+      scale: _down ? 0.88 : 1,
+      duration: const Duration(milliseconds: 110),
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.white.withOpacity(active ? 0.30 : 0.22),
+              base.withOpacity(active ? 0.28 : 0.12),
+            ],
+          ),
+          border: Border.all(
+            color: Colors.white.withOpacity(active ? 0.55 : 0.32),
+            width: 0.9,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: base.withOpacity(active ? 0.55 : 0.28),
+              blurRadius: active ? 12 : 8,
+              spreadRadius: active ? 0.5 : 0,
+            ),
+          ],
+        ),
+        child: Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.center,
+          children: [
+            // glossy highlight on the upper half
+            Positioned(
+              top: 1.5,
+              left: 4,
+              right: 4,
+              height: 11,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Colors.white.withOpacity(0.30), Colors.white.withOpacity(0)],
+                  ),
+                ),
+              ),
+            ),
+            widget.busy
+                ? const SizedBox(
+                    width: 15,
+                    height: 15,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : ShaderMask(
+                    shaderCallback: (r) => LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [Colors.white, widget.color],
+                    ).createShader(r),
+                    child: Icon(widget.icon, size: 17, color: Colors.white),
+                  ),
+            if (widget.badge > 0)
+              Positioned(
+                right: -4,
+                top: -4,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 3.5, vertical: 0.5),
+                  constraints: const BoxConstraints(minWidth: 14, minHeight: 14),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(colors: [Color(0xFFFF6B8B), Color(0xFFFF3D71)]),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white.withOpacity(0.85), width: 0.9),
+                    boxShadow: [
+                      BoxShadow(color: const Color(0xFFFF3D71).withOpacity(0.55), blurRadius: 6),
+                    ],
+                  ),
+                  child: Text(
+                    widget.badge > 9 ? '9+' : '${widget.badge}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.w800, color: Colors.white),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Tooltip(
+        message: widget.tooltip ?? '',
+        child: GestureDetector(
+          onTapDown: enabled ? (_) => setState(() => _down = true) : null,
+          onTapCancel: () => setState(() => _down = false),
+          onTapUp: (_) => setState(() => _down = false),
+          onTap: widget.onPressed,
+          behavior: HitTestBehavior.opaque,
+          child: Opacity(opacity: !enabled && !widget.busy ? 0.5 : 1, child: btn),
         ),
       ),
     );
