@@ -1750,43 +1750,42 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     );
   }
 
-  /// Large round logo badge for the mobile list: the whole logo is shown
-  /// (never cropped) on a bright glass plate so every channel stands out.
+  /// Round channel logo for the mobile list, drawn exactly like the logo file
+  /// (transparent background, thin ring). The Ananta OTT logo is shown in the
+  /// same spot until the channel's own logo has loaded, then it is replaced.
   Widget _logoCard(Channel channel, double size, {bool selected = false}) {
     final logo = _logoImage(channel);
+    final placeholder = Image.asset(
+      'assets/ananta_launcher_icon.png',
+      fit: BoxFit.cover,
+      filterQuality: FilterQuality.medium,
+    );
     return Container(
       width: size,
       height: size,
-      padding: EdgeInsets.all(size * 0.15),
+      padding: const EdgeInsets.all(2),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFFFFFFFF), Color(0xFFE6E0FF)],
-        ),
         border: Border.all(
-          color: selected ? accentColor : Colors.white.withOpacity(0.85),
-          width: selected ? 2 : 1.2,
+          color: selected ? accentColor : Colors.white.withOpacity(0.55),
+          width: selected ? 2 : 1.4,
         ),
-        boxShadow: [
-          BoxShadow(
-            color: accentColor.withOpacity(selected ? 0.55 : 0.28),
-            blurRadius: selected ? 14 : 9,
-            offset: const Offset(0, 3),
-          ),
-        ],
       ),
-      child: logo == null
-          ? Icon(Icons.live_tv_rounded, color: accentColor, size: size * 0.45)
-          : Image(
-              image: logo,
-              fit: BoxFit.contain,
-              alignment: Alignment.center,
-              filterQuality: FilterQuality.medium,
-              errorBuilder: (_, __, ___) =>
-                  Icon(Icons.live_tv_rounded, color: accentColor, size: size * 0.45),
-            ),
+      child: ClipOval(
+        child: logo == null
+            ? placeholder
+            : Image(
+                key: ValueKey(_logoForChannel(channel)),
+                image: logo,
+                fit: BoxFit.cover,
+                filterQuality: FilterQuality.medium,
+                gaplessPlayback: true,
+                // Ananta OTT logo until the channel logo has loaded, then swap.
+                frameBuilder: (context, child, frame, sync) =>
+                    (frame == null && !sync) ? placeholder : child,
+                errorBuilder: (_, __, ___) => placeholder,
+              ),
+      ),
     );
   }
 
