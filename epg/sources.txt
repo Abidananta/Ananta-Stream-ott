@@ -5,3 +5,4 @@
 https://avkb.short.gy/tsepg.xml.gz
 https://avkb.short.gy/jioepg.xml.gz
 https://avkb.short.gy/epg.xml.gz
+https://raw.githubusercontent.com/iptv-org/epg/refs/heads/master/sites/shahid.mbc.net/shahid.mbc.net_en.channels.xml
