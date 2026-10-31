@@ -17,6 +17,10 @@ class LogoBadge extends StatefulWidget {
   final double size;
   final bool selected;
   final Color accent;
+
+  /// Ring colour #85819c, used by every logo ring in the app.
+  static const Color kRingColor = Color(0xFF85819C);
+
   const LogoBadge({
     super.key,
     required this.image,
@@ -97,10 +101,9 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
 
   // Neutral dark greys (no blue) for the loading state and the ring.
   // Ring colour #85819c everywhere (loading, loaded and selected).
-  static const Color kRingColor = Color(0xFF85819C);
-  Color get _darkAccent => kRingColor;
-  static const Color _ringGrey = kRingColor;
-  static const Color _ringGreySelected = kRingColor;
+  Color get _darkAccent => LogoBadge.kRingColor;
+  static const Color _ringGrey = LogoBadge.kRingColor;
+  static const Color _ringGreySelected = LogoBadge.kRingColor;
 
   Widget _placeholder() {
     final s = widget.size;
