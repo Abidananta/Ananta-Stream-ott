@@ -17,6 +17,7 @@ import 'glass.dart';
 import 'exo_player.dart';
 import 'animated_tv_logo.dart';
 import 'local_store.dart';
+import 'logo_badge.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
 const String appName = 'Ananta OTT';
@@ -1750,42 +1751,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     );
   }
 
-  /// Round channel logo for the mobile list, drawn exactly like the logo file
-  /// (transparent background, thin ring). The Ananta OTT logo is shown in the
-  /// same spot until the channel's own logo has loaded, then it is replaced.
+  /// Round, transparent channel logo for the mobile list. An animated play
+  /// icon shows inside the circle until the logo loads, then the logo replaces it.
   Widget _logoCard(Channel channel, double size, {bool selected = false}) {
-    final logo = _logoImage(channel);
-    final placeholder = Image.asset(
-      'assets/ananta_launcher_icon.png',
-      fit: BoxFit.cover,
-      filterQuality: FilterQuality.medium,
-    );
-    return Container(
-      width: size,
-      height: size,
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(
-          color: selected ? accentColor : Colors.white.withOpacity(0.55),
-          width: selected ? 2 : 1.4,
-        ),
-      ),
-      child: ClipOval(
-        child: logo == null
-            ? placeholder
-            : Image(
-                key: ValueKey(_logoForChannel(channel)),
-                image: logo,
-                fit: BoxFit.cover,
-                filterQuality: FilterQuality.medium,
-                gaplessPlayback: true,
-                // Ananta OTT logo until the channel logo has loaded, then swap.
-                frameBuilder: (context, child, frame, sync) =>
-                    (frame == null && !sync) ? placeholder : child,
-                errorBuilder: (_, __, ___) => placeholder,
-              ),
-      ),
+    return LogoBadge(
+      image: _logoImage(channel),
+      size: size,
+      selected: selected,
+      accent: accentColor,
     );
   }
 
