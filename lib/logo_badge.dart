@@ -28,6 +28,9 @@ class LogoBadge extends StatefulWidget {
 class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   late final AnimationController _pulse =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat(reverse: true);
+  // Spinning ring shown around the circle while the logo is still loading.
+  late final AnimationController _spin =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 1500));
   ImageStream? _stream;
   ImageStreamListener? _listener;
   ui_Image? _loaded;
@@ -50,16 +53,22 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     _loaded = null;
     _failed = false;
     final provider = widget.image;
-    if (provider == null) return;
+    if (provider == null) {
+      _spin.stop();
+      return;
+    }
+    if (!_spin.isAnimating) _spin.repeat();
     final stream = provider.resolve(createLocalImageConfiguration(context));
     final listener = ImageStreamListener(
       (info, _) {
         if (!mounted) return;
         setState(() => _loaded = ui_Image(info.image.width, info.image.height));
         _pulse.stop();
+        _spin.stop();
       },
       onError: (_, __) {
         if (mounted) setState(() => _failed = true);
+        _spin.stop();
       },
     );
     _stream = stream;
@@ -78,7 +87,13 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   void dispose() {
     _detach();
     _pulse.dispose();
+    _spin.dispose();
     super.dispose();
+  }
+
+  Color get _darkAccent {
+    final hsl = HSLColor.fromColor(widget.accent);
+    return hsl.withLightness((hsl.lightness * 0.6).clamp(0.05, 0.6)).toColor();
   }
 
   Widget _placeholder() {
@@ -97,7 +112,7 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
               height: s * (0.50 + 0.38 * t),
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                border: Border.all(color: widget.accent.withOpacity(0.55 * (1 - t)), width: 1.6),
+                border: Border.all(color: _darkAccent.withOpacity(0.9 * (1 - t) + 0.1), width: 1.8),
               ),
             ),
             Container(
@@ -105,7 +120,7 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
               height: s * 0.5,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: widget.accent.withOpacity(0.18 + 0.12 * t),
+                color: _darkAccent.withOpacity(0.30 + 0.15 * t),
               ),
             ),
             Transform.scale(
@@ -146,6 +161,38 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     // Clean look: a thin solid ring, no gradient, no glow. The logo fills the
     // circle (74 px badge) on a transparent background.
     final ring = s * 0.04;
+    if (!showLogo) {
+      // Loading: dark, see-through disc inside a darker accent ring that spins.
+      return AnimatedBuilder(
+        animation: _spin,
+        builder: (context, child) => Container(
+          width: s,
+          height: s,
+          padding: EdgeInsets.all(s * 0.05),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: SweepGradient(
+              colors: [
+                _darkAccent.withOpacity(0.12),
+                _darkAccent,
+                widget.accent.withOpacity(0.85),
+                _darkAccent.withOpacity(0.12),
+              ],
+              stops: const [0.0, 0.55, 0.8, 1.0],
+              transform: GradientRotation(_spin.value * 6.2831853),
+            ),
+          ),
+          child: child,
+        ),
+        child: ClipOval(
+          clipBehavior: Clip.antiAlias,
+          child: ColoredBox(
+            color: const Color(0xFF0B0A1A).withOpacity(0.62),
+            child: _placeholder(),
+          ),
+        ),
+      );
+    }
     return Container(
       width: s,
       height: s,
