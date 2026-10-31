@@ -46,6 +46,9 @@ jobs:
           test -f android_template/MainActivity.kt || { echo "::error::android_template/MainActivity.kt is missing. Upload the android_template folder."; exit 1; }
           mkdir -p build_app/android/app/src/main/kotlin/com/ananta/ott
           cp android_template/MainActivity.kt build_app/android/app/src/main/kotlin/com/ananta/ott/MainActivity.kt
+          # ExoPlayer (Media3) playback engine (replaces libmpv / media_kit).
+          test -f android_template/AnantaExoPlayer.kt || { echo "::error::android_template/AnantaExoPlayer.kt is missing. Upload the android_template folder."; exit 1; }
+          cp android_template/AnantaExoPlayer.kt build_app/android/app/src/main/kotlin/com/ananta/ott/AnantaExoPlayer.kt
           # Notification card layouts (lock screen / heads-up).
           mkdir -p build_app/android/app/src/main/res
           cp -r android_template/res/. build_app/android/app/src/main/res/
@@ -55,10 +58,13 @@ jobs:
           test -f lib/main.dart
           test -f lib/update_checker.dart
           # Every Dart file the app imports must be uploaded to lib/.
-          for f in splash_screen.dart app_updater.dart notice_banner.dart; do
+          for f in splash_screen.dart app_updater.dart notice_banner.dart exo_player.dart animated_tv_logo.dart glass.dart local_store.dart; do
             test -f "lib/$f" || { echo "::error::lib/$f is missing in the repository. Upload it to the lib folder."; exit 1; }
           done
           cp lib/*.dart build_app/lib/
+          # Stale files from older revisions (they import Firebase Dart packages
+          # this app does not use and are not imported by main.dart).
+          rm -f build_app/lib/push_notifications.dart build_app/lib/storage_service.dart
           mkdir -p build_app/assets && cp assets/ananta_launcher_icon.png build_app/assets/
           cp pubspec.yaml build_app/pubspec.yaml
           # Flutter's generated test imports package:ott and MyApp, which do not
@@ -300,6 +306,56 @@ jobs:
               print('Firebase configured for project', pi['project_id'])
           PYFCM
 
+      - name: Configure ExoPlayer (Media3) engine
+        run: |
+          python3 - <<'PYEXO'
+          import re, urllib.request
+          from pathlib import Path
+          # Media3 version. If the Jellyfin FFmpeg audio decoder is published
+          # for a matching Media3 release it is bundled too (MP2/AC-3/E-AC-3/
+          # DTS/TrueHD/Opus/Vorbis/FLAC...), exactly what makes TiviMate play
+          # streams whose audio the phone/TV chip cannot decode itself.
+          media3 = '1.8.0'
+          ffmpeg = None
+          try:
+              url = 'https://repo1.maven.org/maven2/org/jellyfin/media3/media3-ffmpeg-decoder/maven-metadata.xml'
+              xml = urllib.request.urlopen(url, timeout=30).read().decode()
+              cands = []
+              for v in re.findall(r'<version>([^<]+)</version>', xml):
+                  m = re.match(r'^(\d+)\.(\d+)\.(\d+)\+(\d+)$', v)
+                  if m:
+                      t = tuple(int(x) for x in m.groups())
+                      if t[0] == 1 and t[1] <= 8:
+                          cands.append((t, v))
+              if cands:
+                  cands.sort()
+                  t, ffmpeg = cands[-1]
+                  media3 = '%d.%d.%d' % t[:3]
+          except Exception as e:
+              print('::warning::FFmpeg audio decoder metadata unavailable (%s); building with platform decoders only.' % e)
+          print('Media3 version:', media3, '| FFmpeg decoder:', ffmpeg)
+          app = Path('build_app/android/app')
+          gradle = app / 'build.gradle.kts'
+          if not gradle.exists():
+              gradle = app / 'build.gradle'
+          kts = gradle.suffix == '.kts'
+          deps = [
+              'androidx.media3:media3-exoplayer:' + media3,
+              'androidx.media3:media3-exoplayer-hls:' + media3,
+              'androidx.media3:media3-exoplayer-dash:' + media3,
+              'androidx.media3:media3-exoplayer-rtsp:' + media3,
+              'androidx.media3:media3-datasource:' + media3,
+              'androidx.media3:media3-extractor:' + media3,
+              'androidx.media3:media3-common:' + media3,
+              'androidx.annotation:annotation-experimental:1.4.1',
+          ]
+          if ffmpeg:
+              deps.append('org.jellyfin.media3:media3-ffmpeg-decoder:' + ffmpeg)
+          lines = ['implementation("%s")' % d if kts else "implementation '%s'" % d for d in deps]
+          with gradle.open('a') as f:
+              f.write('\ndependencies {\n    ' + '\n    '.join(lines) + '\n}\n')
+          PYEXO
+
       - name: Configure persistent release signing
         env:
           KS_B64: ${{ secrets.ANANTA_KEYSTORE_B64 }}
@@ -380,7 +436,7 @@ jobs:
 
       - name: Build release APK
         working-directory: build_app
-        run: flutter build apk --release --no-pub --verbose
+        run: flutter build apk --release --no-pub --no-shrink --verbose
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
