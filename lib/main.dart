@@ -2926,9 +2926,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               child: Row(
                 children: [
                   SizedBox(
-                    width: 74,
-                    height: 74,
-                    child: _logoCard(channel, 74, selected: selected),
+                    width: 56,
+                    height: 56,
+                    child: _logoCard(channel, 56, selected: selected),
                   ),
                   const SizedBox(width: 14),
                   Expanded(

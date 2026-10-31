@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -29,19 +28,10 @@ class LogoBadge extends StatefulWidget {
 class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   late final AnimationController _pulse =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat(reverse: true);
-  // Continuously rotating colour ring around the logo circle.
-  late final AnimationController _spin =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 3600));
   ImageStream? _stream;
   ImageStreamListener? _listener;
   ui_Image? _loaded;
   bool _failed = false;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.selected) _spin.repeat();
-  }
 
   @override
   void didChangeDependencies() {
@@ -53,9 +43,6 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   void didUpdateWidget(covariant LogoBadge old) {
     super.didUpdateWidget(old);
     if (old.image != widget.image) _resolve();
-    // The ring only rotates on the selected channel (keeps long lists light).
-    if (widget.selected && !_spin.isAnimating) _spin.repeat();
-    if (!widget.selected && _spin.isAnimating) _spin.stop();
   }
 
   void _resolve() {
@@ -91,7 +78,6 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   void dispose() {
     _detach();
     _pulse.dispose();
-    _spin.dispose();
     super.dispose();
   }
 
@@ -148,7 +134,7 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
       key: const ValueKey('logo'),
       child: nearSquare
           ? image
-          : Padding(padding: EdgeInsets.all(widget.size * 0.17), child: image),
+          : Padding(padding: EdgeInsets.all(widget.size * 0.08), child: image),
     );
   }
 
@@ -157,36 +143,16 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     final s = widget.size;
     final showLogo = _loaded != null && !_failed;
     final sel = widget.selected;
-    final ring = s * 0.105; // thick ring
-    // Ring colours are derived from the app accent colour.
-    final hsl = HSLColor.fromColor(widget.accent);
-    final light = hsl.withLightness((hsl.lightness + 0.10).clamp(0.0, 0.8)).toColor();
-    final deep = hsl.withLightness((hsl.lightness * 0.55).clamp(0.06, 0.6)).toColor();
-    final colors = sel
-        ? <Color>[Colors.white, light, widget.accent, deep, light, Colors.white]
-        : <Color>[light.withOpacity(0.9), widget.accent.withOpacity(0.75), deep.withOpacity(0.9), widget.accent.withOpacity(0.75), light.withOpacity(0.9)];
-    return AnimatedBuilder(
-      animation: _spin,
-      builder: (context, child) => Container(
-        width: s,
-        height: s,
-        padding: EdgeInsets.all(ring),
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: SweepGradient(
-            colors: colors,
-            transform: GradientRotation(-0.8 + _spin.value * 2 * math.pi),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: widget.accent.withOpacity(sel ? 0.65 : 0.32),
-              blurRadius: sel ? 16 : 9,
-              spreadRadius: sel ? 1 : 0,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: child,
+    // Clean look: a thin solid ring, no gradient, no glow. The logo fills the
+    // circle (74 px badge) on a transparent background.
+    final ring = s * 0.04;
+    return Container(
+      width: s,
+      height: s,
+      padding: EdgeInsets.all(ring),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: sel ? widget.accent : Colors.white.withOpacity(0.55),
       ),
       child: ClipOval(
         clipBehavior: Clip.antiAlias,
