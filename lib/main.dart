@@ -3195,36 +3195,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     // Animated TV-streaming logo (drawn in code, no image).
                     const AnimatedTvLogo(size: 52),
                     const SizedBox(width: 10),
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        ShaderMask(
-                          shaderCallback: (rect) => const LinearGradient(
-                            colors: [Colors.white, Color(0xFFD6CCFF), Color(0xFFAA98FF)],
-                          ).createShader(rect),
-                          child: const Text(
-                            'Ananta OTT',
-                            style: TextStyle(
-                              fontSize: 21,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 0.6,
-                              height: 1.05,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                        const Text(
-                          'LIVE TV  •  STREAMING',
-                          style: TextStyle(
-                            fontSize: 8.5,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 1.6,
-                            color: Color(0xAAC9BEFF),
-                          ),
-                        ),
-                      ],
-                    ),
+                    const AnimatedBrandTitle(),
                   ],
                 ),
                 actions: [

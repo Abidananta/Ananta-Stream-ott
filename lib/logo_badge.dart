@@ -95,10 +95,10 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  Color get _darkAccent {
-    final hsl = HSLColor.fromColor(widget.accent);
-    return hsl.withLightness((hsl.lightness * 0.6).clamp(0.05, 0.6)).toColor();
-  }
+  // Neutral dark greys (no blue) for the loading state and the ring.
+  Color get _darkAccent => const Color(0xFF4A4955);
+  static const Color _ringGrey = Color(0xFF3C3B47);
+  static const Color _ringGreySelected = Color(0xFF6A6978);
 
   Widget _placeholder() {
     final s = widget.size;
@@ -166,7 +166,7 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     // circle (74 px badge) on a transparent background.
     final ring = s * 0.04;
     if (!showLogo) {
-      // Loading: dark, see-through disc inside a darker accent ring that spins.
+      // Loading: dark, see-through disc inside a dark grey ring that spins.
       return AnimatedBuilder(
         animation: _spin,
         builder: (context, child) => Container(
@@ -209,7 +209,7 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
         // Dark, see-through plate (shows while the logo loads) - never grey.
         color: showLogo ? Colors.transparent : Colors.black.withOpacity(0.42),
         border: Border.all(
-          color: sel ? widget.accent : Colors.white.withOpacity(0.34),
+          color: sel ? _ringGreySelected : _ringGrey,
           width: ring,
         ),
       ),
