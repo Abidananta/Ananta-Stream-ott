@@ -55,6 +55,9 @@ class AnantaPlayerController {
   /// Decoded video size (drives the HD/FHD/4K badge).
   final ValueNotifier<Size> videoSize = ValueNotifier<Size>(Size.zero);
 
+  /// True while the stream is rebuffering (drives the on-screen badge).
+  final ValueNotifier<bool> bufferingNotifier = ValueNotifier<bool>(false);
+
   /// Size to draw at, i.e. [videoSize] corrected by the pixel aspect ratio.
   Size displaySize = Size.zero;
 
@@ -108,6 +111,7 @@ class AnantaPlayerController {
     switch (e['type']) {
       case 'state':
         _buffering = e['buffering'] == true;
+        if (bufferingNotifier.value != _buffering) bufferingNotifier.value = _buffering;
         _playing = e['playing'] == true;
         _ended = e['ended'] == true;
         _ready = e['ready'] == true;
@@ -147,6 +151,8 @@ class AnantaPlayerController {
   }
 
   Future<void> setVolume(double volume) => _call('setVolume', <String, dynamic>{'volume': volume});
+  /// Takes audio focus for this player (done only once it is the visible channel).
+  Future<void> setAudioFocus(bool enabled) => _call('setAudioFocus', <String, dynamic>{'enabled': enabled});
   Future<void> play() => _call('play');
   Future<void> pause() => _call('pause');
 

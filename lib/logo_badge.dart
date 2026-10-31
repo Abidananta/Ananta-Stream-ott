@@ -122,43 +122,55 @@ class _LogoBadgeState extends State<LogoBadge> with SingleTickerProviderStateMix
     final aspect = dim.h == 0 ? 1.0 : dim.w / dim.h;
     final nearSquare = aspect > 0.85 && aspect < 1.18;
     final image = Image(
-      key: const ValueKey('logo'),
       image: widget.image!,
       fit: nearSquare ? BoxFit.cover : BoxFit.contain,
       filterQuality: FilterQuality.medium,
       gaplessPlayback: true,
     );
-    return nearSquare
-        ? SizedBox.expand(key: const ValueKey('logo'), child: ClipOval(child: image))
-        : Padding(
-            key: const ValueKey('logo'),
-            padding: EdgeInsets.all(widget.size * 0.14),
-            child: image,
-          );
+    // Round / square logos fill the circle exactly; wide or tall logos are
+    // fitted inside the circle's inscribed square so nothing leaves the circle.
+    return SizedBox.expand(
+      key: const ValueKey('logo'),
+      child: nearSquare
+          ? image
+          : Padding(padding: EdgeInsets.all(widget.size * 0.17), child: image),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final s = widget.size;
     final showLogo = _loaded != null && !_failed;
+    const ring = 2.5;
+    // Same design as the original list: a glass gradient ring with the logo
+    // inside the circle on a transparent background.
     return Container(
       width: s,
       height: s,
+      padding: const EdgeInsets.all(ring),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: Colors.transparent,
-        border: Border.all(
-          color: widget.selected ? widget.accent : Colors.white.withOpacity(0.18),
-          width: widget.selected ? 2 : 1,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: widget.selected
+              ? [Colors.white.withOpacity(0.9), widget.accent]
+              : [Colors.white.withOpacity(0.55), widget.accent.withOpacity(0.25)],
         ),
         boxShadow: widget.selected
             ? [BoxShadow(color: widget.accent.withOpacity(0.5), blurRadius: 12)]
             : null,
       ),
       child: ClipOval(
+        clipBehavior: Clip.antiAlias,
         child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 280),
           switchInCurve: Curves.easeOut,
+          layoutBuilder: (current, previous) => Stack(
+            fit: StackFit.expand,
+            alignment: Alignment.center,
+            children: [...previous, if (current != null) current],
+          ),
           child: showLogo ? _logo() : _placeholder(),
         ),
       ),

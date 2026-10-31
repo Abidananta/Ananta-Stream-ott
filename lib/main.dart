@@ -2311,6 +2311,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
       }
+      // Only now does the new channel take audio focus (the old one is gone).
+      await controller.setAudioFocus(true);
       await WakelockPlus.enable();
       _syncPipAutoEnter();
       _scheduleControlsHide();
@@ -2582,35 +2584,46 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                   ),
                 ),
               ),
-            // Show progress without covering the current picture during a switch.
-            if (initialized && _connecting)
+            // Top-right status badge, never covering the picture: "Switching
+            // channel…" while a new channel opens, "Buffering…" while the
+            // playing stream rebuffers.
+            if (initialized)
               Positioned(
                 right: 12,
                 top: 12,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.62),
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: Colors.white24),
-                  ),
-                  child: const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SizedBox(
-                          width: 13,
-                          height: 13,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: accentColor,
-                          ),
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: player!.bufferingNotifier,
+                  builder: (context, buffering, _) {
+                    if (!_connecting && !buffering) return const SizedBox.shrink();
+                    return DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.62),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: accentColor,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              _connecting ? 'Switching channel…' : 'Buffering…',
+                              style: const TextStyle(color: Colors.white, fontSize: 12),
+                            ),
+                          ],
                         ),
-                        SizedBox(width: 8),
-                        Text('Switching channel…', style: TextStyle(color: Colors.white, fontSize: 12)),
-                      ],
-                    ),
-                  ),
+                      ),
+                    );
+                  },
                 ),
               ),
             // All controls disappear together after 2 seconds.

@@ -71,6 +71,12 @@ class AnantaExo(
                     find(call)?.player?.volume = v
                     result.success(null)
                 }
+                "setAudioFocus" -> {
+                    val inst = find(call)
+                    val on = call.argument<Boolean>("enabled") ?: true
+                    if (inst != null) inst.player.setAudioAttributes(inst.audioAttrs, on)
+                    result.success(null)
+                }
                 "dispose" -> {
                     call.argument<Int>("id")?.let { players.remove(it)?.release() }
                     result.success(null)
@@ -104,6 +110,10 @@ class AnantaExo(
         private val producer: TextureRegistry.SurfaceProducer = textures.createSurfaceProducer()
         val textureId: Long = producer.id()
         val player: ExoPlayer
+        val audioAttrs: AudioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
         private var released = false
         private var hasVideo = true
         private val posTicker = object : Runnable {
@@ -155,13 +165,11 @@ class AnantaExo(
             player = ExoPlayer.Builder(context, renderers)
                 .setMediaSourceFactory(sourceFactory)
                 .setLoadControl(load)
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(C.USAGE_MEDIA)
-                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                        .build(),
-                    true
-                )
+                // Audio focus is NOT taken at creation. A channel that is still
+                // warming up must not steal focus from the one being watched
+                // (that made the old channel pause during a switch). Dart calls
+                // setAudioFocus(true) once this player is the visible channel.
+                .setAudioAttributes(audioAttrs, false)
                 .setHandleAudioBecomingNoisy(true)
                 .build()
 
