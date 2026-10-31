@@ -1,4 +1,8 @@
 
+import 'dart:ui' show ImageFilter;
+
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
 
 /// Circular channel logo, transparent background, inside an accent-colour ring.
@@ -173,9 +177,9 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
             shape: BoxShape.circle,
             gradient: SweepGradient(
               colors: [
-                _darkAccent.withOpacity(0.12),
+                _darkAccent.withOpacity(0.2),
                 _darkAccent,
-                widget.accent.withOpacity(0.85),
+                _darkAccent.withOpacity(0.85),
                 _darkAccent.withOpacity(0.12),
               ],
               stops: const [0.0, 0.55, 0.8, 1.0],
@@ -186,9 +190,13 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
         ),
         child: ClipOval(
           clipBehavior: Clip.antiAlias,
-          child: ColoredBox(
-            color: const Color(0xFF0B0A1A).withOpacity(0.62),
-            child: _placeholder(),
+          // Darker, see-through grey plate with a soft blur while loading.
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+            child: ColoredBox(
+              color: const Color(0xFF14131C).withOpacity(0.72),
+              child: _placeholder(),
+            ),
           ),
         ),
       );
@@ -201,21 +209,32 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
         // Dark, see-through plate (shows while the logo loads) - never grey.
         color: showLogo ? Colors.transparent : Colors.black.withOpacity(0.42),
         border: Border.all(
-          color: sel ? widget.accent : Colors.white.withOpacity(0.55),
+          color: sel ? widget.accent : Colors.white.withOpacity(0.34),
           width: ring,
         ),
       ),
       child: ClipOval(
         clipBehavior: Clip.antiAlias,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 280),
-          switchInCurve: Curves.easeOut,
-          layoutBuilder: (current, previous) => Stack(
-            fit: StackFit.expand,
-            alignment: Alignment.center,
-            children: [...previous, if (current != null) current],
-          ),
-          child: showLogo ? _logo() : _placeholder(),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Dark, transparent, blurred base: shown while the logo loads and
+            // behind any logo that has no white background of its own.
+            BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+              child: ColoredBox(color: Colors.black.withOpacity(0.38)),
+            ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 280),
+              switchInCurve: Curves.easeOut,
+              layoutBuilder: (current, previous) => Stack(
+                fit: StackFit.expand,
+                alignment: Alignment.center,
+                children: [...previous, if (current != null) current],
+              ),
+              child: showLogo ? _logo() : _placeholder(),
+            ),
+          ],
         ),
       ),
     );
