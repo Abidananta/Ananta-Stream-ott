@@ -2561,44 +2561,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             else if (!pipNow)
               Center(
                 child: _connecting
-                    ? Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Opacity(
-                            opacity: 0.35,
-                            child: Image.asset(
-                              'assets/ananta_launcher_icon.png',
-                              width: 72,
-                              height: 72,
-                              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                            ),
-                          ),
-                          if (_lastFailure.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
-                              child: Text(
-                                'Last error:\n$_lastFailure',
-                                textAlign: TextAlign.center,
-                                maxLines: 6,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: Colors.orangeAccent, fontSize: 11),
-                              ),
-                            ),
-                          if (_pendingPlayer != null)
-                            ValueListenableBuilder<String>(
-                              valueListenable: _pendingPlayer!.diagNotifier,
-                              builder: (context, d, _) => d.isEmpty
-                                  ? const SizedBox.shrink()
-                                  : Padding(
-                                      padding: const EdgeInsets.fromLTRB(24, 6, 24, 0),
-                                      child: Text(d,
-                                          textAlign: TextAlign.center,
-                                          maxLines: 4,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(color: Colors.white60, fontSize: 11)),
-                                    ),
-                            ),
-                        ],
+                    // Ananta OTT logo only (no debug text) until the stream loads.
+                    ? Opacity(
+                        opacity: 0.35,
+                        child: Image.asset(
+                          'assets/ananta_launcher_icon.png',
+                          width: 72,
+                          height: 72,
+                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                        ),
                       )
                     : Column(
                         mainAxisSize: MainAxisSize.min,
