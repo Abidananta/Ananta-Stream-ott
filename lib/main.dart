@@ -439,6 +439,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   String _searchQuery = '';
   String _status = 'Ready';
   String? _playerError;
+  /// Last failure reason, kept on screen across automatic retries until playback starts.
+  String _lastFailure = '';
   bool _loadingPlaylist = false;
   bool _connecting = false;
   bool _showFavoritesOnly = false;
@@ -2299,6 +2301,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _player = controller;
         _selectedChannel = channel;
         _status = 'Playing ${channel.name}';
+        _lastFailure = '';
         _connecting = false;
         _runtimeRetryCount = 0;
         _userPaused = false;
@@ -2320,6 +2323,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _syncPipAutoEnter();
       _scheduleControlsHide();
     } on TimeoutException {
+      _lastFailure = 'Timed out waiting for video (12 s)' +
+          (controller.diagText.isEmpty ? '\nNo decoder started' : '\n${controller.diagText}');
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
@@ -2336,7 +2341,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }
     } catch (e) {
       debugPrint('Playback error for ${channel.url}: $e');
-      final failDetail = (controller.lastError ?? e.toString()).replaceFirst('Exception: ', '');
+      final failDetail = ((controller.lastError ?? e.toString()).replaceFirst('Exception: ', '') +
+              (controller.diagText.isEmpty ? '' : '\n${controller.diagText}'));
+      _lastFailure = failDetail;
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
@@ -2558,14 +2565,44 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             else if (!pipNow)
               Center(
                 child: _connecting
-                    ? Opacity(
-                        opacity: 0.35,
-                        child: Image.asset(
-                          'assets/ananta_launcher_icon.png',
-                          width: 72,
-                          height: 72,
-                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                        ),
+                    ? Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Opacity(
+                            opacity: 0.35,
+                            child: Image.asset(
+                              'assets/ananta_launcher_icon.png',
+                              width: 72,
+                              height: 72,
+                              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                            ),
+                          ),
+                          if (_lastFailure.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
+                              child: Text(
+                                'Last error:\n$_lastFailure',
+                                textAlign: TextAlign.center,
+                                maxLines: 6,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.orangeAccent, fontSize: 11),
+                              ),
+                            ),
+                          if (_pendingPlayer != null)
+                            ValueListenableBuilder<String>(
+                              valueListenable: _pendingPlayer!.diagNotifier,
+                              builder: (context, d, _) => d.isEmpty
+                                  ? const SizedBox.shrink()
+                                  : Padding(
+                                      padding: const EdgeInsets.fromLTRB(24, 6, 24, 0),
+                                      child: Text(d,
+                                          textAlign: TextAlign.center,
+                                          maxLines: 4,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(color: Colors.white60, fontSize: 11)),
+                                    ),
+                            ),
+                        ],
                       )
                     : Column(
                         mainAxisSize: MainAxisSize.min,
@@ -2585,7 +2622,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                               child: Text(
                                 _playerError!,
                                 textAlign: TextAlign.center,
-                                maxLines: 5,
+                                maxLines: 8,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(color: Colors.white70, fontSize: 11),
                               ),
@@ -3156,7 +3193,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 title: Row(
                   children: [
                     // Animated TV-streaming logo (drawn in code, no image).
-                    const AnimatedTvLogo(size: 44),
+                    const AnimatedTvLogo(size: 52),
                     const SizedBox(width: 10),
                     Column(
                       mainAxisSize: MainAxisSize.min,

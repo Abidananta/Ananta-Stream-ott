@@ -7,6 +7,7 @@ import android.view.Surface
 import androidx.media3.common.AudioAttributes
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -17,6 +18,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -201,6 +203,35 @@ class AnantaExo(
                 }
             })
             player.setVideoSurface(producer.getSurface())
+
+            // Diagnostics shown on screen (which decoder opened, codec errors).
+            player.addAnalyticsListener(object : AnalyticsListener {
+                override fun onVideoDecoderInitialized(
+                    eventTime: AnalyticsListener.EventTime,
+                    decoderName: String,
+                    initializedTimestampMs: Long,
+                    initializationDurationMs: Long
+                ) {
+                    emit(id, mapOf("type" to "info", "message" to "Video decoder: $decoderName"))
+                }
+
+                override fun onVideoInputFormatChanged(
+                    eventTime: AnalyticsListener.EventTime,
+                    format: Format,
+                    decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?
+                ) {
+                    emit(id, mapOf("type" to "info", "message" to
+                        "Video: ${format.sampleMimeType} ${format.width}x${format.height} ${if (format.frameRate > 0) format.frameRate.toInt().toString() + "fps" else ""}"))
+                }
+
+                override fun onVideoCodecError(eventTime: AnalyticsListener.EventTime, videoCodecError: Exception) {
+                    emit(id, mapOf("type" to "info", "message" to "Video codec error: ${videoCodecError.message}"))
+                }
+
+                override fun onAudioCodecError(eventTime: AnalyticsListener.EventTime, audioCodecError: Exception) {
+                    emit(id, mapOf("type" to "info", "message" to "Audio codec error: ${audioCodecError.message}"))
+                }
+            })
 
             player.addListener(object : Player.Listener {
                 override fun onVideoSizeChanged(size: VideoSize) {
