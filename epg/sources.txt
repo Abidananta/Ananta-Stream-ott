@@ -5,4 +5,3 @@
 https://avkb.short.gy/tsepg.xml.gz
 https://avkb.short.gy/jioepg.xml.gz
 https://avkb.short.gy/epg.xml.gz
-https://raw.githubusercontent.com/Abidananta/Ananta-Stream-ott/refs/heads/main/assets/epg/shahid.mbc.net_en.channels.xml.gz
