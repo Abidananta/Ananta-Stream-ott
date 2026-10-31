@@ -47,10 +47,13 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
     if (!mounted) return;
     try {
       Navigator.of(context).pushReplacement(PageRouteBuilder<void>(
-        transitionDuration: const Duration(milliseconds: 600),
+        transitionDuration: const Duration(milliseconds: 900),
         pageBuilder: (c, _, __) => widget.next(c),
         transitionsBuilder: (_, a, __, child) =>
-            FadeTransition(opacity: a, child: child),
+            FadeTransition(
+              opacity: CurvedAnimation(parent: a, curve: Curves.easeInOutCubic),
+              child: child,
+            ),
       ));
     } catch (e) {
       debugPrint('Splash navigation failed: $e');
@@ -89,7 +92,8 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
                     final t = _loop.value;
                     final pulse = 0.5 + 0.5 * math.sin(t * 2 * math.pi);
                     final float = math.sin(t * 2 * math.pi) * 6;
-                    return SizedBox(
+                    return RepaintBoundary(
+                      child: SizedBox(
                       width: logo * 1.5,
                       height: logo * 1.5,
                       child: Stack(
@@ -110,7 +114,7 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
                                   BoxShadow(
                                     color: const Color(0xFF9B87FF)
                                         .withOpacity(0.25 + 0.2 * pulse),
-                                    blurRadius: 70 + 30 * pulse,
+                                    blurRadius: 80,
                                     spreadRadius: 6,
                                   ),
                                 ],
@@ -143,6 +147,7 @@ class _AnantaSplashScreenState extends State<AnantaSplashScreen>
                           ),
                         ],
                       ),
+                    ),
                     );
                   },
                 ),

@@ -1,6 +1,6 @@
 {
   "version": "1.1.9",
   "versionCode": 23,
-  "releaseNotes": "Playback engine switched to native ExoPlayer (Media3, same engine family as TiviMate) with FFmpeg audio fallback; UI unchanged. Mobile list spacing fixed, TV guide now shows the single live programme (duplicate overlapping entries removed) and opens on it, and logos + guide are kept in a visible Ananta OTT app folder for fast loading.",
+  "releaseNotes": "Mobile list spacing fixed, TV guide now shows the single live programme (duplicate overlapping entries removed) and opens on it, and logos + guide are kept in a visible Ananta OTT app folder for fast loading.",
   "downloadUrl": "https://github.com/Abidananta/Ananta-Stream-ott/releases/download/v1.1.9/app-release.apk"
 }

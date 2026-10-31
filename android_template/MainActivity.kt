@@ -22,11 +22,8 @@ import android.util.Rational
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import androidx.media3.common.util.UnstableApi
 
-@UnstableApi
 class MainActivity : FlutterActivity() {
-    private var exoEngine: ExoEngine? = null
     private val channelName = "com.ananta.ott/pip"
     private var channel: MethodChannel? = null
     // True only while a stream is playing; gates Home/Recents auto-PiP.
@@ -37,16 +34,15 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Black behind Flutter: nothing white can show while the PiP window resizes.
-        window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
+        // Transparent behind Flutter: no white (or any solid) box can show while
+        // the PiP window resizes / before the first video frame is drawn.
+        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        window.decorView.setBackgroundColor(Color.TRANSPARENT)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         setupInstaller(flutterEngine)
-        // Native Media3 ExoPlayer (+ FFmpeg audio fallback) used by the Dart player wrapper.
-        exoEngine?.release()
-        exoEngine = ExoEngine(applicationContext, flutterEngine.dartExecutor.binaryMessenger, flutterEngine.renderer)
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).also { ch ->
             ch.setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -263,8 +259,6 @@ class MainActivity : FlutterActivity() {
             // ignore
         }
         installReceiver = null
-        exoEngine?.release()
-        exoEngine = null
         super.onDestroy()
         if (finishing) {
             android.os.Process.killProcess(android.os.Process.myPid())
@@ -279,6 +273,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         channel?.invokeMethod("pipChanged", isInPictureInPictureMode)
     }
 
