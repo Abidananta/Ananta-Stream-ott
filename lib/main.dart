@@ -113,8 +113,8 @@ Map<String, dynamic> _parseEpgPayload(List<int> payload) {
     final start = _epgParseTime(_epgAttribute(attrs, 'start'));
     final stop = _epgParseTime(_epgAttribute(attrs, 'stop'));
     if (start == null || stop == null ||
-        !stop.isAfter(now.subtract(const Duration(days: 3))) ||
-        start.isAfter(now.add(const Duration(days: 3)))) continue;
+        !stop.isAfter(now.subtract(const Duration(days: 2))) ||
+        start.isAfter(now.add(const Duration(days: 5)))) continue;
     final title = _epgTagText(body, 'title');
     if (title.isEmpty) continue;
     programmes.add(<String, dynamic>{
@@ -134,8 +134,8 @@ Map<String, List<EpgProgram>> _epgMapFromJsonTop(dynamic raw) {
   // Keep a rolling three-day guide on device: programmes that have ended
   // are discarded, while the current and next three days remain available.
   final now = DateTime.now().toUtc();
-  final cutoff = now.subtract(const Duration(hours: 6));
-  final horizon = now.add(const Duration(days: 3));
+  final cutoff = now.subtract(const Duration(days: 2));
+  final horizon = now.add(const Duration(days: 5));
   for (final entry in raw.entries) {
     if (entry.value is! List) continue;
     final list = <EpgProgram>[];
@@ -458,6 +458,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   bool _epgLoading = false;
   int _tvFocusedEpgIndex = 0;
   int _tvEpgSelectedDayOffset = 0;
+  // 5-day guide: yesterday, today and the next three days.
+  static const int _kEpgFirstDay = -1;
+  static const int _kEpgLastDay = 3;
   // Which (channel, day) the guide list was last auto-positioned for, so the
   // list jumps to the programme that is on air whenever the guide is opened.
   String _tvEpgAnchor = '';
@@ -846,6 +849,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     }
 
     if (key == LogicalKeyboardKey.arrowLeft) {
+      if (_tvSidebarVisible && _tvEpgVisible && !_tvShowingCategories && _tvEpgSelectionMode) {
+        // Guide browsing: Left = previous day. On the first day Left closes the guide.
+        if (_changeTvEpgDay(-1)) return KeyEventResult.handled;
+      }
       if (_tvSidebarVisible && !_tvShowingCategories) {
         setState(() { _tvEpgVisible = false; _tvEpgSelectionMode = false; });
         _focusTvCategory(_categories.indexOf(_selectedCategory).clamp(0, categories.length - 1).toInt());
@@ -864,9 +871,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         // First Right opens the 3-day guide without interrupting playback.
         setState(() { _tvEpgVisible = true; _tvEpgSelectionMode = true; _tvFocusedEpgIndex = 0; _tvEpgSelectedDayOffset = 0; _tvEpgAnchor = ''; });
       } else if (_tvSidebarVisible && _tvEpgVisible) {
-        // Second Right enables the guide selection rail; Up/Down now browse
-        // every programme rather than moving channel focus.
-        setState(() => _tvEpgSelectionMode = !_tvEpgSelectionMode);
+        // Guide browsing: Right = next day. When not browsing yet, Right
+        // enables the selection rail (Up/Down then browse programmes).
+        if (!_tvEpgSelectionMode) {
+          setState(() => _tvEpgSelectionMode = true);
+        } else {
+          _changeTvEpgDay(1);
+        }
       } else {
         // Hidden sidebar: ignore Right as well; Enter is the only opener.
       }
@@ -1601,8 +1612,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final byName = <String, List<EpgProgram>>{};
     final seenProgramsByName = <String, Set<String>>{};
     final epgNow = DateTime.now().toUtc();
-    final keepAfter = epgNow.subtract(const Duration(hours: 6));
-    final keepUntil = epgNow.add(const Duration(days: 3));
+    final keepAfter = epgNow.subtract(const Duration(days: 2));
+    final keepUntil = epgNow.add(const Duration(days: 5));
     for (final entry in candidatesById.entries) {
       final programs = entry.value
         .where((p) => p.stop.isAfter(keepAfter) && p.start.isBefore(keepUntil))
@@ -1835,8 +1846,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   List<EpgProgram> _epgScheduleForChannel(Channel channel) {
     final source = _epgCandidatesCached(channel);
     final now = DateTime.now().toUtc();
-    final start = now.subtract(const Duration(days: 3));
-    final end = now.add(const Duration(days: 3));
+    final start = now.subtract(const Duration(days: 2));
+    final end = now.add(const Duration(days: 5));
     final sorted = source.where((p) => p.stop.isAfter(start) && p.start.isBefore(end)).toList()
       ..sort((a, b) => a.start.compareTo(b.start));
     return _resolveEpgOverlaps(sorted);
@@ -1878,6 +1889,19 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   }
 
   /// Programmes of [channel] that fall on the day picked in the TV guide tabs.
+  /// Remote Left/Right: move to the previous / next day of the guide.
+  /// Returns false when already at the first/last day.
+  bool _changeTvEpgDay(int delta) {
+    final next = (_tvEpgSelectedDayOffset + delta).clamp(_kEpgFirstDay, _kEpgLastDay).toInt();
+    if (next == _tvEpgSelectedDayOffset) return false;
+    setState(() {
+      _tvEpgSelectedDayOffset = next;
+      _tvFocusedEpgIndex = 0;
+      _tvEpgAnchor = ''; // re-anchor: live programme for today, top otherwise
+    });
+    return true;
+  }
+
   List<EpgProgram> _tvEpgDaySchedule(Channel channel) {
     final today = DateTime.now();
     final dayStart = DateTime(today.year, today.month, today.day)
@@ -1957,7 +1981,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 12, 10),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(_tvEpgSelectionMode ? '3-DAY TV GUIDE · SELECT WITH UP/DOWN' : '3-DAY TV GUIDE · PRESS RIGHT TO NAVIGATE', style: const TextStyle(fontSize: 10, letterSpacing: 0.7, color: Color(0xFFC9BEFF), fontWeight: FontWeight.bold)),
+              Text(_tvEpgSelectionMode ? '5-DAY TV GUIDE · LEFT/RIGHT DAY · UP/DOWN BROWSE' : '5-DAY TV GUIDE · PRESS RIGHT TO NAVIGATE', style: const TextStyle(fontSize: 10, letterSpacing: 0.7, color: Color(0xFFC9BEFF), fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               Text(channel.name.trim(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               Text(channel.group, style: const TextStyle(fontSize: 11, color: Colors.white60)),
@@ -1966,14 +1990,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
             child: Row(
-              children: List.generate(3, (dayOffset) {
+              children: List.generate(_kEpgLastDay - _kEpgFirstDay + 1, (i) {
+                final dayOffset = _kEpgFirstDay + i;
                 final day = DateTime(localToday.year, localToday.month, localToday.day)
                     .add(Duration(days: dayOffset));
                 final selected = _tvEpgSelectedDayOffset == dayOffset;
-                final label = dayOffset == 0 ? 'TODAY' : dayOffset == 1 ? 'TOMORROW' : '${['MON','TUE','WED','THU','FRI','SAT','SUN'][day.weekday - 1]} ${day.day}/${day.month}';
+                final weekday = ['MON','TUE','WED','THU','FRI','SAT','SUN'][day.weekday - 1];
+                final label = dayOffset == 0 ? 'TODAY\n${day.day}/${day.month}' : '$weekday\n${day.day}/${day.month}';
                 return Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
                     child: InkWell(
                       borderRadius: BorderRadius.circular(14),
                       onTap: () {
@@ -1997,8 +2023,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           border: Border.all(color: selected ? Colors.white.withOpacity(0.85) : Colors.white.withOpacity(0.12), width: selected ? 1.5 : 1),
                           boxShadow: selected ? [BoxShadow(color: accentColor.withOpacity(0.35), blurRadius: 12)] : null,
                         ),
-                        child: Text(label, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: selected ? Colors.white : Colors.white70)),
+                        child: Text(label, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 9, height: 1.25, fontWeight: FontWeight.bold, color: selected ? Colors.white : Colors.white70)),
                       ),
                     ),
                   ),
@@ -2009,7 +2035,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           const Divider(height: 1, color: Colors.white12),
           Expanded(
             child: schedule.isEmpty
-              ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_epgStatus == 'Loading programme guide…' ? 'Loading guide…' : 'No 3-day guide available for this channel', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white60, fontSize: 12))))
+              ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_epgStatus == 'Loading programme guide…' ? 'Loading guide…' : 'No guide available for this day', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white60, fontSize: 12))))
               : Scrollbar(
                   controller: _tvEpgScrollController,
                   thumbVisibility: true,
@@ -2364,7 +2390,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final player = _player;
     if (player == null || !player.value.isInitialized) return;
     try {
-      if (player.value.isPlaying) {
+      if (player.playIntentNotifier.value || player.value.isPlaying) {
         _userPaused = true;
         await player.pause();
         await WakelockPlus.disable();
@@ -2737,11 +2763,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           ),
                           padding: EdgeInsets.zero,
                           onPressed: _togglePlayback,
-                          icon: Icon(
-                            player!.value.isPlaying
-                                ? Icons.pause_circle_filled
-                                : Icons.play_circle_fill,
-                            size: 30,
+                          icon: ValueListenableBuilder<bool>(
+                            valueListenable: player!.playIntentNotifier,
+                            builder: (context, wantsPlay, _) => Icon(
+                              // Playing or buffering -> pause button; paused -> play.
+                              wantsPlay ? Icons.pause_circle_filled : Icons.play_circle_fill,
+                              size: 30,
+                            ),
                           ),
                         ),
                         IconButton(
@@ -2763,7 +2791,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     ),
                   ),
                 ),
-              if (tvMode && _selectedChannel != null && _channelInfoVisible)
+            ],
+            // Channel info card: independent of the play controls, so it shows
+            // for the full 15 s even though the controls hide after ~2 s.
+            if (tvMode && _selectedChannel != null && _channelInfoVisible && !_inPip && !_looksLikePip(media.size))
                 Positioned(
                   // Keep the live information card slightly above the bottom edge
                   // so it does not sit on top of TV overscan/system UI.
@@ -2826,6 +2857,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     ),
                   ),
                 ),
+            if (_controlsVisible && !_inPip && !_looksLikePip(media.size)) ...[
               if (_playerError != null)
                 Center(
                   child: FilledButton.icon(

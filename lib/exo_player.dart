@@ -59,6 +59,11 @@ class AnantaPlayerController {
   final ValueNotifier<String> diagNotifier = ValueNotifier<String>('');
   final List<String> _diag = <String>[];
 
+  /// True while the player is meant to be playing (playing OR buffering). Drives
+  /// the play/pause button so it flips instantly and never shows play while a
+  /// stream is buffering.
+  final ValueNotifier<bool> playIntentNotifier = ValueNotifier<bool>(false);
+
   /// True while the stream is rebuffering (drives the on-screen badge).
   final ValueNotifier<bool> bufferingNotifier = ValueNotifier<bool>(false);
 
@@ -119,6 +124,8 @@ class AnantaPlayerController {
     switch (e['type']) {
       case 'state':
         _buffering = e['buffering'] == true;
+        final intent = e['playWhenReady'] == true;
+        if (playIntentNotifier.value != intent) playIntentNotifier.value = intent;
         if (bufferingNotifier.value != _buffering) bufferingNotifier.value = _buffering;
         _playing = e['playing'] == true;
         _ended = e['ended'] == true;
@@ -167,8 +174,15 @@ class AnantaPlayerController {
   Future<void> setVolume(double volume) => _call('setVolume', <String, dynamic>{'volume': volume});
   /// Takes audio focus for this player (done only once it is the visible channel).
   Future<void> setAudioFocus(bool enabled) => _call('setAudioFocus', <String, dynamic>{'enabled': enabled});
-  Future<void> play() => _call('play');
-  Future<void> pause() => _call('pause');
+  Future<void> play() {
+    playIntentNotifier.value = true; // instant UI feedback
+    return _call('play');
+  }
+
+  Future<void> pause() {
+    playIntentNotifier.value = false; // instant UI feedback
+    return _call('pause');
+  }
 
   Future<void> _call(String method, [Map<String, dynamic>? extra]) async {
     final id = _id;

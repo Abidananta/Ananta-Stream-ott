@@ -278,6 +278,7 @@ class AnantaExo(
                 "type" to "state",
                 "buffering" to (st == Player.STATE_BUFFERING && player.playWhenReady),
                 "playing" to player.isPlaying,
+                "playWhenReady" to player.playWhenReady,
                 "ended" to (st == Player.STATE_ENDED),
                 "ready" to (st == Player.STATE_READY),
                 "hasVideo" to hasVideo
