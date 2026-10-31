@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Surface
 import androidx.media3.common.AudioAttributes
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -162,7 +163,23 @@ class AnantaExo(
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
 
+            // --- Never reject a stream because it is big: 2560x1440 @ 50 fps H.264
+            // (like the VLC info) can exceed a decoder's advertised level, but the
+            // hardware usually still plays it. Keep every track selectable.
+            val trackSelector = DefaultTrackSelector(context).apply {
+                setParameters(
+                    buildUponParameters()
+                        .setExceedVideoConstraintsIfNecessary(true)
+                        .setExceedRendererCapabilitiesIfNecessary(true)
+                        .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
+                        .setMaxVideoFrameRate(Int.MAX_VALUE)
+                        .setMaxVideoBitrate(Int.MAX_VALUE)
+                        .setForceHighestSupportedBitrate(true)
+                )
+            }
+
             player = ExoPlayer.Builder(context, renderers)
+                .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(sourceFactory)
                 .setLoadControl(load)
                 // Audio focus is NOT taken at creation. A channel that is still
