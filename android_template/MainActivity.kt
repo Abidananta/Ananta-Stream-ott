@@ -34,10 +34,8 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Transparent behind Flutter: no white (or any solid) box can show while
-        // the PiP window resizes / before the first video frame is drawn.
-        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        window.decorView.setBackgroundColor(Color.TRANSPARENT)
+        // Black behind Flutter: nothing white can show while the PiP window resizes.
+        window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -273,7 +271,6 @@ class MainActivity : FlutterActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         channel?.invokeMethod("pipChanged", isInPictureInPictureMode)
     }
 
