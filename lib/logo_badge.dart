@@ -149,10 +149,14 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     return Container(
       width: s,
       height: s,
-      padding: EdgeInsets.all(ring),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: sel ? widget.accent : Colors.white.withOpacity(0.55),
+        // Dark, see-through plate (shows while the logo loads) - never grey.
+        color: showLogo ? Colors.transparent : Colors.black.withOpacity(0.42),
+        border: Border.all(
+          color: sel ? widget.accent : Colors.white.withOpacity(0.55),
+          width: ring,
+        ),
       ),
       child: ClipOval(
         clipBehavior: Clip.antiAlias,
