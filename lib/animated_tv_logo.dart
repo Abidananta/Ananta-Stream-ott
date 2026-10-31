@@ -74,7 +74,7 @@ class _TvLogoPainter extends CustomPainter {
         ..color = _violet.withOpacity(0.25 + 0.2 * pulse)
         ..maskFilter = MaskFilter.blur(BlurStyle.normal, s * 0.04),
     );
-    canvas.drawCircle(rightTip, s * 0.05, Paint()..color = _violet);
+    canvas.drawCircle(rightTip, s * 0.05, Paint()..color = Color.lerp(_violet, const Color(0xFFFF6FD8), pulse)!);
 
     // ---- Signal waves going out of the right antenna ----------------------
     for (var i = 0; i < 3; i++) {
@@ -96,6 +96,23 @@ class _TvLogoPainter extends CustomPainter {
       );
     }
 
+    // ---- Soft rotating colour halo behind the whole logo --------------------
+    final haloRect = Rect.fromLTWH(-s * 0.05, s * 0.05, s * 1.1, s * 1.0);
+    canvas.drawOval(
+      haloRect,
+      Paint()
+        ..shader = SweepGradient(
+          colors: [
+            const Color(0xFF8F7BFF).withOpacity(0.55),
+            const Color(0xFFFF6FD8).withOpacity(0.5),
+            const Color(0xFF4FD8FF).withOpacity(0.5),
+            const Color(0xFF8F7BFF).withOpacity(0.55),
+          ],
+          transform: GradientRotation(t * 2 * math.pi),
+        ).createShader(haloRect)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, s * 0.14),
+    );
+
     // ---- TV body ------------------------------------------------------------
     final body = RRect.fromRectAndRadius(
       Rect.fromLTWH(s * 0.03, s * 0.42, s * 0.86, s * 0.50),
@@ -104,10 +121,13 @@ class _TvLogoPainter extends CustomPainter {
     canvas.drawRRect(
       body,
       Paint()
-        ..shader = const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFFAFA0FF), _violetDeep],
+        ..shader = LinearGradient(
+          begin: Alignment(-0.6 + 0.4 * math.sin(t * 2 * math.pi), -1),
+          end: Alignment(1 - 0.4 * math.sin(t * 2 * math.pi), 1),
+          colors: [
+            Color.lerp(const Color(0xFFAFA0FF), const Color(0xFFFF9BE4), pulse)!,
+            Color.lerp(_violetDeep, const Color(0xFF4F8BFF), pulse)!,
+          ],
         ).createShader(body.outerRect),
     );
 
@@ -130,6 +150,15 @@ class _TvLogoPainter extends CustomPainter {
             _violet.withOpacity(0),
           ],
         ).createShader(Rect.fromCircle(center: center, radius: s * 0.34)),
+    );
+    // Diagonal shine that sweeps across the screen.
+    final sx = s * (-0.2 + 1.2 * ((t * 1.0) % 1.0));
+    canvas.drawRect(
+      Rect.fromLTWH(sx, s * 0.45, s * 0.12, s * 0.45),
+      Paint()
+        ..shader = LinearGradient(
+          colors: [Colors.white.withOpacity(0), Colors.white.withOpacity(0.28), Colors.white.withOpacity(0)],
+        ).createShader(Rect.fromLTWH(sx, s * 0.45, s * 0.12, s * 0.45)),
     );
     canvas.restore();
 

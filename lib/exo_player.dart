@@ -55,6 +55,10 @@ class AnantaPlayerController {
   /// Decoded video size (drives the HD/FHD/4K badge).
   final ValueNotifier<Size> videoSize = ValueNotifier<Size>(Size.zero);
 
+  /// Live decoder / format diagnostics from the native player.
+  final ValueNotifier<String> diagNotifier = ValueNotifier<String>('');
+  final List<String> _diag = <String>[];
+
   /// True while the stream is rebuffering (drives the on-screen badge).
   final ValueNotifier<bool> bufferingNotifier = ValueNotifier<bool>(false);
 
@@ -78,6 +82,10 @@ class AnantaPlayerController {
   Completer<void>? _readyCompleter;
 
   AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, dynamic videoPlayerOptions});
+
+  /// Last native playback error (decoder / network), if any.
+  String? get lastError => _error;
+  String get diagText => _diag.join('\n');
 
   AnantaPlayerValue get value => AnantaPlayerValue(this);
 
@@ -131,9 +139,15 @@ class AnantaPlayerController {
       case 'pos':
         _position = Duration(milliseconds: (e['ms'] as num?)?.toInt() ?? 0);
         break;
+      case 'info':
+        _diag.add((e['message'] as String?) ?? '');
+        if (_diag.length > 4) _diag.removeAt(0);
+        diagNotifier.value = _diag.join('\n');
+        break;
       case 'error':
         _error = (e['message'] as String?) ?? 'Playback error';
         debugPrint('Ananta ExoPlayer error for $uri: $_error');
+        _completeReady(); // fail fast instead of waiting for the 12 s timeout
         break;
     }
   }
