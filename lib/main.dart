@@ -1750,16 +1750,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     );
   }
 
-  /// Large rounded logo card for the mobile list: the whole logo is shown
+  /// Large round logo badge for the mobile list: the whole logo is shown
   /// (never cropped) on a bright glass plate so every channel stands out.
   Widget _logoCard(Channel channel, double size, {bool selected = false}) {
     final logo = _logoImage(channel);
     return Container(
       width: size,
       height: size,
-      padding: const EdgeInsets.all(7),
+      padding: EdgeInsets.all(size * 0.15),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(size * 0.28),
+        shape: BoxShape.circle,
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -1782,6 +1782,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           : Image(
               image: logo,
               fit: BoxFit.contain,
+              alignment: Alignment.center,
               filterQuality: FilterQuality.medium,
               errorBuilder: (_, __, ___) =>
                   Icon(Icons.live_tv_rounded, color: accentColor, size: size * 0.45),
@@ -2875,7 +2876,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           dense: true,
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
           horizontalTitleGap: 14,
-          leading: _logoCard(channel, 64, selected: selected),
+          leading: _logoCard(channel, 76, selected: selected),
           title: Text(
             channel.name,
             maxLines: 1,
