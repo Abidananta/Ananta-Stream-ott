@@ -599,6 +599,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     setState(() {
       _tvFocusedChannelIndex = safeIndex;
       _tvSidebarVisible = true;
+      _channelInfoVisible = false; // channel list opens: hide the info card at once
       _tvEpgVisible = false;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -636,6 +637,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     if (categories.isEmpty) return;
     setState(() {
       _tvSidebarVisible = true;
+      _channelInfoVisible = false; // channel list opens: hide the info card at once
       _tvShowingCategories = true;
       _tvFocusedCategoryIndex = index.clamp(0, categories.length - 1).toInt();
     });
@@ -684,6 +686,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     setState(() {
       _tvShowingCategories = false;
       _tvSidebarVisible = true;
+      _channelInfoVisible = false; // channel list opens: hide the info card at once
       _tvEpgVisible = false;
       _tvEpgSelectionMode = false;
       _tvFocusedChannelIndex = safeIndex;
@@ -707,7 +710,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _channelInfoTimer?.cancel();
     if (!mounted) return;
     setState(() => _channelInfoVisible = true);
-    _channelInfoTimer = Timer(const Duration(seconds: 15), () {
+    _channelInfoTimer = Timer(const Duration(seconds: 10), () {
       if (mounted) setState(() => _channelInfoVisible = false);
     });
   }
@@ -2793,8 +2796,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 ),
             ],
             // Channel info card: independent of the play controls, so it shows
-            // for the full 15 s even though the controls hide after ~2 s.
-            if (tvMode && _selectedChannel != null && _channelInfoVisible && !_inPip && !_looksLikePip(media.size))
+            // for the full 10 s even though the controls hide after ~2 s.
+            if (tvMode && _selectedChannel != null && _channelInfoVisible && !_tvSidebarVisible && !_inPip && !_looksLikePip(media.size))
                 Positioned(
                   // Keep the live information card slightly above the bottom edge
                   // so it does not sit on top of TV overscan/system UI.
