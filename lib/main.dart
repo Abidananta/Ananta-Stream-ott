@@ -2857,33 +2857,54 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         glow: selected ? accentColor.withOpacity(0.28) : null,
         child: Material(
           type: MaterialType.transparency,
-          child: ListTile(
-          dense: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-          horizontalTitleGap: 14,
-          leading: _logoCard(channel, 76, selected: selected),
-          title: Text(
-            channel.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 14.5,
-              fontWeight: selected ? FontWeight.bold : FontWeight.w600,
+          // A plain Row (not ListTile) so the logo keeps an exact square box and
+          // always renders as a true circle, never stretched into an oval.
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: () => _playChannel(channel),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 68,
+                    height: 68,
+                    child: _logoCard(channel, 68, selected: selected),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          channel.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14.5,
+                            fontWeight: selected ? FontWeight.bold : FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          channel.group,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white54, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: favorite ? 'Remove favorite' : 'Add favorite',
+                    onPressed: () => _toggleFavorite(channel),
+                    icon: FavoriteHeart(on: favorite, size: 22),
+                  ),
+                ],
+              ),
             ),
-          ),
-          subtitle: Text(
-            channel.group,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white54, fontSize: 11),
-          ),
-          trailing: IconButton(
-            visualDensity: VisualDensity.compact,
-            tooltip: favorite ? 'Remove favorite' : 'Add favorite',
-            onPressed: () => _toggleFavorite(channel),
-            icon: FavoriteHeart(on: favorite, size: 22),
-          ),
-          onTap: () => _playChannel(channel),
           ),
         ),
       ),
