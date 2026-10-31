@@ -51,6 +51,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val channelName = "com.ananta.ott/pip"
     private var channel: MethodChannel? = null
+    private var exo: AnantaExo? = null
     // True only while a stream is playing; gates Home/Recents auto-PiP.
     private var pipEnabled = false
     private var aspect = 16.0 / 9.0
@@ -140,6 +141,9 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         setupInstaller(flutterEngine)
+        // ExoPlayer (Media3) playback engine, rendered into a Flutter texture.
+        exo?.releaseAll()
+        exo = AnantaExo(applicationContext, flutterEngine.dartExecutor.binaryMessenger, flutterEngine.renderer)
         val noticeChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.ananta.ott/notice")
         // Push received while the app is open: hand it to Flutter for the glass banner.
         AnantaNotice.listener = { n ->
@@ -395,6 +399,8 @@ class MainActivity : FlutterActivity() {
             // ignore
         }
         installReceiver = null
+        try { exo?.releaseAll() } catch (e: Exception) { /* ignore */ }
+        exo = null
         super.onDestroy()
         if (finishing) {
             android.os.Process.killProcess(android.os.Process.myPid())

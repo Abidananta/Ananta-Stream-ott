@@ -9,13 +9,13 @@ import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'update_checker.dart';
 import 'notice_banner.dart';
 import 'splash_screen.dart';
 import 'glass.dart';
+import 'exo_player.dart';
+import 'animated_tv_logo.dart';
 import 'local_store.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
@@ -255,14 +255,6 @@ String _scrub(String? v) => (v ?? '').replaceAll(_urlPattern, '[url]');
 Future<void> _startApp() async {
   WidgetsFlutterBinding.ensureInitialized();
   ErrorWidget.builder = (details) => const SizedBox.shrink();
-  try {
-    MediaKit.ensureInitialized();
-  } catch (e) {
-    debugPrint('MediaKit init failed: $e');
-    if (_sentryDsn.isNotEmpty) {
-      await Sentry.captureException(e);
-    }
-  }
   _startPlaylistPrefetch();
   runApp(const AnantaOttApp());
 }
@@ -298,157 +290,6 @@ Future<void> main() async {
     },
     appRunner: () => _startApp(),
   );
-}
-
-// Compatibility wrapper keeps the existing Ananta OTT UI and channel logic
-// while using libmpv/FFmpeg-backed media_kit for broader audio codec support.
-class _AnantaPlayerValue {
-  final AnantaPlayerController owner;
-  const _AnantaPlayerValue(this.owner);
-  bool get isInitialized => owner._opened;
-  bool get hasError => owner._error != null;
-  String? get errorDescription => owner._error;
-  bool get isPlaying => owner._engine.state.playing;
-  bool get isBuffering => owner._buffering;
-  Duration get position => owner._engine.state.position;
-  bool get isCompleted => owner._engine.state.completed;
-  double get aspectRatio {
-    final w = owner._engine.state.width ?? 0;
-    final h = owner._engine.state.height ?? 0;
-    return w > 0 && h > 0 ? w / h : 16 / 9;
-  }
-}
-
-class AnantaPlayerController {
-  final Uri uri;
-  final Map<String, String> httpHeaders;
-  // 96 MB demuxer buffer (default is 32 MB) so brief network stalls on live HLS
-  // are absorbed by the cache instead of stopping the picture.
-  final Player _engine = Player(configuration: const PlayerConfiguration(bufferSize: 48 * 1024 * 1024));
-  late final VideoController _video = VideoController(_engine);
-  bool _opened = false;
-  bool _buffering = false;
-  String? _error;
-  StreamSubscription<bool>? _bufferingSubscription;
-  // Decoded video size reported by libmpv; drives the HD/FHD/4K badge.
-  final ValueNotifier<Size> videoSize = ValueNotifier<Size>(Size.zero);
-  int _vw = 0;
-  int _vh = 0;
-  StreamSubscription<int?>? _widthSubscription;
-  StreamSubscription<int?>? _heightSubscription;
-  StreamSubscription<String>? _errorSubscription;
-  AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, dynamic videoPlayerOptions}) {
-    _bufferingSubscription = _engine.stream.buffering.listen((value) {
-      _buffering = value;
-    }, onError: (Object error) {
-      debugPrint('Player buffering-state error: $error');
-    });
-    _widthSubscription = _engine.stream.width.listen((value) {
-      debugPrint('Ananta video width: $value for $uri');
-      _vw = value ?? 0;
-      if (!_disposed) videoSize.value = Size(_vw.toDouble(), _vh.toDouble());
-    }, onError: (Object error) {
-      debugPrint('Ananta video-width stream error: $error');
-    });
-    _heightSubscription = _engine.stream.height.listen((value) {
-      debugPrint('Ananta video height: $value for $uri');
-      _vh = value ?? 0;
-      if (!_disposed) videoSize.value = Size(_vw.toDouble(), _vh.toDouble());
-    }, onError: (Object error) {
-      debugPrint('Ananta video-height stream error: $error');
-    });
-    _errorSubscription = _engine.stream.error.listen((value) {
-      debugPrint('Ananta media engine error for $uri: $value');
-    }, onError: (Object error) {
-      debugPrint('Ananta media error stream failure: $error');
-    });
-  }
-  _AnantaPlayerValue get value => _AnantaPlayerValue(this);
-  Future<void> initialize() async {
-    try {
-      // Give live HLS streams a modest demux cache so brief network stalls
-      // can recover without immediately dropping the picture. These options
-      // are best-effort because support can vary by libmpv build.
-      // The media_kit Player API used by this project does not expose
-      // setProperty(). Keep initialization compatible with the pinned API.
-      // Buffering recovery is handled by the player's buffering state and
-      // retry logic elsewhere in the app.
-      await _tuneForLiveStreams();
-      await _engine.open(Media(uri.toString(), httpHeaders: httpHeaders), play: false);
-      _opened = true;
-    } catch (e) {
-      _error = e.toString();
-      rethrow;
-    }
-  }
-  // Best-effort libmpv tuning for smooth live HLS. Set through the native
-  // platform player (dynamic, so it never breaks compilation); any property a
-  // given libmpv build rejects is simply skipped.
-  Future<void> _tuneForLiveStreams() async {
-    const props = <String, String>{
-      'cache': 'yes',
-      // Read far ahead of the playback position (mpv default is only 1s), so
-      // the picture keeps playing through network hiccups.
-      'cache-secs': '30',
-      'demuxer-readahead-secs': '30',
-      'demuxer-max-bytes': '48MiB',
-      'demuxer-max-back-bytes': '4MiB',
-      // Pre-buffer before the first frame and after every stall instead of
-      // playing 1 second and stuttering again. For live TS streams this is
-      // the cache that absorbs jitter.
-      'cache-pause': 'yes',
-      'cache-pause-initial': 'yes',
-      'cache-pause-wait': '3',
-      // Larger network read buffer (default 128 KiB).
-      'stream-buffer-size': '2MiB',
-      'network-timeout': '30',
-      // Reconnect automatically when the server drops the connection.
-      'stream-lavf-o': 'reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=%7%4xx,5xx,reconnect_delay_max=5',
-      // Live HLS: start a few segments behind the live edge so there is
-      // already something to buffer ahead of the playhead.
-      'demuxer-lavf-o': 'live_start_index=-5',
-      'hls-bitrate': 'max',
-    };
-    final dynamic platform = _engine.platform;
-    for (final entry in props.entries) {
-      try {
-        await platform.setProperty(entry.key, entry.value);
-      } catch (e) {
-        debugPrint('mpv property ${entry.key} not applied: $e');
-      }
-    }
-  }
-
-  Future<void> setVolume(double volume) => _engine.setVolume(volume * 100);
-  Future<void> play() => _engine.play();
-
-  // Wait until libmpv reports real video dimensions before committing a new
-  // channel to the UI. Opening a media item is not the same as having a frame
-  // ready; swapping players earlier exposes the black startup texture.
-  Future<void> waitForVideoReady() async {
-    final state = _engine.state;
-    if ((state.width ?? 0) > 0 && (state.height ?? 0) > 0) return;
-    await _engine.stream.width.firstWhere((value) => value != null && value > 0)
-        .timeout(const Duration(seconds: 15));
-    final latest = _engine.state;
-    if ((latest.height ?? 0) > 0) return;
-    await _engine.stream.height.firstWhere((value) => value != null && value > 0)
-        .timeout(const Duration(seconds: 5));
-  }
-
-  Future<void> pause() => _engine.pause();
-  bool _disposed = false;
-  Future<void> dispose() async {
-    if (_disposed) return;
-    _disposed = true;
-    // Stop playback before releasing libmpv so audio does not linger on exit.
-    try { await _engine.stop(); } catch (e) { debugPrint('Player stop during dispose: $e'); }
-    try { await _bufferingSubscription?.cancel(); } catch (_) {}
-    try { await _widthSubscription?.cancel(); } catch (_) {}
-    try { await _heightSubscription?.cancel(); } catch (_) {}
-    try { await _errorSubscription?.cancel(); } catch (_) {}
-    try { await _engine.dispose(); } catch (e) { debugPrint('Player dispose error: $e'); }
-  }
 }
 
 final ValueNotifier<Size> _noVideoSize = ValueNotifier<Size>(Size.zero);
@@ -507,50 +348,6 @@ class _PlayerBox extends StatelessWidget {
     final h = (w * 9 / 16).clamp(0.0, maxH).toDouble();
     return Container(width: double.infinity, height: h, color: color, child: child);
   }
-}
-
-class VideoPlayer extends StatelessWidget {
-  final AnantaPlayerController controller;
-  const VideoPlayer(this.controller, {super.key});
-  @override
-  Widget build(BuildContext context) => LayoutBuilder(
-        builder: (context, constraints) {
-          // Rebuild whenever libmpv reports the real decoded size, so the fit
-          // never depends on a stale/default aspect ratio.
-          return ValueListenableBuilder<Size>(
-            valueListenable: controller.videoSize,
-            builder: (context, size, _) {
-              final srcAspect = (size.width > 0 && size.height > 0)
-                  ? size.width / size.height
-                  : 16 / 9;
-              final boxAspect =
-                  constraints.hasBoundedWidth && constraints.hasBoundedHeight &&
-                          constraints.maxHeight > 0
-                      ? constraints.maxWidth / constraints.maxHeight
-                      : srcAspect;
-              // Fill the whole box (no black side bars) on every screen size.
-              // If the source is wildly different from the box (e.g. 4:3 on a
-              // 20:9 phone) fall back to "contain" so the picture isn't mangled.
-              final mismatch = boxAspect / srcAspect;
-              final fit = (mismatch >= 0.7 && mismatch <= 1.5)
-                  ? BoxFit.fill
-                  : BoxFit.contain;
-              return ClipRect(
-                child: SizedBox.expand(
-                  child: Video(
-                    // Rebind the video surface for each channel controller.
-                    key: ValueKey<AnantaPlayerController>(controller),
-                    controller: controller._video,
-                    controls: NoVideoControls,
-                    fill: Colors.transparent,
-                    fit: fit,
-                  ),
-                ),
-              );
-            },
-          );
-        },
-      );
 }
 
 class Channel {
@@ -2438,7 +2235,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
       // Start playback, then mount the new Video widget immediately. Do not
       // wait for width/height metadata before committing the player: on some
-      // Android TV streams libmpv starts audio first and reports video
+      // Android TV streams the audio can start first and reports video
       // dimensions late (or not at all). Keeping that player pending means its
       // Video widget is never mounted, so audio can be heard while the screen
       // stays black with a permanent buffering spinner.
@@ -2735,7 +2532,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               ),
             // Keep the pending decoder's Video widget mounted but invisible.
             // On Android TV, video output metadata may not arrive until the
-            // media_kit Video surface is attached. This lets the current channel
+            // ExoPlayer video texture is attached. This lets the current channel
             // remain visible while the replacement warms up off-screen.
             if (_pendingPlayer != null && _pendingPlayer != player)
               Positioned.fill(

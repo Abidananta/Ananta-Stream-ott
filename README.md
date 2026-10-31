@@ -33,3 +33,8 @@ Push notifications (Firebase Cloud Messaging)
 1. Upload `google-services.json` (Firebase console > Project settings > Your apps > Ananta OTT) to the repository root. The build turns it into app config; without it the build still works but push is off.
 2. Firebase console > Project settings > Service accounts > Generate new private key. Save the whole JSON as the GitHub secret `FIREBASE_SERVICE_ACCOUNT_JSON`.
 3. Rebuild the app. To send: GitHub > Actions > "Send push notification" > Run workflow (title, text, optional image URL and link). Every phone that opened the new build once receives it, also when the app is closed.
+
+ExoPlayer engine (replaces libmpv / media_kit)
+Playback now runs on AndroidX Media3 ExoPlayer, the same engine family as TiviMate. The native engine is `android_template/AnantaExoPlayer.kt` (registered in `MainActivity.kt`); `lib/exo_player.dart` keeps the same `AnantaPlayerController` / `VideoPlayer` API, so the UI is unchanged. IPTV tuning: 15-50 s live buffer, automatic network retries, tolerant MPEG-TS parsing, hardware decoders first with software fallback, and the FFmpeg audio decoder (Jellyfin build, added by the workflow step "Configure ExoPlayer (Media3) engine" when published for the Media3 version) for MP2 / AC-3 / E-AC-3 / DTS. The release build runs with `--no-shrink` and is not split per ABI.
+Upload all of: `lib/`, `android_template/` (now includes `AnantaExoPlayer.kt`), `pubspec.yaml`, `.github/workflows/build-apk.yml`. Delete `lib/push_notifications.dart` and `lib/storage_service.dart` from the repository if present (they are unused leftovers; the workflow also ignores them).
+Build fix: the compile error `AnimatedTvLogo isn't a class` is fixed by the new `lib/animated_tv_logo.dart`.
