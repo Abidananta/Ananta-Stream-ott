@@ -8,6 +8,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
@@ -118,6 +119,9 @@ class AnantaExo(
             .build()
         private var released = false
         private var hasVideo = true
+        private val srcUrl: String = url
+        private val srcHeaders: Map<String, String> = headers
+        private var tickerStarted = false
         private val posTicker = object : Runnable {
             override fun run() {
                 if (released) return
@@ -253,8 +257,22 @@ class AnantaExo(
                 }
             })
 
-            val item = MediaItem.Builder()
-                .setUri(url)
+            // Short / redirect links (tinyurl, bit.ly ...) have no file extension, so
+            // ExoPlayer cannot tell HLS from TS. Resolve the redirect chain first,
+            // then play the final URL with the right media type.
+            if (needsResolve(srcUrl)) {
+                Thread {
+                    val resolved = try { resolveRedirects(srcUrl) } catch (e: Exception) { Pair(srcUrl, null as String?) }
+                    main.post { if (!released) startPlayback(resolved.first, resolved.second) }
+                }.start()
+            } else {
+                startPlayback(srcUrl, null)
+            }
+        }
+
+        private fun startPlayback(finalUrl: String, mime: String?) {
+            val builder = MediaItem.Builder()
+                .setUri(finalUrl)
                 .setLiveConfiguration(
                     MediaItem.LiveConfiguration.Builder()
                         .setTargetOffsetMs(8_000)
@@ -264,11 +282,50 @@ class AnantaExo(
                         .setMaxPlaybackSpeed(1.0f)
                         .build()
                 )
-                .build()
-            player.setMediaItem(item)
-            player.playWhenReady = false
+            if (mime != null) builder.setMimeType(mime)
+            player.setMediaItem(builder.build())
             player.prepare()
-            main.postDelayed(posTicker, 500)
+            if (!tickerStarted) {
+                tickerStarted = true
+                main.postDelayed(posTicker, 500)
+            }
+        }
+
+        private fun needsResolve(u: String): Boolean {
+            val path = try { java.net.URI(u).path ?: "" } catch (e: Exception) { u }
+            return !Regex("\\.(m3u8?|mpd|ts|mp4|mkv|flv|aac|mp3|avi|mov|webm)$", RegexOption.IGNORE_CASE).containsMatchIn(path)
+        }
+
+        /** Follows HTTP redirects by hand and sniffs the stream type. */
+        private fun resolveRedirects(start: String): Pair<String, String?> {
+            var current = start
+            for (i in 0 until 10) {
+                val conn = java.net.URL(current).openConnection() as java.net.HttpURLConnection
+                try {
+                    conn.instanceFollowRedirects = false
+                    conn.connectTimeout = 8000
+                    conn.readTimeout = 8000
+                    srcHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+                    val code = conn.responseCode
+                    if (code in 300..399) {
+                        val loc = conn.getHeaderField("Location") ?: return Pair(current, null)
+                        current = java.net.URL(java.net.URL(current), loc).toString()
+                        continue
+                    }
+                    val ct = (conn.contentType ?: "").lowercase()
+                    if (ct.contains("mpegurl")) return Pair(current, MimeTypes.APPLICATION_M3U8)
+                    if (ct.contains("dash+xml")) return Pair(current, MimeTypes.APPLICATION_MPD)
+                    if (ct.startsWith("video/") || ct.startsWith("audio/")) return Pair(current, null)
+                    // Unknown / text / octet-stream: look at the first bytes.
+                    val buf = ByteArray(16)
+                    val n = conn.inputStream.read(buf)
+                    val head = if (n > 0) String(buf, 0, n, Charsets.ISO_8859_1) else ""
+                    return if (head.trimStart().startsWith("#EXTM3U")) Pair(current, MimeTypes.APPLICATION_M3U8) else Pair(current, null)
+                } finally {
+                    try { conn.disconnect() } catch (_: Exception) {}
+                }
+            }
+            return Pair(current, null)
         }
 
         private fun sendState() {
