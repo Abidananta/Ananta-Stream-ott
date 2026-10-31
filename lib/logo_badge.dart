@@ -1,6 +1,6 @@
 
-import 'dart:ui' show ImageFilter;
-
+import 'dart:ui' as ui show Image, ImageByteFormat;
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -68,9 +68,11 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     if (!_spin.isAnimating) _spin.repeat();
     final stream = provider.resolve(createLocalImageConfiguration(context));
     final listener = ImageStreamListener(
-      (info, _) {
-        if (!mounted) return;
-        setState(() => _loaded = ui_Image(info.image.width, info.image.height));
+      (info, _) async {
+        final img = info.image;
+        final round = await _hasTransparentCorners(img);
+        if (!mounted || _stream != stream) return;
+        setState(() => _loaded = ui_Image(img.width, img.height, round));
         _pulse.stop();
         _spin.stop();
       },
@@ -82,6 +84,25 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     _stream = stream;
     _listener = listener;
     stream.addListener(listener);
+  }
+
+  /// True when the four corners of the logo are transparent, i.e. the logo is
+  /// itself round (like the Star Sports badges) and can fill the circle fully.
+  static Future<bool> _hasTransparentCorners(ui.Image img) async {
+    try {
+      final data = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (data == null) return false;
+      final w = img.width, h = img.height;
+      if (w < 6 || h < 6) return false;
+      int alphaAt(int x, int y) => data.getUint8((y * w + x) * 4 + 3);
+      const m = 2;
+      return alphaAt(m, m) < 64 &&
+          alphaAt(w - 1 - m, m) < 64 &&
+          alphaAt(m, h - 1 - m) < 64 &&
+          alphaAt(w - 1 - m, h - 1 - m) < 64;
+    } catch (_) {
+      return false;
+    }
   }
 
   void _detach() {
@@ -146,19 +167,39 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     final dim = _loaded!;
     final aspect = dim.h == 0 ? 1.0 : dim.w / dim.h;
     final nearSquare = aspect > 0.85 && aspect < 1.18;
-    final image = Image(
-      image: widget.image!,
-      fit: nearSquare ? BoxFit.cover : BoxFit.contain,
-      filterQuality: FilterQuality.medium,
-      gaplessPlayback: true,
-    );
-    // Round / square logos fill the circle exactly as the file is drawn; wide
-    // or tall logos stay whole inside the circle. No extra plate is added.
-    return SizedBox.expand(
+    // Round logos (transparent corners) fill the circle exactly. Every other
+    // logo is scaled so its whole rectangle (diagonal) fits inside the circle:
+    // nothing is ever cut off or drawn outside the ring.
+    if (nearSquare && dim.round) {
+      return SizedBox.expand(
+        key: const ValueKey('logo'),
+        child: Image(
+          image: widget.image!,
+          fit: BoxFit.cover,
+          filterQuality: FilterQuality.medium,
+          gaplessPlayback: true,
+        ),
+      );
+    }
+    return LayoutBuilder(
       key: const ValueKey('logo'),
-      child: nearSquare
-          ? image
-          : Padding(padding: EdgeInsets.all(widget.size * 0.08), child: image),
+      builder: (context, c) {
+        final d = c.biggest.shortestSide * 0.96;
+        final h = d / math.sqrt(1 + aspect * aspect);
+        final w = h * aspect;
+        return Center(
+          child: SizedBox(
+            width: w,
+            height: h,
+            child: Image(
+              image: widget.image!,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.medium,
+              gaplessPlayback: true,
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -250,5 +291,6 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
 class ui_Image {
   final int w;
   final int h;
-  const ui_Image(this.w, this.h);
+  final bool round;
+  const ui_Image(this.w, this.h, [this.round = false]);
 }

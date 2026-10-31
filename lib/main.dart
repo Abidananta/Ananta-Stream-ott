@@ -1225,7 +1225,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               dense: false,
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: _glassAvatar(channel, 30),
+              leading: SizedBox(width: 60, height: 60, child: _logoCard(channel, 60, selected: _selectedChannel?.url == channel.url)),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
               subtitle: Column(
