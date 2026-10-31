@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// Circular channel logo on a white plate inside a soft lavender ring.
+/// Circular channel logo, transparent background, inside an accent-colour ring.
 ///
 /// * Until the logo has loaded (or if it is missing / fails) a soft animated
 ///   play icon is shown inside the circle.
@@ -31,11 +31,17 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat(reverse: true);
   // Continuously rotating colour ring around the logo circle.
   late final AnimationController _spin =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 3600))..repeat();
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 3600));
   ImageStream? _stream;
   ImageStreamListener? _listener;
   ui_Image? _loaded;
   bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.selected) _spin.repeat();
+  }
 
   @override
   void didChangeDependencies() {
@@ -47,6 +53,9 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   void didUpdateWidget(covariant LogoBadge old) {
     super.didUpdateWidget(old);
     if (old.image != widget.image) _resolve();
+    // The ring only rotates on the selected channel (keeps long lists light).
+    if (widget.selected && !_spin.isAnimating) _spin.repeat();
+    if (!widget.selected && _spin.isAnimating) _spin.stop();
   }
 
   void _resolve() {
@@ -124,17 +133,22 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   }
 
   Widget _logo() {
-    // Logo always sits whole inside the white plate (never cropped, never
-    // outside the circle), with breathing room like the TV version.
-    return Padding(
+    final dim = _loaded!;
+    final aspect = dim.h == 0 ? 1.0 : dim.w / dim.h;
+    final nearSquare = aspect > 0.85 && aspect < 1.18;
+    final image = Image(
+      image: widget.image!,
+      fit: nearSquare ? BoxFit.cover : BoxFit.contain,
+      filterQuality: FilterQuality.medium,
+      gaplessPlayback: true,
+    );
+    // Round / square logos fill the circle exactly as the file is drawn; wide
+    // or tall logos stay whole inside the circle. No extra plate is added.
+    return SizedBox.expand(
       key: const ValueKey('logo'),
-      padding: EdgeInsets.all(widget.size * 0.12),
-      child: Image(
-        image: widget.image!,
-        fit: BoxFit.contain,
-        filterQuality: FilterQuality.medium,
-        gaplessPlayback: true,
-      ),
+      child: nearSquare
+          ? image
+          : Padding(padding: EdgeInsets.all(widget.size * 0.17), child: image),
     );
   }
 
@@ -143,55 +157,48 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     final s = widget.size;
     final showLogo = _loaded != null && !_failed;
     final sel = widget.selected;
-    final ring = s * 0.055; // soft lavender ring, same look as the TV list
-    return Container(
-      width: s,
-      height: s,
-      padding: EdgeInsets.all(ring),
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: sel
-              ? [Colors.white, widget.accent, const Color(0xFFB9A7FF)]
-              : [const Color(0xFFD9D0FF), const Color(0xFF9F8FE6), const Color(0xFF7A68C8)],
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: widget.accent.withOpacity(sel ? 0.65 : 0.30),
-            blurRadius: sel ? 16 : 10,
-            spreadRadius: sel ? 1 : 0,
-            offset: const Offset(0, 3),
+    final ring = s * 0.06;
+    // Ring colours are derived from the app accent colour.
+    final hsl = HSLColor.fromColor(widget.accent);
+    final light = hsl.withLightness((hsl.lightness + 0.22).clamp(0.0, 0.92)).toColor();
+    final deep = hsl.withLightness((hsl.lightness - 0.12).clamp(0.08, 0.9)).toColor();
+    final colors = sel
+        ? <Color>[Colors.white, light, widget.accent, deep, light, Colors.white]
+        : <Color>[light.withOpacity(0.95), widget.accent.withOpacity(0.85), deep.withOpacity(0.7), widget.accent.withOpacity(0.85), light.withOpacity(0.95)];
+    return AnimatedBuilder(
+      animation: _spin,
+      builder: (context, child) => Container(
+        width: s,
+        height: s,
+        padding: EdgeInsets.all(ring),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: SweepGradient(
+            colors: colors,
+            transform: GradientRotation(-0.8 + _spin.value * 2 * math.pi),
           ),
-        ],
+          boxShadow: [
+            BoxShadow(
+              color: widget.accent.withOpacity(sel ? 0.65 : 0.32),
+              blurRadius: sel ? 16 : 9,
+              spreadRadius: sel ? 1 : 0,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: child,
       ),
       child: ClipOval(
         clipBehavior: Clip.antiAlias,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 300),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: showLogo
-                ? const RadialGradient(
-                    center: Alignment(-0.3, -0.4),
-                    radius: 1.0,
-                    colors: [Color(0xFFFFFFFF), Color(0xFFF1EEFF)],
-                  )
-                : const RadialGradient(
-                    colors: [Color(0xFF2A2552), Color(0xFF1B1836)],
-                  ),
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 280),
+          switchInCurve: Curves.easeOut,
+          layoutBuilder: (current, previous) => Stack(
+            fit: StackFit.expand,
+            alignment: Alignment.center,
+            children: [...previous, if (current != null) current],
           ),
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 280),
-            switchInCurve: Curves.easeOut,
-            layoutBuilder: (current, previous) => Stack(
-              fit: StackFit.expand,
-              alignment: Alignment.center,
-              children: [...previous, if (current != null) current],
-            ),
-            child: showLogo ? _logo() : _placeholder(),
-          ),
+          child: showLogo ? _logo() : _placeholder(),
         ),
       ),
     );
