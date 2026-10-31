@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 /// Circular channel logo with a transparent background.
@@ -26,12 +24,9 @@ class LogoBadge extends StatefulWidget {
   State<LogoBadge> createState() => _LogoBadgeState();
 }
 
-class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
+class _LogoBadgeState extends State<LogoBadge> with SingleTickerProviderStateMixin {
   late final AnimationController _pulse =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat(reverse: true);
-  // Continuously rotating colour ring around the logo circle.
-  late final AnimationController _spin =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 3600))..repeat();
   ImageStream? _stream;
   ImageStreamListener? _listener;
   ui_Image? _loaded;
@@ -82,7 +77,6 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   void dispose() {
     _detach();
     _pulse.dispose();
-    _spin.dispose();
     super.dispose();
   }
 
@@ -147,52 +141,37 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     final s = widget.size;
     final showLogo = _loaded != null && !_failed;
-    const ring = 3.0;
-    // Glass ring whose colours (violet -> pink -> cyan -> gold) slowly rotate
-    // around the logo circle. The logo itself stays still and transparent.
-    final colors = widget.selected
-        ? [Colors.white, widget.accent, const Color(0xFFFF6FD8), const Color(0xFF4FD8FF), Colors.white]
-        : [
-            widget.accent.withOpacity(0.9),
-            const Color(0xFFFF6FD8).withOpacity(0.85),
-            const Color(0xFF4FD8FF).withOpacity(0.85),
-            const Color(0xFFFFD36B).withOpacity(0.8),
-            widget.accent.withOpacity(0.9),
-          ];
-    return RepaintBoundary(
-      child: AnimatedBuilder(
-        animation: _spin,
-        builder: (context, child) => Container(
-          width: s,
-          height: s,
-          padding: const EdgeInsets.all(ring),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: SweepGradient(
-              colors: colors,
-              transform: GradientRotation(_spin.value * 2 * math.pi),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: widget.accent.withOpacity(widget.selected ? 0.55 : 0.28),
-                blurRadius: widget.selected ? 14 : 8,
-              ),
-            ],
-          ),
-          child: child,
+    const ring = 2.5;
+    // Same design as the original list: a glass gradient ring with the logo
+    // inside the circle on a transparent background.
+    return Container(
+      width: s,
+      height: s,
+      padding: const EdgeInsets.all(ring),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: widget.selected
+              ? [Colors.white.withOpacity(0.9), widget.accent]
+              : [Colors.white.withOpacity(0.55), widget.accent.withOpacity(0.25)],
         ),
-        child: ClipOval(
-          clipBehavior: Clip.antiAlias,
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 280),
-            switchInCurve: Curves.easeOut,
-            layoutBuilder: (current, previous) => Stack(
-              fit: StackFit.expand,
-              alignment: Alignment.center,
-              children: [...previous, if (current != null) current],
-            ),
-            child: showLogo ? _logo() : _placeholder(),
+        boxShadow: widget.selected
+            ? [BoxShadow(color: widget.accent.withOpacity(0.5), blurRadius: 12)]
+            : null,
+      ),
+      child: ClipOval(
+        clipBehavior: Clip.antiAlias,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 280),
+          switchInCurve: Curves.easeOut,
+          layoutBuilder: (current, previous) => Stack(
+            fit: StackFit.expand,
+            alignment: Alignment.center,
+            children: [...previous, if (current != null) current],
           ),
+          child: showLogo ? _logo() : _placeholder(),
         ),
       ),
     );
