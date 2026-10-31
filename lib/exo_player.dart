@@ -79,6 +79,9 @@ class AnantaPlayerController {
 
   AnantaPlayerController.networkUrl(this.uri, {this.httpHeaders = const {}, dynamic videoPlayerOptions});
 
+  /// Last native playback error (decoder / network), if any.
+  String? get lastError => _error;
+
   AnantaPlayerValue get value => AnantaPlayerValue(this);
 
   Future<void> initialize() async {
@@ -134,6 +137,7 @@ class AnantaPlayerController {
       case 'error':
         _error = (e['message'] as String?) ?? 'Playback error';
         debugPrint('Ananta ExoPlayer error for $uri: $_error');
+        _completeReady(); // fail fast instead of waiting for the 12 s timeout
         break;
     }
   }

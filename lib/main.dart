@@ -2285,6 +2285,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         await controller.dispose();
         return;
       }
+      if (controller.lastError != null && controller.videoSize.value.width <= 0) {
+        throw Exception(controller.lastError);
+      }
       await Future<void>.delayed(const Duration(milliseconds: 120));
       await controller.setVolume(1.0);
       if (!mounted || requestId != _playRequestId) {
@@ -2333,11 +2336,14 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       }
     } catch (e) {
       debugPrint('Playback error for ${channel.url}: $e');
+      final failDetail = (controller.lastError ?? e.toString()).replaceFirst('Exception: ', '');
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = retryAttempt < 6 ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…' : 'Unable to play after 6 retries.';
+        _playerError = retryAttempt < 6
+            ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…\n$failDetail'
+            : 'Unable to play after 6 retries.\n$failDetail';
         _status = 'Playback failed';
         _connecting = false;
       });
@@ -2561,14 +2567,30 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                         ),
                       )
-                    : Icon(
-                        _playerError == null
-                            ? Icons.live_tv
-                            : Icons.error_outline,
-                        size: 48,
-                        color: _playerError == null
-                            ? accentColor
-                            : Colors.redAccent,
+                    : Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _playerError == null
+                                ? Icons.live_tv
+                                : Icons.error_outline,
+                            size: 48,
+                            color: _playerError == null
+                                ? accentColor
+                                : Colors.redAccent,
+                          ),
+                          if (_playerError != null)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
+                              child: Text(
+                                _playerError!,
+                                textAlign: TextAlign.center,
+                                maxLines: 5,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white70, fontSize: 11),
+                              ),
+                            ),
+                        ],
                       ),
               ),
             // Keep the pending decoder's Video widget mounted but invisible.
