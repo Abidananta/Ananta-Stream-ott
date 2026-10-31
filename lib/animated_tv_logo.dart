@@ -2,8 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// Small animated "TV streaming" logo drawn entirely in code (no image):
-/// a glowing TV screen with a pulsing play button and live signal waves.
+/// Animated "TV streaming" logo drawn entirely in code (no image): a violet
+/// retro TV with a play button, V-shaped antenna and signal waves that pulse
+/// outwards. Matches the original Ananta OTT app-bar logo.
 class AnimatedTvLogo extends StatefulWidget {
   const AnimatedTvLogo({super.key, this.size = 44});
   final double size;
@@ -16,7 +17,7 @@ class _AnimatedTvLogoState extends State<AnimatedTvLogo>
     with SingleTickerProviderStateMixin {
   late final AnimationController _c = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 2600),
+    duration: const Duration(milliseconds: 2400),
   )..repeat();
 
   @override
@@ -44,48 +45,61 @@ class _TvLogoPainter extends CustomPainter {
   _TvLogoPainter(this.t);
   final double t;
 
-  static const Color _accent = Color(0xFF9B87FF);
-  static const Color _accentLight = Color(0xFFD6CCFF);
+  static const Color _violet = Color(0xFF8F7BFF);
+  static const Color _violetLight = Color(0xFFB9ABFF);
+  static const Color _violetDeep = Color(0xFF6E5BE0);
 
   @override
   void paint(Canvas canvas, Size size) {
     final s = size.width;
     final pulse = 0.5 + 0.5 * math.sin(t * 2 * math.pi);
 
-    // Soft glow behind the set.
+    // ---- Antenna (V shape with ball tips) ---------------------------------
+    final base = Offset(s * 0.49, s * 0.42);
+    final leftTip = Offset(s * 0.28, s * 0.25);
+    final rightTip = Offset(s * 0.65, s * 0.22);
+    final stick = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = s * 0.05
+      ..color = _violetLight;
+    canvas.drawLine(base, leftTip, stick);
+    canvas.drawLine(base, rightTip, stick);
+    canvas.drawCircle(leftTip, s * 0.04, Paint()..color = const Color(0xFFD9D1FF));
+    // The right ball glows with the broadcast pulse.
     canvas.drawCircle(
-      Offset(s / 2, s * 0.58),
-      s * (0.42 + 0.04 * pulse),
+      rightTip,
+      s * (0.075 + 0.02 * pulse),
       Paint()
-        ..color = _accent.withOpacity(0.16 + 0.10 * pulse)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, s * 0.18),
+        ..color = _violet.withOpacity(0.25 + 0.2 * pulse)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, s * 0.04),
     );
+    canvas.drawCircle(rightTip, s * 0.05, Paint()..color = _violet);
 
-    // Antenna / live signal waves.
-    final ax = s / 2;
-    final ay = s * 0.20;
+    // ---- Signal waves going out of the right antenna ----------------------
     for (var i = 0; i < 3; i++) {
-      final p = (t + i / 3) % 1.0;
-      final r = s * (0.07 + 0.16 * p);
-      final paint = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = s * 0.035
-        ..color = _accentLight.withOpacity((1 - p) * 0.9);
+      // Each wave lights up in turn, travelling outwards.
+      final phase = (t * 3 - i) % 3.0;
+      final glow = phase < 1.0 ? math.sin(phase * math.pi) : 0.0;
+      final r = s * (0.11 + 0.085 * i);
+      final alpha = (0.28 - 0.05 * i) + 0.62 * glow;
       canvas.drawArc(
-        Rect.fromCircle(center: Offset(ax, ay), radius: r),
-        -math.pi * 0.85,
-        math.pi * 0.7,
+        Rect.fromCircle(center: rightTip, radius: r),
+        -math.pi * 0.43,
+        math.pi * 0.46,
         false,
-        paint,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = s * 0.038
+          ..color = _violetLight.withOpacity(alpha.clamp(0.0, 1.0)),
       );
     }
-    canvas.drawCircle(Offset(ax, ay), s * 0.03, Paint()..color = _accentLight);
 
-    // TV body.
+    // ---- TV body ------------------------------------------------------------
     final body = RRect.fromRectAndRadius(
-      Rect.fromLTWH(s * 0.10, s * 0.30, s * 0.80, s * 0.55),
-      Radius.circular(s * 0.14),
+      Rect.fromLTWH(s * 0.03, s * 0.42, s * 0.86, s * 0.50),
+      Radius.circular(s * 0.16),
     );
     canvas.drawRRect(
       body,
@@ -93,66 +107,59 @@ class _TvLogoPainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF3B2F8F), Color(0xFF14102E)],
-        ).createShader(body.outerRect),
-    );
-    canvas.drawRRect(
-      body,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = s * 0.045
-        ..shader = const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [_accentLight, _accent],
+          colors: [Color(0xFFAFA0FF), _violetDeep],
         ).createShader(body.outerRect),
     );
 
-    // Screen with a sweeping highlight.
+    // Dark screen with a soft glow behind the play button.
     final screen = RRect.fromRectAndRadius(
-      Rect.fromLTWH(s * 0.19, s * 0.38, s * 0.62, s * 0.39),
-      Radius.circular(s * 0.08),
+      Rect.fromLTWH(s * 0.10, s * 0.485, s * 0.72, s * 0.37),
+      Radius.circular(s * 0.11),
     );
+    canvas.drawRRect(screen, Paint()..color = const Color(0xFF2B2745));
     canvas.save();
     canvas.clipRRect(screen);
-    canvas.drawRRect(screen, Paint()..color = const Color(0xFF0B0920));
-    final sweepX = s * (-0.3 + 1.3 * t);
-    canvas.drawRect(
-      Rect.fromLTWH(sweepX, s * 0.38, s * 0.14, s * 0.39),
+    final center = Offset(s * 0.46, s * 0.67);
+    canvas.drawCircle(
+      center,
+      s * (0.30 + 0.04 * pulse),
       Paint()
-        ..shader = LinearGradient(
+        ..shader = RadialGradient(
           colors: [
-            Colors.white.withOpacity(0),
-            Colors.white.withOpacity(0.18),
-            Colors.white.withOpacity(0),
+            _violet.withOpacity(0.55 + 0.15 * pulse),
+            _violet.withOpacity(0),
           ],
-        ).createShader(Rect.fromLTWH(sweepX, 0, s * 0.14, s)),
+        ).createShader(Rect.fromCircle(center: center, radius: s * 0.34)),
     );
     canvas.restore();
 
-    // Pulsing play triangle.
-    final cx = s * 0.51;
-    final cy = s * 0.575;
-    final k = s * (0.095 + 0.012 * pulse);
+    // Play triangle.
+    final k = s * 0.095;
     final tri = Path()
-      ..moveTo(cx - k * 0.7, cy - k)
-      ..lineTo(cx + k * 1.1, cy)
-      ..lineTo(cx - k * 0.7, cy + k)
+      ..moveTo(center.dx - k * 0.75, center.dy - k * 1.05)
+      ..lineTo(center.dx + k * 1.1, center.dy)
+      ..lineTo(center.dx - k * 0.75, center.dy + k * 1.05)
       ..close();
     canvas.drawPath(
       tri,
       Paint()
         ..shader = const LinearGradient(
-          colors: [Colors.white, _accentLight],
-        ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: k * 1.2)),
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Colors.white, Color(0xFFD9D1FF)],
+        ).createShader(Rect.fromCircle(center: center, radius: k * 1.3)),
     );
 
-    // Stand.
-    final stand = Paint()
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = s * 0.05
-      ..color = _accent;
-    canvas.drawLine(Offset(s * 0.32, s * 0.93), Offset(s * 0.68, s * 0.93), stand);
+    // Feet.
+    final foot = Paint()..color = _violetDeep;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(s * 0.20, s * 0.92, s * 0.13, s * 0.045), Radius.circular(s * 0.02)),
+      foot,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(s * 0.58, s * 0.92, s * 0.13, s * 0.045), Radius.circular(s * 0.02)),
+      foot,
+    );
   }
 
   @override

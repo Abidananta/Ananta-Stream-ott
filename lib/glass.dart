@@ -217,7 +217,22 @@ class GlassChip extends StatelessWidget {
 }
 
 
-/// Small round glass button used in the app bar (heart, bell, refresh).
+/// Motion used by [GlassIconButton].
+enum GlassIconAnim {
+  none,
+
+  /// Elastic pop plus a soft burst ring whenever an active icon switches on
+  /// (favourite heart).
+  pop,
+
+  /// Gentle bell swing every few seconds while there is something unread.
+  ring,
+
+  /// Turns while busy and makes one full turn on tap (refresh).
+  spin,
+}
+
+/// Round glass button used in the app bar (heart, bell, refresh).
 class GlassIconButton extends StatefulWidget {
   const GlassIconButton({
     super.key,
@@ -228,6 +243,7 @@ class GlassIconButton extends StatefulWidget {
     this.glow,
     this.badge = 0,
     this.busy = false,
+    this.anim = GlassIconAnim.none,
   });
 
   final IconData icon;
@@ -239,121 +255,261 @@ class GlassIconButton extends StatefulWidget {
   final Color? glow;
   final int badge;
   final bool busy;
+  final GlassIconAnim anim;
 
   @override
   State<GlassIconButton> createState() => _GlassIconButtonState();
 }
 
-class _GlassIconButtonState extends State<GlassIconButton> {
+class _GlassIconButtonState extends State<GlassIconButton> with TickerProviderStateMixin {
+  static const double _size = 34;
   bool _down = false;
+
+  late final AnimationController _pop =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
+  late final AnimationController _bell =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 4200));
+  late final AnimationController _spin =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
+
+  @override
+  void initState() {
+    super.initState();
+    _syncLoops(null);
+  }
+
+  @override
+  void didUpdateWidget(covariant GlassIconButton old) {
+    super.didUpdateWidget(old);
+    if (widget.anim == GlassIconAnim.pop && old.icon != widget.icon && widget.glow != null) {
+      _pop.forward(from: 0);
+    }
+    _syncLoops(old);
+  }
+
+  void _syncLoops(GlassIconButton? old) {
+    if (widget.anim == GlassIconAnim.ring) {
+      if (widget.badge > 0) {
+        if (!_bell.isAnimating) _bell.repeat();
+      } else if (_bell.isAnimating) {
+        _bell.stop();
+        _bell.value = 0;
+      }
+    }
+    if (widget.anim == GlassIconAnim.spin) {
+      if (widget.busy) {
+        if (!_spin.isAnimating || old?.busy != true) _spin.repeat();
+      } else if (old?.busy == true) {
+        // Finish the current turn smoothly instead of snapping back.
+        _spin.forward().whenComplete(() {
+          if (mounted && !widget.busy) _spin.value = 0;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _pop.dispose();
+    _bell.dispose();
+    _spin.dispose();
+    super.dispose();
+  }
+
+  void _tap() {
+    if (widget.anim == GlassIconAnim.spin && !widget.busy) _spin.forward(from: 0);
+    widget.onPressed?.call();
+  }
 
   @override
   Widget build(BuildContext context) {
     final active = widget.glow != null;
     final base = active ? widget.glow! : kGlassAccent;
     final enabled = widget.onPressed != null;
-    final btn = AnimatedScale(
-      scale: _down ? 0.88 : 1,
-      duration: const Duration(milliseconds: 110),
-      child: Container(
-        width: 32,
-        height: 32,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Colors.white.withOpacity(active ? 0.30 : 0.22),
-              base.withOpacity(active ? 0.28 : 0.12),
-            ],
-          ),
-          border: Border.all(
-            color: Colors.white.withOpacity(active ? 0.55 : 0.32),
-            width: 0.9,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: base.withOpacity(active ? 0.55 : 0.28),
-              blurRadius: active ? 12 : 8,
-              spreadRadius: active ? 0.5 : 0,
-            ),
-          ],
-        ),
-        child: Stack(
-          clipBehavior: Clip.none,
-          alignment: Alignment.center,
-          children: [
-            // glossy highlight on the upper half
-            Positioned(
-              top: 1.5,
-              left: 4,
-              right: 4,
-              height: 11,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Colors.white.withOpacity(0.30), Colors.white.withOpacity(0)],
+
+    final icon = AnimatedBuilder(
+      animation: Listenable.merge([_pop, _bell, _spin]),
+      builder: (context, _) {
+        var scale = 1.0;
+        var angle = 0.0;
+        var alignment = Alignment.center;
+        if (widget.anim == GlassIconAnim.pop && _pop.isAnimating) {
+          scale = 0.5 + 0.5 * Curves.elasticOut.transform(_pop.value);
+        }
+        if (widget.anim == GlassIconAnim.ring && widget.badge > 0) {
+          final t = _bell.value;
+          if (t < 0.24) {
+            final p = t / 0.24;
+            angle = math.sin(p * math.pi * 5) * (1 - p) * 0.42;
+          }
+          alignment = const Alignment(0, -0.7);
+        }
+        if (widget.anim == GlassIconAnim.spin) {
+          angle = _spin.value * 2 * math.pi;
+        }
+        Widget ic = Icon(
+          widget.icon,
+          size: 19,
+          color: widget.color,
+        );
+        ic = Transform.rotate(angle: angle, alignment: alignment, child: ic);
+        return Transform.scale(scale: scale, child: ic);
+      },
+    );
+
+    final burst = widget.anim == GlassIconAnim.pop
+        ? AnimatedBuilder(
+            animation: _pop,
+            builder: (context, _) {
+              if (!_pop.isAnimating) return const SizedBox.shrink();
+              final v = Curves.easeOut.transform(_pop.value);
+              return IgnorePointer(
+                child: Opacity(
+                  opacity: (1 - v).clamp(0.0, 1.0) * 0.8,
+                  child: Container(
+                    width: _size * (0.9 + 0.9 * v),
+                    height: _size * (0.9 + 0.9 * v),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: base, width: 2.2 * (1 - v) + 0.4),
+                    ),
                   ),
                 ),
+              );
+            },
+          )
+        : const SizedBox.shrink();
+
+    // Flat dark circle with a thin light ring and a clean white outline icon
+    // (the original Ananta OTT app-bar look).
+    final btn = AnimatedScale(
+      scale: _down ? 0.9 : 1,
+      duration: const Duration(milliseconds: 110),
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          burst,
+          Container(
+            width: _size,
+            height: _size,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: active
+                    ? [base.withOpacity(0.38), base.withOpacity(0.18)]
+                    : const [Color(0xFF4A4661), Color(0xFF312E48)],
               ),
+              border: Border.all(
+                color: active ? base.withOpacity(0.85) : Colors.white.withOpacity(0.32),
+                width: 1,
+              ),
+              boxShadow: active
+                  ? [BoxShadow(color: base.withOpacity(0.40), blurRadius: 12)]
+                  : null,
             ),
-            widget.busy
-                ? const SizedBox(
-                    width: 15,
-                    height: 15,
+            child: Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                if (widget.busy && widget.anim != GlassIconAnim.spin)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                   )
-                : ShaderMask(
-                    shaderCallback: (r) => LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [Colors.white, widget.color],
-                    ).createShader(r),
-                    child: Icon(widget.icon, size: 17, color: Colors.white),
+                else
+                  icon,
+                if (widget.badge > 0)
+                  Positioned(
+                    right: -3,
+                    top: -3,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0.5),
+                      constraints: const BoxConstraints(minWidth: 15, minHeight: 15),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFF3D71),
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(color: const Color(0xFF1E1A33), width: 1.5),
+                      ),
+                      child: Text(
+                        widget.badge > 9 ? '9+' : '${widget.badge}',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 8.5,
+                          height: 1.25,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
                   ),
-            if (widget.badge > 0)
-              Positioned(
-                right: -4,
-                top: -4,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 3.5, vertical: 0.5),
-                  constraints: const BoxConstraints(minWidth: 14, minHeight: 14),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(colors: [Color(0xFFFF6B8B), Color(0xFFFF3D71)]),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.white.withOpacity(0.85), width: 0.9),
-                    boxShadow: [
-                      BoxShadow(color: const Color(0xFFFF3D71).withOpacity(0.55), blurRadius: 6),
-                    ],
-                  ),
-                  child: Text(
-                    widget.badge > 9 ? '9+' : '${widget.badge}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.w800, color: Colors.white),
-                  ),
-                ),
-              ),
-          ],
-        ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 3),
       child: Tooltip(
         message: widget.tooltip ?? '',
         child: GestureDetector(
           onTapDown: enabled ? (_) => setState(() => _down = true) : null,
           onTapCancel: () => setState(() => _down = false),
           onTapUp: (_) => setState(() => _down = false),
-          onTap: widget.onPressed,
+          onTap: enabled ? _tap : null,
           behavior: HitTestBehavior.opaque,
           child: Opacity(opacity: !enabled && !widget.busy ? 0.5 : 1, child: btn),
         ),
       ),
+    );
+  }
+}
+
+
+/// Favourite heart used in channel rows: soft outline when off, glowing pink
+/// gradient heart with a small elastic pop when switched on.
+class FavoriteHeart extends StatefulWidget {
+  const FavoriteHeart({super.key, required this.on, this.size = 20, this.offColor});
+  final bool on;
+  final double size;
+  final Color? offColor;
+
+  @override
+  State<FavoriteHeart> createState() => _FavoriteHeartState();
+}
+
+class _FavoriteHeartState extends State<FavoriteHeart> with SingleTickerProviderStateMixin {
+  late final AnimationController _c =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+
+  @override
+  void didUpdateWidget(covariant FavoriteHeart old) {
+    super.didUpdateWidget(old);
+    if (widget.on && !old.on) _c.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final off = widget.offColor ?? Colors.white54;
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, _) {
+        final scale = _c.isAnimating ? 0.5 + 0.5 * Curves.elasticOut.transform(_c.value) : 1.0;
+        final heart = widget.on
+            ? Icon(Icons.favorite_rounded, size: widget.size, color: const Color(0xFFFF4F8B))
+            : Icon(Icons.favorite_border_rounded, size: widget.size, color: off);
+        return Transform.scale(scale: scale, child: heart);
+      },
     );
   }
 }

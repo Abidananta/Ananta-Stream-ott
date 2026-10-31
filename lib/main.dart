@@ -1065,8 +1065,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                                   tooltip: _showFavoritesOnly ? 'Show all channels' : 'Show favorites',
                                   visualDensity: VisualDensity.compact,
                                   onPressed: () => setState(() => _showFavoritesOnly = !_showFavoritesOnly),
-                                  icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border,
-                                    color: _showFavoritesOnly ? Colors.pinkAccent : Colors.white70, size: 19),
+                                  icon: FavoriteHeart(on: _showFavoritesOnly, size: 21, offColor: Colors.white70),
                                 ),
                               ],
                             ),
@@ -1229,8 +1228,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     style: const TextStyle(color: Colors.white54, fontSize: 10)),
                 ],
               ),
-              trailing: Icon(favorite ? Icons.favorite : Icons.chevron_right,
-                color: favorite ? Colors.pinkAccent : Colors.white38, size: 18),
+              trailing: favorite
+                  ? const FavoriteHeart(on: true, size: 19)
+                  : const Icon(Icons.chevron_right_rounded, color: Colors.white38, size: 20),
               onTap: () => _playChannel(channel),
             ),
           );
@@ -1657,27 +1657,54 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     return null;
   }
 
+  // Sister channels differ only by a number ("Zee Anmol" / "Zee Anmol 2",
+  // "Star Sports 1" / "Star Sports 2"). These helpers make sure such channels
+  // never borrow each other's guide.
+  String _epgStripCountry(String normalized) {
+    final stripped = normalized.replaceFirst(RegExp(r'(india|in)$'), '');
+    return stripped.length >= 3 ? stripped : normalized;
+  }
+
+  String _epgTrailingNumber(String normalized) {
+    final m = RegExp(r'(\d+)$').firstMatch(_epgStripCountry(normalized));
+    return m == null ? '' : m.group(1)!;
+  }
+
   List<EpgProgram> _resolveEpgCandidates(Channel channel) {
+    final name = _normalizeEpgName(channel.name);
+    final wantedNumber = _epgTrailingNumber(name);
+    // A playlist id/name may be shared by sister channels (e.g. tvg-id
+    // "ZeeAnmol.in" on both "Zee Anmol" and "Zee Anmol 2"). Accept it only
+    // when its trailing number agrees with the channel's own name.
+    bool numberAgrees(String normalizedKey) =>
+        wantedNumber == _epgTrailingNumber(normalizedKey);
+
     final id = channel.tvgId.trim();
     if (id.isNotEmpty) {
-      final direct = _epgById[id];
-      if (direct != null && direct.isNotEmpty) return direct;
       final normalizedId = _normalizeEpgName(id);
-      for (final entry in _epgById.entries) {
-        if (_normalizeEpgName(entry.key) == normalizedId) return entry.value;
+      if (numberAgrees(normalizedId)) {
+        final direct = _epgById[id];
+        if (direct != null && direct.isNotEmpty) return direct;
+        for (final entry in _epgById.entries) {
+          if (_normalizeEpgName(entry.key) == normalizedId) return entry.value;
+        }
       }
     }
     final playlistName = _normalizeEpgName(channel.tvgName);
-    if (playlistName.isNotEmpty) {
+    if (playlistName.isNotEmpty && numberAgrees(playlistName)) {
       final playlistNameMatch = _epgByName[playlistName];
       if (playlistNameMatch != null && playlistNameMatch.isNotEmpty) return playlistNameMatch;
     }
-    final name = _normalizeEpgName(channel.name);
     final directName = _epgByName[name];
     if (directName != null && directName.isNotEmpty) return directName;
+    // Same name with only a country suffix ("starplus" vs "starplusin").
     if (name.length >= 5) {
+      final base = _epgStripCountry(name);
       for (final entry in _epgByName.entries) {
-        if (entry.key.length >= 5 && (entry.key.contains(name) || name.contains(entry.key))) return entry.value;
+        if (entry.value.isEmpty) continue;
+        final key = entry.key;
+        if (key.length < 5) continue;
+        if (_epgStripCountry(key) == base && numberAgrees(key)) return entry.value;
       }
     }
     return const <EpgProgram>[];
@@ -1720,6 +1747,45 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         onBackgroundImageError: logo == null ? null : (_, __) {},
         child: logo == null ? Icon(Icons.live_tv, color: accentColor, size: radius * 0.9) : null,
       ),
+    );
+  }
+
+  /// Large rounded logo card for the mobile list: the whole logo is shown
+  /// (never cropped) on a bright glass plate so every channel stands out.
+  Widget _logoCard(Channel channel, double size, {bool selected = false}) {
+    final logo = _logoImage(channel);
+    return Container(
+      width: size,
+      height: size,
+      padding: const EdgeInsets.all(7),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(size * 0.28),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFFFFFFF), Color(0xFFE6E0FF)],
+        ),
+        border: Border.all(
+          color: selected ? accentColor : Colors.white.withOpacity(0.85),
+          width: selected ? 2 : 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: accentColor.withOpacity(selected ? 0.55 : 0.28),
+            blurRadius: selected ? 14 : 9,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: logo == null
+          ? Icon(Icons.live_tv_rounded, color: accentColor, size: size * 0.45)
+          : Image(
+              image: logo,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.medium,
+              errorBuilder: (_, __, ___) =>
+                  Icon(Icons.live_tv_rounded, color: accentColor, size: size * 0.45),
+            ),
     );
   }
 
@@ -2807,15 +2873,16 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           type: MaterialType.transparency,
           child: ListTile(
           dense: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          leading: _glassAvatar(channel, 32),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+          horizontalTitleGap: 14,
+          leading: _logoCard(channel, 64, selected: selected),
           title: Text(
             channel.name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: 13,
-              fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+              fontSize: 14.5,
+              fontWeight: selected ? FontWeight.bold : FontWeight.w600,
             ),
           ),
           subtitle: Text(
@@ -2828,11 +2895,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             visualDensity: VisualDensity.compact,
             tooltip: favorite ? 'Remove favorite' : 'Add favorite',
             onPressed: () => _toggleFavorite(channel),
-            icon: Icon(
-              favorite ? Icons.favorite : Icons.favorite_border,
-              color: favorite ? Colors.pinkAccent : Colors.white54,
-              size: 20,
-            ),
+            icon: FavoriteHeart(on: favorite, size: 22),
           ),
           onTap: () => _playChannel(channel),
           ),
@@ -3109,16 +3172,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                     icon: _showFavoritesOnly
                         ? Icons.favorite_rounded
                         : Icons.favorite_border_rounded,
-                    color: _showFavoritesOnly ? const Color(0xFFFF7BA9) : const Color(0xFFD6CCFF),
+                    color: _showFavoritesOnly ? const Color(0xFFFF7BA9) : Colors.white,
                     glow: _showFavoritesOnly ? const Color(0xFFFF4F8B) : null,
+                    anim: GlassIconAnim.pop,
                   ),
                   const NoticeBell(),
                   GlassIconButton(
                     tooltip: 'Refresh playlist',
                     onPressed: _loadingPlaylist ? null : _loadPlaylist,
-                    icon: Icons.sync_rounded,
-                    color: const Color(0xFFD6CCFF),
+                    icon: Icons.refresh_rounded,
                     busy: _loadingPlaylist,
+                    anim: GlassIconAnim.spin,
                   ),
                   const SizedBox(width: 8),
                 ],

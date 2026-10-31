@@ -406,9 +406,10 @@ class NoticeBell extends StatelessWidget {
         icon: count > 0
             ? Icons.notifications_active_rounded
             : Icons.notifications_none_rounded,
-        color: count > 0 ? const Color(0xFFFFD27A) : const Color(0xFFD6CCFF),
+        color: Colors.white,
         glow: count > 0 ? const Color(0xFFFFB84D) : null,
         badge: count,
+        anim: GlassIconAnim.ring,
       ),
     );
   }
