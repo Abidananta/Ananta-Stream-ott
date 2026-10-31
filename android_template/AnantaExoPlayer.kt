@@ -122,10 +122,6 @@ class AnantaExo(
         private val srcUrl: String = url
         private val srcHeaders: Map<String, String> = headers
         private var tickerStarted = false
-        private var lastUrl: String = ""
-        private var lastMime: String? = null
-        private var triedHlsFallback = false
-        private var triedTsFallback = false
         private val posTicker = object : Runnable {
             override fun run() {
                 if (released) return
@@ -251,23 +247,6 @@ class AnantaExo(
                 override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) = sendState()
 
                 override fun onPlayerError(error: PlaybackException) {
-                    // The stream type could not be guessed (short / extension-less
-                    // link, odd content-type). Retry once as HLS, then once as DASH.
-                    val formatError = error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
-                        error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
-                        error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED ||
-                        error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED
-                    if (formatError && lastMime == null && !triedHlsFallback && lastUrl.isNotEmpty()) {
-                        triedHlsFallback = true
-                        startPlayback(lastUrl, MimeTypes.APPLICATION_M3U8)
-                        return
-                    }
-                    // Resolved as HLS but it is really a raw MPEG-TS stream: retry as TS.
-                    if (formatError && lastMime == MimeTypes.APPLICATION_M3U8 && !triedTsFallback && lastUrl.isNotEmpty()) {
-                        triedTsFallback = true
-                        startPlayback(lastUrl, MimeTypes.VIDEO_MP2T)
-                        return
-                    }
                     // Live window fell behind: rejoin the live edge and carry on.
                     if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
                         player.seekToDefaultPosition()
@@ -292,8 +271,6 @@ class AnantaExo(
         }
 
         private fun startPlayback(finalUrl: String, mime: String?) {
-            lastUrl = finalUrl
-            lastMime = mime
             val builder = MediaItem.Builder()
                 .setUri(finalUrl)
                 .setLiveConfiguration(
@@ -319,83 +296,31 @@ class AnantaExo(
             return !Regex("\\.(m3u8?|mpd|ts|mp4|mkv|flv|aac|mp3|avi|mov|webm)$", RegexOption.IGNORE_CASE).containsMatchIn(path)
         }
 
-        /**
-         * Follows a short / redirect link by hand and works out what it really is:
-         *  - HTTP 30x redirects (any number of hops, http<->https),
-         *  - a 4xx answer to the player User-Agent is retried once as a browser,
-         *  - a plain-text body that is just a URL,
-         *  - an IPTV .m3u list (#EXTINF, no HLS tags): the first stream URL is used,
-         *  - an HTML page with a meta-refresh / location redirect,
-         *  - HLS / DASH detected from the content-type or the first bytes.
-         */
+        /** Follows HTTP redirects by hand and sniffs the stream type. */
         private fun resolveRedirects(start: String): Pair<String, String?> {
-            val browserUa = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
-            val htmlRedirect = Regex("""(?i)(?:http-equiv=["']refresh["'][^>]*?content=["'][^"']*?url=|location(?:\.href)?\s*=\s*["']|location\.replace\(["'])([^"'>\s]+)""")
             var current = start
-            var asBrowser = false
-            var hops = 0
-            while (hops < 12) {
-                hops++
+            for (i in 0 until 10) {
                 val conn = java.net.URL(current).openConnection() as java.net.HttpURLConnection
                 try {
                     conn.instanceFollowRedirects = false
-                    conn.connectTimeout = 10000
-                    conn.readTimeout = 10000
+                    conn.connectTimeout = 8000
+                    conn.readTimeout = 8000
                     srcHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
-                    if (asBrowser) conn.setRequestProperty("User-Agent", browserUa)
                     val code = conn.responseCode
                     if (code in 300..399) {
                         val loc = conn.getHeaderField("Location") ?: return Pair(current, null)
                         current = java.net.URL(java.net.URL(current), loc).toString()
                         continue
                     }
-                    if (code >= 400) {
-                        if (!asBrowser) {
-                            asBrowser = true
-                            hops--
-                            continue
-                        }
-                        return Pair(current, null)
-                    }
                     val ct = (conn.contentType ?: "").lowercase()
                     if (ct.contains("mpegurl")) return Pair(current, MimeTypes.APPLICATION_M3U8)
                     if (ct.contains("dash+xml")) return Pair(current, MimeTypes.APPLICATION_MPD)
                     if (ct.startsWith("video/") || ct.startsWith("audio/")) return Pair(current, null)
                     // Unknown / text / octet-stream: look at the first bytes.
-                    val buf = ByteArray(8192)
-                    var total = 0
-                    val input = conn.inputStream
-                    while (total < buf.size) {
-                        val n = input.read(buf, total, buf.size - total)
-                        if (n <= 0) break
-                        total += n
-                    }
-                    val text = String(buf, 0, total, Charsets.ISO_8859_1)
-                    val trimmed = text.trimStart()
-                    if (trimmed.startsWith("#EXTM3U")) {
-                        if (!trimmed.contains("#EXT-X-")) {
-                            // IPTV channel list, not an HLS playlist: use its first stream.
-                            val first = trimmed.lineSequence().map { it.trim() }
-                                .firstOrNull { it.startsWith("http://") || it.startsWith("https://") }
-                            if (first != null) {
-                                current = first
-                                continue
-                            }
-                        }
-                        return Pair(current, MimeTypes.APPLICATION_M3U8)
-                    }
-                    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-                        current = trimmed.lineSequence().first().trim()
-                        continue
-                    }
-                    if (ct.contains("html")) {
-                        val m = htmlRedirect.find(text)
-                        if (m != null) {
-                            current = java.net.URL(java.net.URL(current), m.groupValues[1]).toString()
-                            continue
-                        }
-                    }
-                    return Pair(current, null)
+                    val buf = ByteArray(16)
+                    val n = conn.inputStream.read(buf)
+                    val head = if (n > 0) String(buf, 0, n, Charsets.ISO_8859_1) else ""
+                    return if (head.trimStart().startsWith("#EXTM3U")) Pair(current, MimeTypes.APPLICATION_M3U8) else Pair(current, null)
                 } finally {
                     try { conn.disconnect() } catch (_: Exception) {}
                 }
