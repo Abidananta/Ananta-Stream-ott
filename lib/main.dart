@@ -23,7 +23,7 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 const String appName = 'Ananta OTT';
 const MethodChannel _pipChannel = MethodChannel('com.ananta.ott/pip');
 const String playlistUrl =
-    'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/refs/heads/main/channels.m3u';
+    'https://playlist.stream24.workers.dev/playlist.m3u?key=99ad93972fa4480f9a45d8a37ec9ff11';
 const String ptvStreamUrl =
     'http://103.185.24.134:3001/ptv/index.m3u8';
 const List<String> epgSourceUrls = [
