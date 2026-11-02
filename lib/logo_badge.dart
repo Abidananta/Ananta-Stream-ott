@@ -166,40 +166,24 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   Widget _logo() {
     final dim = _loaded!;
     final aspect = dim.h == 0 ? 1.0 : dim.w / dim.h;
-    final nearSquare = aspect > 0.85 && aspect < 1.18;
-    // Round logos (transparent corners) fill the circle exactly. Every other
-    // logo is scaled so its whole rectangle (diagonal) fits inside the circle:
-    // nothing is ever cut off or drawn outside the ring.
-    if (nearSquare && dim.round) {
-      return SizedBox.expand(
-        key: const ValueKey('logo'),
-        child: Image(
-          image: widget.image!,
-          fit: BoxFit.cover,
-          filterQuality: FilterQuality.medium,
-          gaplessPlayback: true,
-        ),
-      );
-    }
-    return LayoutBuilder(
+    final nearSquare = aspect > 0.8 && aspect < 1.25;
+    // Every logo is shown as a CIRCLE inside the ring: the whole badge is
+    // clipped to the circle, so nothing can ever draw outside the ring.
+    //  * square / round logos fill the circle (cover),
+    //  * clearly wide or tall logos stay whole (contain) with a small margin.
+    final image = Image(
+      image: widget.image!,
+      fit: nearSquare ? BoxFit.cover : BoxFit.contain,
+      filterQuality: FilterQuality.medium,
+      gaplessPlayback: true,
+    );
+    return SizedBox.expand(
       key: const ValueKey('logo'),
-      builder: (context, c) {
-        final d = c.biggest.shortestSide * 0.96;
-        final h = d / math.sqrt(1 + aspect * aspect);
-        final w = h * aspect;
-        return Center(
-          child: SizedBox(
-            width: w,
-            height: h,
-            child: Image(
-              image: widget.image!,
-              fit: BoxFit.contain,
-              filterQuality: FilterQuality.medium,
-              gaplessPlayback: true,
-            ),
-          ),
-        );
-      },
+      child: ClipOval(
+        child: nearSquare
+            ? image
+            : Padding(padding: EdgeInsets.all(widget.size * 0.08), child: image),
+      ),
     );
   }
 
