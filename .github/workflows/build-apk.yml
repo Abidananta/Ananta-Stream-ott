@@ -170,7 +170,32 @@ jobs:
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'); root.insert(2, el)
           if not has_tag('uses-permission', 'name', 'android.permission.POST_NOTIFICATIONS'):
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.POST_NOTIFICATIONS'); root.insert(3, el)
+          # Needed by the anti-sniffing guard (VPN / proxy detection).
+          if not has_tag('uses-permission', 'name', 'android.permission.ACCESS_NETWORK_STATE'):
+              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.ACCESS_NETWORK_STATE'); root.insert(4, el)
+          # Android 11+: lets the app see whether known packet-capture apps are installed.
+          # Keep in sync with AnantaGuard.CAPTURE_PACKAGES in AnantaExoPlayer.kt.
+          if root.find('queries') is None:
+              q = ET.SubElement(root, 'queries')
+              for pkg in ['com.guoshi.httpcanary', 'com.guoshi.httpcanary.premium',
+                          'app.greyshirts.sslcapture', 'com.minhui.networkcapture',
+                          'com.emanuelef.remote_capture', 'jp.co.taosoftware.android.packetcapture',
+                          'com.network.proxy']:
+                  pk = ET.SubElement(q, 'package'); pk.set(ns + 'name', pkg)
+          # Trust only system CAs: a user-installed capture certificate (HTTP Canary,
+          # Charles, mitmproxy) can then not decrypt the app's https traffic.
+          nsc_dir = Path('build_app/android/app/src/main/res/xml'); nsc_dir.mkdir(parents=True, exist_ok=True)
+          (nsc_dir / 'ananta_network_security.xml').write_text(
+              '<?xml version="1.0" encoding="utf-8"?>\n'
+              '<network-security-config>\n'
+              '    <base-config cleartextTrafficPermitted="true">\n'
+              '        <trust-anchors>\n'
+              '            <certificates src="system" />\n'
+              '        </trust-anchors>\n'
+              '    </base-config>\n'
+              '</network-security-config>\n')
           app = root.find('application')
+          app.set(ns + 'networkSecurityConfig', '@xml/ananta_network_security')
           # Background announcement check (notice.json) about every 15 minutes.
           svc = ET.SubElement(app, 'service')
           svc.set(ns + 'name', 'com.ananta.ott.NoticeJobService')
