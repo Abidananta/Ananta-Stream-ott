@@ -142,8 +142,51 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         setupInstaller(flutterEngine)
         // ExoPlayer (Media3) playback engine, rendered into a Flutter texture.
-        exo?.releaseAll()
-        exo = AnantaExo(applicationContext, flutterEngine.dartExecutor.binaryMessenger, flutterEngine.renderer)
+        exo?.destroy()
+        exo = AnantaExo(applicationContext, flutterEngine.dartExecutor.binaryMessenger, flutterEngine.renderer).also { e ->
+            // Native side owns PiP arming: it always knows whether a stream is
+            // really playing, whatever state Dart last reported (buffering,
+            // slow-starting or odd live streams used to leave PiP disarmed).
+            e.onStateChanged = { updateAutoEnter() }
+            e.onVideoAspect = { a ->
+                if (Math.abs(a - aspect) > 0.01) {
+                    aspect = a
+                    updateAutoEnter()
+                }
+            }
+        }
+        // Secure fetch for the channel playlist. Dart's own HTTP stack accepts
+        // user-installed CAs (HTTP Canary / Charles certificate), so the playlist
+        // with every stream URL could be read. HttpURLConnection follows the
+        // app's network security config (system CAs only), so a capture tool
+        // sees an encrypted tunnel it cannot open.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.ananta.ott/secure_http")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "get") { result.notImplemented(); return@setMethodCallHandler }
+                val url = call.argument<String>("url")
+                val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
+                val timeout = call.argument<Int>("timeoutMs") ?: 25000
+                if (url.isNullOrEmpty()) { result.error("BAD_URL", "No url", null); return@setMethodCallHandler }
+                Thread {
+                    try {
+                        val conn = URL(url).openConnection() as HttpURLConnection
+                        try {
+                            conn.connectTimeout = timeout
+                            conn.readTimeout = timeout
+                            conn.instanceFollowRedirects = true
+                            headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+                            val code = conn.responseCode
+                            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                            val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
+                            runOnUiThread { result.success(mapOf("status" to code, "body" to bytes)) }
+                        } finally {
+                            conn.disconnect()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { result.error("FETCH_FAILED", e.javaClass.simpleName + ": " + e.message, null) }
+                    }
+                }.start()
+            }
         val noticeChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.ananta.ott/notice")
         // Push received while the app is open: hand it to Flutter for the glass banner.
         AnantaNotice.listener = { n ->
@@ -399,7 +442,7 @@ class MainActivity : FlutterActivity() {
             // ignore
         }
         installReceiver = null
-        try { exo?.releaseAll() } catch (e: Exception) { /* ignore */ }
+        try { exo?.destroy() } catch (e: Exception) { /* ignore */ }
         exo = null
         super.onDestroy()
         if (finishing) {
@@ -410,7 +453,7 @@ class MainActivity : FlutterActivity() {
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         // Home / app switch while a stream is playing: keep it visible in PiP.
-        if (pipEnabled && !isPipActive()) enterPip()
+        if (pipWanted() && !isPipActive()) enterPip()
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
@@ -428,14 +471,19 @@ class MainActivity : FlutterActivity() {
     private fun isPipActive(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode
 
-    private fun buildParams(): PictureInPictureParams {
-        // Android only accepts aspect ratios between 1:2.39 and 2.39:1.
-        val ratio = aspect.coerceIn(0.5, 2.39)
+    // PiP is wanted whenever a player is meant to be playing. Falls back to the
+    // flag Dart sends if the native engine is not up yet.
+    private fun pipWanted(): Boolean = exo?.isActive() ?: pipEnabled
+
+    private fun buildParams(useRect: Boolean = true): PictureInPictureParams {
+        // Android only accepts aspect ratios between 1:2.39 and 2.39:1 (stay
+        // just inside the limits; the exact edge is rejected on some devices).
+        val ratio = aspect.coerceIn(0.5, 2.38)
         val builder = PictureInPictureParams.Builder()
             .setAspectRatio(Rational((ratio * 1000).toInt(), 1000))
-        sourceRect?.let { builder.setSourceRectHint(it) }
+        if (useRect) sourceRect?.let { builder.setSourceRectHint(it) }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            builder.setAutoEnterEnabled(pipEnabled)
+            builder.setAutoEnterEnabled(pipWanted())
         }
         return builder.build()
     }
@@ -446,7 +494,8 @@ class MainActivity : FlutterActivity() {
         try {
             setPictureInPictureParams(buildParams())
         } catch (e: Exception) {
-            // Ignore: params are best-effort.
+            // A stale source rect can be rejected; arm PiP without it.
+            try { setPictureInPictureParams(buildParams(useRect = false)) } catch (e2: Exception) { }
         }
     }
 
@@ -455,7 +504,13 @@ class MainActivity : FlutterActivity() {
         return try {
             enterPictureInPictureMode(buildParams())
         } catch (e: Exception) {
-            false
+            // Retry without the source rect hint - it made PiP fail on some
+            // devices/streams, which looked like "PiP does not work".
+            try {
+                enterPictureInPictureMode(buildParams(useRect = false))
+            } catch (e2: Exception) {
+                false
+            }
         }
     }
 }

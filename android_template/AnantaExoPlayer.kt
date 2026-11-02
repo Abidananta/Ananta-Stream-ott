@@ -1,6 +1,9 @@
 package com.ananta.ott
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
@@ -8,7 +11,6 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
@@ -27,6 +29,100 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
+
+
+/**
+ * Anti-sniffing guard. Packet-capture tools such as HTTP Canary work through an
+ * on-device VPN (or a proxy) and read every URL the app opens. While one is
+ * active, or a known capture app is installed, playback is refused so the
+ * m3u8 / stream URLs are never requested through it.
+ *
+ * Honest limit: this is a deterrent, not a lock. Someone with root, Frida or a
+ * re-packaged APK can still get around it. Real protection for a link is
+ * server-side (https + signed, expiring URLs).
+ */
+object AnantaGuard {
+    // Flip any of these to false if it blocks legitimate users.
+    const val BLOCK_VPN = false           // true = refuse playback while ANY VPN is on
+    const val BLOCK_PROXY = true          // system / JVM HTTP proxy (Charles, mitmproxy ...)
+    const val BLOCK_CAPTURE_APPS = false  // true = refuse if a known capture app is installed
+
+    // Keep in sync with <queries> added in .github/workflows/build-apk.yml.
+    val CAPTURE_PACKAGES = listOf(
+        "com.guoshi.httpcanary",
+        "com.guoshi.httpcanary.premium",
+        "app.greyshirts.sslcapture",
+        "com.minhui.networkcapture",
+        "com.emanuelef.remote_capture",
+        "jp.co.taosoftware.android.packetcapture",
+        "com.network.proxy"
+    )
+
+    private var cachedAt = 0L
+    private var cached: String? = null
+
+    /** Returns a human readable reason when playback must be blocked, else null. */
+    @Synchronized
+    fun check(ctx: Context): String? {
+        val now = System.currentTimeMillis()
+        if (now - cachedAt < 1500) return cached
+        cached = compute(ctx)
+        cachedAt = now
+        return cached
+    }
+
+    private fun compute(ctx: Context): String? {
+        try {
+            if (BLOCK_VPN && vpnActive(ctx))
+                return "BLOCKED: VPN / packet-capture is active. Turn it off and reopen the channel."
+            if (BLOCK_PROXY && proxyActive(ctx))
+                return "BLOCKED: network proxy detected. Turn it off and reopen the channel."
+            if (BLOCK_CAPTURE_APPS) {
+                for (pkg in CAPTURE_PACKAGES) {
+                    val found = try {
+                        ctx.packageManager.getPackageInfo(pkg, 0); true
+                    } catch (e: Exception) { false }
+                    if (found) return "BLOCKED: packet-capture app installed ($pkg). Uninstall it to watch."
+                }
+            }
+        } catch (e: Exception) {
+            // never block because the check itself failed
+        }
+        return null
+    }
+
+    private fun vpnActive(ctx: Context): Boolean {
+        try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            if (Build.VERSION.SDK_INT >= 23) {
+                val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                if (caps != null && (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ||
+                        !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN))) return true
+            }
+        } catch (e: Exception) { /* fall through to interface scan */ }
+        try {
+            val ifs = java.net.NetworkInterface.getNetworkInterfaces() ?: return false
+            for (nif in ifs) {
+                if (!nif.isUp) continue
+                val n = nif.name ?: continue
+                if (n.startsWith("tun") || n.startsWith("ppp") || n.startsWith("pptp") || n.startsWith("tap")) return true
+            }
+        } catch (e: Exception) { }
+        return false
+    }
+
+    private fun proxyActive(ctx: Context): Boolean {
+        val host = System.getProperty("http.proxyHost")
+        if (!host.isNullOrEmpty()) return true
+        try {
+            if (Build.VERSION.SDK_INT >= 23) {
+                val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                if (!cm.defaultProxy?.host.isNullOrEmpty()) return true
+            }
+        } catch (e: Exception) { }
+        return false
+    }
+}
 
 /**
  * ExoPlayer (AndroidX Media3) playback engine for Ananta OTT - the same engine
@@ -48,14 +144,43 @@ class AnantaExo(
     private val players = HashMap<Int, Instance>()
     private var nextId = 1
 
+    /** Called on the main thread whenever any player's play/buffer state changes. */
+    var onStateChanged: (() -> Unit)? = null
+    /** Called with the visible aspect ratio (width/height) whenever a video size is known. */
+    var onVideoAspect: ((Double) -> Unit)? = null
+
+    /** True while at least one player is meant to be playing (PiP should be armed). */
+    fun isActive(): Boolean = players.values.any { it.isWanted() }
+
+    // While any player exists, re-check for VPN / capture tools and cut playback.
+    private val guardTicker = object : Runnable {
+        override fun run() {
+            if (players.isNotEmpty()) {
+                val reason = AnantaGuard.check(context)
+                if (reason != null) {
+                    players.keys.toList().forEach { pid ->
+                        emit(pid, mapOf("type" to "error", "message" to reason))
+                    }
+                    releaseAll()
+                }
+            }
+            main.postDelayed(this, 3000)
+        }
+    }
+
     init {
         channel.setMethodCallHandler { call, result -> handle(call, result) }
+        main.postDelayed(guardTicker, 3000)
     }
 
     private fun handle(call: MethodCall, result: MethodChannel.Result) {
         try {
             when (call.method) {
                 "create" -> {
+                    AnantaGuard.check(context)?.let { reason ->
+                        result.error("BLOCKED", reason, null)
+                        return
+                    }
                     val url = call.argument<String>("url")
                     if (url.isNullOrEmpty()) {
                         result.error("BAD_URL", "No stream URL", null)
@@ -82,6 +207,7 @@ class AnantaExo(
                 }
                 "dispose" -> {
                     call.argument<Int>("id")?.let { players.remove(it)?.release() }
+                    onStateChanged?.invoke()
                     result.success(null)
                 }
                 else -> result.notImplemented()
@@ -97,6 +223,15 @@ class AnantaExo(
     fun releaseAll() {
         players.values.toList().forEach { it.release() }
         players.clear()
+        onStateChanged?.invoke()
+    }
+
+    /** Releases everything and stops the guard timer (activity / engine teardown). */
+    fun destroy() {
+        onStateChanged = null
+        onVideoAspect = null
+        releaseAll()
+        main.removeCallbacks(guardTicker)
     }
 
     private fun emit(id: Int, data: Map<String, Any?>) {
@@ -119,9 +254,7 @@ class AnantaExo(
             .build()
         private var released = false
         private var hasVideo = true
-        private val srcUrl: String = url
-        private val srcHeaders: Map<String, String> = headers
-        private var tickerStarted = false
+        fun isWanted(): Boolean = !released && player.playWhenReady
         private val posTicker = object : Runnable {
             override fun run() {
                 if (released) return
@@ -231,6 +364,10 @@ class AnantaExo(
                         producer.setSize(w, h)
                         player.setVideoSurface(producer.getSurface())
                     }
+                    if (w > 0 && h > 0) {
+                        val par = if (size.pixelWidthHeightRatio > 0f) size.pixelWidthHeightRatio.toDouble() else 1.0
+                        onVideoAspect?.invoke(w * par / h)
+                    }
                     emit(id, mapOf(
                         "type" to "size", "width" to w, "height" to h,
                         "par" to (if (size.pixelWidthHeightRatio > 0f) size.pixelWidthHeightRatio.toDouble() else 1.0)
@@ -257,22 +394,8 @@ class AnantaExo(
                 }
             })
 
-            // Short / redirect links (tinyurl, bit.ly ...) have no file extension, so
-            // ExoPlayer cannot tell HLS from TS. Resolve the redirect chain first,
-            // then play the final URL with the right media type.
-            if (needsResolve(srcUrl)) {
-                Thread {
-                    val resolved = try { resolveRedirects(srcUrl) } catch (e: Exception) { Pair(srcUrl, null as String?) }
-                    main.post { if (!released) startPlayback(resolved.first, resolved.second) }
-                }.start()
-            } else {
-                startPlayback(srcUrl, null)
-            }
-        }
-
-        private fun startPlayback(finalUrl: String, mime: String?) {
-            val builder = MediaItem.Builder()
-                .setUri(finalUrl)
+            val item = MediaItem.Builder()
+                .setUri(url)
                 .setLiveConfiguration(
                     MediaItem.LiveConfiguration.Builder()
                         .setTargetOffsetMs(8_000)
@@ -282,54 +405,16 @@ class AnantaExo(
                         .setMaxPlaybackSpeed(1.0f)
                         .build()
                 )
-            if (mime != null) builder.setMimeType(mime)
-            player.setMediaItem(builder.build())
+                .build()
+            player.setMediaItem(item)
+            player.playWhenReady = false
             player.prepare()
-            if (!tickerStarted) {
-                tickerStarted = true
-                main.postDelayed(posTicker, 500)
-            }
-        }
-
-        private fun needsResolve(u: String): Boolean {
-            val path = try { java.net.URI(u).path ?: "" } catch (e: Exception) { u }
-            return !Regex("\\.(m3u8?|mpd|ts|mp4|mkv|flv|aac|mp3|avi|mov|webm)$", RegexOption.IGNORE_CASE).containsMatchIn(path)
-        }
-
-        /** Follows HTTP redirects by hand and sniffs the stream type. */
-        private fun resolveRedirects(start: String): Pair<String, String?> {
-            var current = start
-            for (i in 0 until 10) {
-                val conn = java.net.URL(current).openConnection() as java.net.HttpURLConnection
-                try {
-                    conn.instanceFollowRedirects = false
-                    conn.connectTimeout = 8000
-                    conn.readTimeout = 8000
-                    srcHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
-                    val code = conn.responseCode
-                    if (code in 300..399) {
-                        val loc = conn.getHeaderField("Location") ?: return Pair(current, null)
-                        current = java.net.URL(java.net.URL(current), loc).toString()
-                        continue
-                    }
-                    val ct = (conn.contentType ?: "").lowercase()
-                    if (ct.contains("mpegurl")) return Pair(current, MimeTypes.APPLICATION_M3U8)
-                    if (ct.contains("dash+xml")) return Pair(current, MimeTypes.APPLICATION_MPD)
-                    if (ct.startsWith("video/") || ct.startsWith("audio/")) return Pair(current, null)
-                    // Unknown / text / octet-stream: look at the first bytes.
-                    val buf = ByteArray(16)
-                    val n = conn.inputStream.read(buf)
-                    val head = if (n > 0) String(buf, 0, n, Charsets.ISO_8859_1) else ""
-                    return if (head.trimStart().startsWith("#EXTM3U")) Pair(current, MimeTypes.APPLICATION_M3U8) else Pair(current, null)
-                } finally {
-                    try { conn.disconnect() } catch (_: Exception) {}
-                }
-            }
-            return Pair(current, null)
+            main.postDelayed(posTicker, 500)
         }
 
         private fun sendState() {
             if (released) return
+            onStateChanged?.invoke()
             val st = player.playbackState
             emit(id, mapOf(
                 "type" to "state",
