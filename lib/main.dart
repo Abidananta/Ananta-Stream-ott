@@ -2342,6 +2342,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (oldPlayer != null && oldPlayer != controller) {
         try { await oldPlayer.dispose(); } catch (_) {}
       }
+      // Keep PiP availability and its aspect ratio in step with the player.
+      controller.playIntentNotifier.addListener(_onPlayerChangedForPip);
+      controller.videoSize.addListener(_onPlayerChangedForPip);
       // Only now does the new channel take audio focus (the old one is gone).
       await controller.setAudioFocus(true);
       await WakelockPlus.enable();
@@ -3030,9 +3033,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
   // Tell Android whether Home/Recents should auto-enter PiP (only while a
   // stream is actually playing).
+  void _onPlayerChangedForPip() {
+    if (mounted) unawaited(_syncPipAutoEnter());
+  }
+
   Future<void> _syncPipAutoEnter() async {
     final player = _player;
-    final enabled = player != null && player.value.isInitialized && player.value.isPlaying;
+    // Use the play *intent* (playing or buffering), not isPlaying: a stream that
+    // is still buffering, or briefly suppressed while audio focus changes, is
+    // not "playing" yet but must still enter PiP when the app is minimised.
+    final enabled = player != null &&
+        player.value.isInitialized &&
+        (player.playIntentNotifier.value || player.value.isPlaying);
     try {
       await _pipChannel.invokeMethod('setPipAutoEnter', {
         'enabled': enabled,
