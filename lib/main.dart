@@ -213,40 +213,22 @@ List<Channel> _parseM3uIsolate(String content) {
   return result;
 }
 
-const MethodChannel _secureHttp = MethodChannel('com.ananta.ott/secure_http');
-
-/// GET through the native HTTPS stack (system CAs only) so packet-capture
-/// tools with a user-installed certificate cannot read the response.
-Future<({int status, List<int> body})> _secureGet(Uri uri, {Map<String, String> headers = const {}, Duration timeout = const Duration(seconds: 25)}) async {
-  try {
-    final res = await _secureHttp.invokeMapMethod<String, dynamic>('get', <String, dynamic>{
-      'url': uri.toString(),
-      'headers': headers,
-      'timeoutMs': timeout.inMilliseconds,
-    }).timeout(timeout + const Duration(seconds: 5));
-    if (res == null) throw Exception('Empty response');
-    return (status: (res['status'] as num).toInt(), body: (res['body'] as List).cast<int>());
-  } on MissingPluginException {
-    // Not running on the Android build: plain Dart fallback.
-    final r = await http.get(uri, headers: headers).timeout(timeout);
-    return (status: r.statusCode, body: r.bodyBytes);
-  }
-}
-
 Future<List<Channel>> _fetchAndParsePlaylist() async {
   final baseUri = Uri.parse(playlistUrl);
   final query = Map<String, String>.from(baseUri.queryParameters);
   query['_refresh'] = DateTime.now().millisecondsSinceEpoch.toString();
-  final response = await _secureGet(baseUri.replace(queryParameters: query), headers: const {
-    'User-Agent': 'AnantaOTT/1.0',
-    'Accept': '*/*',
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache',
-  });
-  if (response.status != 200) {
-    throw Exception('Playlist server returned HTTP ${response.status}');
+  final response = await http
+      .get(baseUri.replace(queryParameters: query), headers: const {
+        'User-Agent': 'AnantaOTT/1.0',
+        'Accept': '*/*',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+      })
+      .timeout(const Duration(seconds: 25));
+  if (response.statusCode != 200) {
+    throw Exception('Playlist server returned HTTP ${response.statusCode}');
   }
-  final parsed = await compute(_parseM3uIsolate, utf8.decode(response.body, allowMalformed: true));
+  final parsed = await compute(_parseM3uIsolate, response.body);
   if (parsed.isEmpty) throw Exception('No valid channels found in the M3U file.');
   return parsed;
 }
@@ -1243,7 +1225,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               dense: false,
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: _glassAvatar(channel, 30),
+              leading: SizedBox(width: 60, height: 60, child: _logoCard(channel, 60, selected: _selectedChannel?.url == channel.url)),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
               subtitle: Column(
@@ -2386,19 +2368,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       debugPrint('Playback error for ${channel.url}: $e');
       final failDetail = ((controller.lastError ?? e.toString()).replaceFirst('Exception: ', '') +
               (controller.diagText.isEmpty ? '' : '\n${controller.diagText}'));
-      final blocked = failDetail.contains('BLOCKED');
       _lastFailure = failDetail;
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
       setState(() {
-        _playerError = (retryAttempt < 6 && !blocked)
+        _playerError = retryAttempt < 6
             ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…\n$failDetail'
             : 'Unable to play after 6 retries.\n$failDetail';
         _status = 'Playback failed';
         _connecting = false;
       });
-      if ((retryAttempt < 6 && !blocked)) {
+      if (retryAttempt < 6) {
         await Future.delayed(Duration(seconds: 1 + retryAttempt));
         if (mounted && requestId == _playRequestId) {
           await _playChannel(channel, retryAttempt: retryAttempt + 1);
@@ -3042,28 +3023,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           _tvEpgVisible = false;
         }
       });
-      if (active) {
-        // Android can report hidden/paused a moment before PiP is confirmed,
-        // which muted + paused the stream. Bring it straight back.
-        final p = _player;
-        if (p != null) {
-          unawaited(() async {
-            try { await p.setVolume(1.0); } catch (_) {}
-            if (_pausedForBackground && !_userPaused) {
-              _pausedForBackground = false;
-              try { await p.play(); } catch (e) { debugPrint('PiP resume error: $e'); }
-            }
-          }());
-        }
-      } else {
-        _focusTvPlayer();
-        final life = WidgetsBinding.instance.lifecycleState;
-        if (life == AppLifecycleState.hidden ||
-            life == AppLifecycleState.paused ||
-            life == AppLifecycleState.detached) {
-          _silenceForBackground(); // PiP window was dismissed
-        }
-      }
+      if (!active) _focusTvPlayer();
     }
     return null;
   }
@@ -3072,9 +3032,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // stream is actually playing).
   Future<void> _syncPipAutoEnter() async {
     final player = _player;
-    final enabled = player != null &&
-        player.value.isInitialized &&
-        (player.playIntentNotifier.value || player.value.isPlaying || player.value.isBuffering);
+    final enabled = player != null && player.value.isInitialized && player.value.isPlaying;
     try {
       await _pipChannel.invokeMethod('setPipAutoEnter', {
         'enabled': enabled,
@@ -3088,42 +3046,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // Keep the live player/controller alive while Android shows the PiP window.
   // If the app is fully hidden (PiP window dismissed, or Home without PiP),
   // pause so audio does not keep playing invisibly; resume on return.
-  Future<void> _silenceUnlessPip() async {
-    for (var i = 0; i < 5; i++) {
-      await Future.delayed(const Duration(milliseconds: 120));
-      if (!mounted || _inPip) return;
-      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) return;
-      try {
-        final active = await _pipChannel.invokeMethod<bool>('isPictureInPicture');
-        if (active == true) return; // PiP is up: keep playing
-      } catch (_) {}
-    }
-    if (!mounted || _inPip) return;
-    final life = WidgetsBinding.instance.lifecycleState;
-    if (life == AppLifecycleState.resumed || life == AppLifecycleState.inactive) return;
-    _silenceForBackground();
-  }
-
-  // Silence everything immediately (also on TV when the app is closed):
-  // cancel any channel still connecting, mute, then pause the live one.
-  void _silenceForBackground() {
-    final player = _player;
-    ++_playRequestId;
-    final pending = _pendingPlayer;
-    _pendingPlayer = null;
-    if (pending != null) {
-      unawaited(pending.dispose().catchError((Object e) { debugPrint('Pending stop error: $e'); }));
-    }
-    if (player != null) {
-      if (!_userPaused) _pausedForBackground = true;
-      unawaited(() async {
-        try { await player.setVolume(0.0); } catch (_) {}
-        try { await player.pause(); } catch (e) { debugPrint('Background pause error: $e'); }
-      }());
-    }
-    if (_connecting && mounted) setState(() => _connecting = false);
-  }
-
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final player = _player;
@@ -3131,13 +3053,22 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached;
     if (leaving && !_inPip) {
-      // Entering PiP races with this callback. If a stream is playing, give
-      // Android a moment to confirm PiP before silencing anything.
-      if (Platform.isAndroid && player != null && player.playIntentNotifier.value) {
-        unawaited(_silenceUnlessPip());
-      } else {
-        _silenceForBackground();
+      // Silence everything immediately (also on TV when the app is closed):
+      // cancel any channel still connecting, mute, then pause the live one.
+      ++_playRequestId;
+      final pending = _pendingPlayer;
+      _pendingPlayer = null;
+      if (pending != null) {
+        unawaited(pending.dispose().catchError((Object e) { debugPrint('Pending stop error: $e'); }));
       }
+      if (player != null) {
+        if (!_userPaused) _pausedForBackground = true;
+        unawaited(() async {
+          try { await player.setVolume(0.0); } catch (_) {}
+          try { await player.pause(); } catch (e) { debugPrint('Background pause error: $e'); }
+        }());
+      }
+      if (_connecting && mounted) setState(() => _connecting = false);
     } else if (state == AppLifecycleState.resumed && mounted) {
       if (player != null) {
         unawaited(() async {
