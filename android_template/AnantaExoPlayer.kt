@@ -11,6 +11,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
@@ -29,6 +30,8 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
+import java.net.HttpURLConnection
+import java.net.URL
 
 
 /**
@@ -121,6 +124,140 @@ object AnantaGuard {
             }
         } catch (e: Exception) { }
         return false
+    }
+}
+
+/**
+ * Short-link / redirect resolver. Links such as jmp2.uk, shorturl.at or
+ * tinyurl.com have no ".m3u8" in the path, so ExoPlayer cannot tell it is an
+ * HLS stream (and a plain redirect hop can also be an HTML page or a 200
+ * response that carries the playlist itself). This follows the redirect
+ * chain by hand (HTTP 3xx, <meta refresh>, simple JS redirects, a channel
+ * list whose first entry is the real stream), works out the real URL and
+ * stream type, and hands that to ExoPlayer.
+ *
+ * Direct links that already end in .m3u8 / .ts / .mpd ... are NOT touched.
+ * If anything fails the original URL is played exactly as before.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+object AnantaUrlResolver {
+    data class Result(val url: String, val mimeType: String?)
+
+    private const val BROWSER_UA =
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/124.0.0.0 Mobile Safari/537.36"
+    private const val MAX_HOPS = 10
+    private const val TOTAL_BUDGET_MS = 9_000L
+    private const val HEAD_BYTES = 64 * 1024
+
+    private val DIRECT_EXT = listOf(
+        ".m3u8", ".mpd", ".ts", ".mp4", ".mkv", ".aac", ".mp3", ".flv", ".webm", ".ism", ".isml"
+    )
+
+    private val META_REFRESH = Regex(
+        "<meta[^>]+http-equiv\\s*=\\s*[\"']?refresh[\"']?[^>]*content\\s*=\\s*[\"'][^\"']*?url\\s*=\\s*['\"]?([^\"'>\\s]+)",
+        RegexOption.IGNORE_CASE
+    )
+    private val JS_REDIRECT = Regex(
+        "(?:(?:window|document|top|self)\\.)?location(?:\\.href)?\\s*=\\s*[\"']([^\"']+)[\"']|" +
+            "location\\.(?:replace|assign)\\(\\s*[\"']([^\"']+)[\"']\\s*\\)",
+        RegexOption.IGNORE_CASE
+    )
+    private val STREAM_IN_PAGE = Regex(
+        "https?://[^\\s\"'<>\\\\]+?\\.(?:m3u8|mpd)(?:\\?[^\\s\"'<>\\\\]*)?",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** True when the URL already names a media file/manifest (no resolving needed). */
+    fun looksDirect(url: String): Boolean {
+        val path = try { URL(url).path ?: "" } catch (e: Exception) { url.substringBefore('?') }
+        val p = path.lowercase()
+        return DIRECT_EXT.any { p.endsWith(it) }
+    }
+
+    fun resolve(start: String, headers: Map<String, String>): Result {
+        val deadline = System.currentTimeMillis() + TOTAL_BUDGET_MS
+        // 1st pass with the app's own headers, 2nd pass pretending to be a browser
+        // (some short-link sites only redirect real browsers).
+        attempt(start, headers, deadline)?.let { return it }
+        val browser = headers.filterKeys { !it.equals("User-Agent", true) } + ("User-Agent" to BROWSER_UA)
+        attempt(start, browser, deadline)?.let { return it }
+        return Result(start, null)
+    }
+
+    private fun attempt(start: String, headers: Map<String, String>, deadline: Long): Result? {
+        var current = start
+        var hops = 0
+        while (hops < MAX_HOPS && System.currentTimeMillis() < deadline) {
+            val conn = URL(current).openConnection() as HttpURLConnection
+            try {
+                conn.instanceFollowRedirects = false
+                conn.connectTimeout = 6000
+                conn.readTimeout = 6000
+                conn.requestMethod = "GET"
+                headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+                val code = conn.responseCode
+
+                if (code in 300..399) {
+                    val loc = conn.getHeaderField("Location")?.trim()
+                    if (loc.isNullOrEmpty()) return null
+                    current = URL(URL(current), loc).toString()
+                    hops++
+                    if (looksDirect(current)) return Result(current, null)
+                    continue
+                }
+                if (code !in 200..299) return null
+
+                val type = (conn.contentType ?: "").lowercase()
+                val head = conn.inputStream.use { readHead(it, HEAD_BYTES) }
+                val text = String(head, Charsets.UTF_8).trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+
+                // --- HLS playlist (or a plain channel list pointing at the stream)
+                if (type.contains("mpegurl") || text.startsWith("#EXTM3U") || text.contains("#EXT-X-")) {
+                    if (text.contains("#EXT-X-") || !text.contains("#EXTINF")) {
+                        return Result(current, MimeTypes.APPLICATION_M3U8)
+                    }
+                    val first = text.lineSequence().map { it.trim() }
+                        .firstOrNull { it.isNotEmpty() && !it.startsWith("#") } ?: return null
+                    current = URL(URL(current), first).toString()
+                    hops++
+                    if (looksDirect(current)) return Result(current, null)
+                    continue
+                }
+                // --- DASH
+                if (type.contains("dash+xml") || text.contains("<MPD")) {
+                    return Result(current, MimeTypes.APPLICATION_MPD)
+                }
+                // --- HTML page: meta refresh / JS redirect / stream URL inside the page
+                if (type.contains("html") || text.startsWith("<")) {
+                    val next = META_REFRESH.find(text)?.groupValues?.get(1)
+                        ?: JS_REDIRECT.find(text)?.let { it.groupValues[1].ifEmpty { it.groupValues[2] } }
+                        ?: STREAM_IN_PAGE.find(text)?.value
+                    if (next.isNullOrEmpty()) return null
+                    val decoded = next.replace("\\/", "/").replace("&amp;", "&")
+                    current = URL(URL(current), decoded).toString()
+                    hops++
+                    if (looksDirect(current)) return Result(current, null)
+                    continue
+                }
+                // --- anything else (video/mp2t, octet-stream, video/*, audio/*): let ExoPlayer sniff it
+                return Result(current, null)
+            } finally {
+                try { conn.disconnect() } catch (_: Exception) {}
+            }
+        }
+        return null
+    }
+
+    private fun readHead(input: java.io.InputStream, max: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        while (out.size() < max) {
+            val n = input.read(buf, 0, minOf(buf.size, max - out.size()))
+            if (n <= 0) break
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 }
 
@@ -254,6 +391,8 @@ class AnantaExo(
             .build()
         private var released = false
         private var hasVideo = true
+        private var startedUrl: String = url
+        private var forcedHls = false
         fun isWanted(): Boolean = !released && player.playWhenReady
         private val posTicker = object : Runnable {
             override fun run() {
@@ -390,12 +529,40 @@ class AnantaExo(
                         player.prepare()
                         return
                     }
+                    // Extension-less link that was not recognised: retry once as HLS.
+                    if (!forcedHls && (error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED)) {
+                        forcedHls = true
+                        player.setMediaItem(buildItem(AnantaUrlResolver.Result(startedUrl, MimeTypes.APPLICATION_M3U8)))
+                        player.prepare()
+                        return
+                    }
                     emit(id, mapOf("type" to "error", "message" to "${error.errorCodeName}: ${error.message ?: ""}"))
                 }
             })
 
-            val item = MediaItem.Builder()
-                .setUri(url)
+            player.playWhenReady = false
+            main.postDelayed(posTicker, 500)
+
+            // Short links (jmp2.uk, shorturl.at, tinyurl ...) are resolved off the
+            // main thread first; direct .m3u8/.ts/.mpd links start immediately.
+            if (AnantaUrlResolver.looksDirect(url)) {
+                startMedia(AnantaUrlResolver.Result(url, null))
+            } else {
+                Thread {
+                    val r = try {
+                        AnantaUrlResolver.resolve(url, headers)
+                    } catch (e: Exception) {
+                        AnantaUrlResolver.Result(url, null)
+                    }
+                    main.post { if (!released) startMedia(r) }
+                }.start()
+            }
+        }
+
+        private fun buildItem(r: AnantaUrlResolver.Result): MediaItem {
+            val b = MediaItem.Builder()
+                .setUri(r.url)
                 .setLiveConfiguration(
                     MediaItem.LiveConfiguration.Builder()
                         .setTargetOffsetMs(8_000)
@@ -405,11 +572,15 @@ class AnantaExo(
                         .setMaxPlaybackSpeed(1.0f)
                         .build()
                 )
-                .build()
-            player.setMediaItem(item)
-            player.playWhenReady = false
+            if (r.mimeType != null) b.setMimeType(r.mimeType)
+            return b.build()
+        }
+
+        private fun startMedia(r: AnantaUrlResolver.Result) {
+            if (released) return
+            startedUrl = r.url
+            player.setMediaItem(buildItem(r))
             player.prepare()
-            main.postDelayed(posTicker, 500)
         }
 
         private fun sendState() {
