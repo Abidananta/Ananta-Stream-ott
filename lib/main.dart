@@ -1030,7 +1030,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                                 hintText: 'Search channels',
                                 prefixIcon: const Icon(Icons.search, size: 20),
                                 suffixIcon: _searchQuery.isEmpty ? null : IconButton(
-                                  tooltip: 'Clear search',
                                   onPressed: () {
                                     _searchController.clear();
                                     setState(() {
@@ -1070,7 +1069,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                                   color: Colors.white54, fontSize: 11,
                                 )),
                                 IconButton(
-                                  tooltip: _tvShowingCategories ? 'Show channels' : 'Browse categories',
                                   visualDensity: VisualDensity.compact,
                                   onPressed: () {
                                     if (_tvShowingCategories) { _showTvChannels(index: _tvFocusedChannelIndex); }
@@ -1079,7 +1077,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                                   icon: Icon(_tvShowingCategories ? Icons.live_tv : Icons.category_outlined, color: accentColor, size: 19),
                                 ),
                                 IconButton(
-                                  tooltip: _showFavoritesOnly ? 'Show all channels' : 'Show favorites',
                                   visualDensity: VisualDensity.compact,
                                   onPressed: () => setState(() => _showFavoritesOnly = !_showFavoritesOnly),
                                   icon: FavoriteHeart(on: _showFavoritesOnly, size: 21, offColor: Colors.white70),
@@ -2715,7 +2712,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                       ),
                       if (!tvMode)
                         IconButton(
-                          tooltip: 'Fullscreen',
                           visualDensity: VisualDensity.compact,
                           constraints: const BoxConstraints(
                             minWidth: 34,
@@ -2747,7 +2743,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         IconButton(
-                          tooltip: 'Previous channel',
                           visualDensity: VisualDensity.compact,
                           constraints: const BoxConstraints(
                             minWidth: 36,
@@ -2761,7 +2756,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           ),
                         ),
                         IconButton(
-                          tooltip: 'Play or pause',
                           visualDensity: VisualDensity.compact,
                           constraints: const BoxConstraints(
                             minWidth: 40,
@@ -2779,7 +2773,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                           ),
                         ),
                         IconButton(
-                          tooltip: 'Next channel',
                           visualDensity: VisualDensity.compact,
                           constraints: const BoxConstraints(
                             minWidth: 36,
@@ -2962,7 +2955,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                   ),
                   IconButton(
                     visualDensity: VisualDensity.compact,
-                    tooltip: favorite ? 'Remove favorite' : 'Add favorite',
                     onPressed: () => _toggleFavorite(channel),
                     icon: FavoriteHeart(on: favorite, size: 22),
                   ),
@@ -3214,7 +3206,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                 ),
                 actions: [
                   GlassIconButton(
-                    tooltip: 'Favorites',
                     onPressed: () {
                       setState(() {
                         _showFavoritesOnly = !_showFavoritesOnly;
@@ -3229,7 +3220,6 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
                   ),
                   const NoticeBell(),
                   GlassIconButton(
-                    tooltip: 'Refresh playlist',
                     onPressed: _loadingPlaylist ? null : _loadPlaylist,
                     icon: Icons.refresh_rounded,
                     busy: _loadingPlaylist,

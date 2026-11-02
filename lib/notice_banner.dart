@@ -401,7 +401,6 @@ class NoticeBell extends StatelessWidget {
     return ValueListenableBuilder<int>(
       valueListenable: NoticeService.instance.unread,
       builder: (context, count, _) => GlassIconButton(
-        tooltip: 'Notifications',
         onPressed: () => showNoticeList(context),
         icon: count > 0
             ? Icons.notifications_active_rounded
