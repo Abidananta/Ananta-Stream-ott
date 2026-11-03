@@ -1,5 +1,4 @@
 
-import 'dart:async';
 import 'dart:ui' as ui show Image, ImageByteFormat;
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
@@ -50,8 +49,6 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   ImageStreamListener? _listener;
   ui_Image? _loaded;
   bool _failed = false;
-  Timer? _retryTimer;
-  int _retries = 0;
 
   @override
   void didChangeDependencies() {
@@ -62,11 +59,7 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   @override
   void didUpdateWidget(covariant LogoBadge old) {
     super.didUpdateWidget(old);
-    if (old.image != widget.image) {
-      _retries = 0;
-      _retryTimer?.cancel();
-      _resolve();
-    }
+    if (old.image != widget.image) _resolve();
   }
 
   void _resolve() {
@@ -92,33 +85,13 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
         _spin.stop();
       },
       onError: (_, __) {
-        if (!mounted || _stream != stream) return;
-        setState(() => _failed = true);
+        if (mounted) setState(() => _failed = true);
         _spin.stop();
-        _scheduleRetry();
       },
     );
     _stream = stream;
     _listener = listener;
     stream.addListener(listener);
-  }
-
-  /// A logo that failed to load (slow / dropped connection, half-written file)
-  /// is tried again twice, a few seconds apart, instead of staying empty.
-  void _scheduleRetry() {
-    if (_retries >= 2 || widget.image == null) return;
-    _retryTimer?.cancel();
-    _retryTimer = Timer(Duration(seconds: 5 + 7 * _retries), () {
-      if (!mounted) return;
-      _retries++;
-      final provider = widget.image;
-      if (provider == null) return;
-      provider.evict().whenComplete(() {
-        if (!mounted) return;
-        _resolve();
-        setState(() {});
-      });
-    });
   }
 
   /// True when the four corners of the logo are transparent, i.e. the logo is
@@ -149,7 +122,6 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
 
   @override
   void dispose() {
-    _retryTimer?.cancel();
     _detach();
     _pulse.dispose();
     _spin.dispose();
@@ -167,7 +139,6 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     return Container(
       key: const ValueKey('ph'),
       alignment: Alignment.center,
-      color: const Color(0xFF14131C),
       child: Container(
         width: s * 0.58,
         height: s * 0.58,
@@ -236,7 +207,7 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
       child: ClipOval(
         child: nearSquare
             ? image
-            : Padding(padding: EdgeInsets.all(widget.size * 0.13), child: image),
+            : Padding(padding: EdgeInsets.all(widget.size * 0.08), child: image),
       ),
     );
   }
@@ -248,23 +219,40 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     final sel = widget.selected;
     // Clean look: a thin solid ring, no gradient, no glow. The logo fills the
     // circle (74 px badge) on a transparent background.
-    final ring = math.max(2.0, s * 0.04);
+    final ring = s * 0.04;
     if (widget.tv) {
-      // Exact square, content clipped to the FULL circle and the ring painted
-      // on top of it (foregroundDecoration): the ring has the same thickness
-      // on all four sides whatever the logo's shape or size.
-      return SizedBox(
-        width: s,
-        height: s,
-        child: Container(
-          decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.transparent),
-          foregroundDecoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: LogoBadge.kRingColor, width: ring),
-          ),
-          child: ClipOval(
-            clipBehavior: Clip.antiAlias,
-            child: showLogo ? _logo() : _tvPlaceholder(),
+      // Same look as the normal badge (dark plate behind the logo, ring
+      // #85819c) but with no blur and no animation. The ring is painted on top
+      // of the clipped circle, so its thickness is exactly equal on all sides.
+      return Center(
+        child: SizedBox(
+          width: s,
+          height: s,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Padding(
+                padding: EdgeInsets.all(ring),
+                child: ClipOval(
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      ColoredBox(color: Colors.black.withOpacity(0.38)),
+                      showLogo ? _logo() : _tvPlaceholder(),
+                    ],
+                  ),
+                ),
+              ),
+              IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: LogoBadge.kRingColor, width: ring),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       );
@@ -308,10 +296,10 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     return Container(
       width: s,
       height: s,
-      decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.transparent),
-      // Ring painted over the content: identical thickness on every side.
-      foregroundDecoration: BoxDecoration(
+      decoration: BoxDecoration(
         shape: BoxShape.circle,
+        // Dark, see-through plate (shows while the logo loads) - never grey.
+        color: showLogo ? Colors.transparent : Colors.black.withOpacity(0.42),
         border: Border.all(
           color: sel ? _ringGreySelected : _ringGrey,
           width: ring,

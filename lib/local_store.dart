@@ -61,8 +61,7 @@ class LocalStore {
 
   bool _syncing = false;
   final Set<String> _inflight = <String>{};
-  final Map<String, int> _failed = <String, int>{}; // name -> failed at (ms)
-  static const int _retryAfterMs = 3 * 60 * 1000;
+  final Set<String> _failed = <String>{};
   final List<String> _pending = <String>[];
   int _active = 0;
 
@@ -167,88 +166,6 @@ class LocalStore {
   bool knowsLogo(String name) =>
       _localLogos.contains(name) || _remoteLogos.containsKey(name);
 
-
-  // ------------------------------------------------------------------
-  // Logo name matching
-  // ------------------------------------------------------------------
-  Map<String, String>? _logoIndex1;
-  Map<String, String>? _logoIndex2;
-  int _logoIndexCount = -1;
-
-  static const Set<String> _noiseTokens = {'in', 'india', 'hd', 'fhd', 'uhd', 'sd', '4k', 'hq'};
-  static const Set<String> _noiseTokens2 = {'tv', 'channel'};
-
-  static List<String> _tokens(String value) {
-    var v = value.toLowerCase().trim();
-    v = v.replaceAll(RegExp(r'\.(png|jpe?g|webp)$'), '');
-    v = v.replaceAll('&', ' and ');
-    return v.split(RegExp(r'[^a-z0-9]+')).where((t) => t.isNotEmpty).toList();
-  }
-
-  static String _key1(String v) => _tokens(v).where((t) => !_noiseTokens.contains(t)).join();
-  static String _key2(String v) =>
-      _tokens(v).where((t) => !_noiseTokens.contains(t) && !_noiseTokens2.contains(t)).join();
-
-  void _buildLogoIndex() {
-    final names = <String>{..._localLogos, ..._remoteLogos.keys};
-    if (_logoIndex1 != null && _logoIndexCount == names.length) return;
-    final i1 = <String, String>{};
-    final i2 = <String, String>{};
-    // png first so it wins when several formats exist for one channel.
-    final sorted = names.toList()
-      ..sort((a, b) {
-        final ap = a.toLowerCase().endsWith('.png') ? 0 : 1;
-        final bp = b.toLowerCase().endsWith('.png') ? 0 : 1;
-        return ap != bp ? ap - bp : a.compareTo(b);
-      });
-    for (final n in sorted) {
-      final k1 = _key1(n);
-      final k2 = _key2(n);
-      if (k1.isNotEmpty) i1.putIfAbsent(k1, () => n);
-      if (k2.isNotEmpty) i2.putIfAbsent(k2, () => n);
-    }
-    _logoIndex1 = i1;
-    _logoIndex2 = i2;
-    _logoIndexCount = names.length;
-  }
-
-  /// Finds the logo file (any of png / jpg / jpeg / webp) that belongs to a
-  /// channel, trying the exact file name first and then tolerant matching that
-  /// ignores case, dashes, "-in", quality suffixes (HD/FHD/4K...) and "tv".
-  /// [names] are the channel's display name / tvg-name. Null when none matches.
-  String? matchLogo(Iterable<String> names) {
-    if (_remoteLogos.isEmpty && _localLogos.isEmpty) return null;
-    _buildLogoIndex();
-    const exts = ['png', 'jpg', 'jpeg', 'webp'];
-    final all = <String>{..._localLogos, ..._remoteLogos.keys};
-    final lower = <String, String>{for (final n in all) n.toLowerCase(): n};
-    final valid = names.where((n) => n.trim().isNotEmpty).toList();
-    // 1) exact file name, with / without "-in", any extension.
-    for (final raw in valid) {
-      final t = _tokens(raw);
-      if (t.isEmpty) continue;
-      final slug = t.join('-');
-      final noIn = t.where((x) => x != 'in' && x != 'india').join('-');
-      for (final base in <String>{slug, '$noIn-in', noIn, if (!slug.endsWith('-in')) '$slug-in'}) {
-        if (base.isEmpty || base == '-in') continue;
-        for (final e in exts) {
-          final hit = lower['$base.$e'];
-          if (hit != null) return hit;
-        }
-      }
-    }
-    // 2) tolerant keys (quality suffix / "-in" ignored), then without "tv".
-    for (final raw in valid) {
-      final k = _key1(raw);
-      if (k.isNotEmpty && _logoIndex1![k] != null) return _logoIndex1![k];
-    }
-    for (final raw in valid) {
-      final k = _key2(raw);
-      if (k.length >= 3 && _logoIndex2![k] != null) return _logoIndex2![k];
-    }
-    return null;
-  }
-
   /// The stored copy of [name], or null when it is not on the device (yet).
   File? logoFile(String name) {
     if (!_ready || !_localLogos.contains(name)) return null;
@@ -263,12 +180,7 @@ class LocalStore {
   /// that has not been mirrored yet).
   void requestLogo(String name) {
     if (!_ready || !_validLogoName(name)) return;
-    final failedAt = _failed[name];
-    if (failedAt != null) {
-      if (DateTime.now().millisecondsSinceEpoch - failedAt < _retryAfterMs) return;
-      _failed.remove(name); // try again after a few minutes
-    }
-    if (_localLogos.contains(name) || _inflight.contains(name)) return;
+    if (_localLogos.contains(name) || _failed.contains(name) || _inflight.contains(name)) return;
     if (logoMissingRemotely(name)) return;
     _inflight.add(name);
     _pending.add(name);
@@ -284,7 +196,7 @@ class LocalStore {
           _localLogos.add(name);
           _bump();
         } else {
-          _failed[name] = DateTime.now().millisecondsSinceEpoch;
+          _failed.add(name);
         }
       }).whenComplete(() {
         _active--;
