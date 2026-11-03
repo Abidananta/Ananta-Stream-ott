@@ -1224,36 +1224,50 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               ),
               boxShadow: focused ? [BoxShadow(color: accentColor.withOpacity(0.45), blurRadius: 16)] : null,
             ),
-            child: ListTile(
+            // A plain Row (not ListTile): ListTile squeezes its leading widget,
+            // which made the logo an oval with an uneven ring. Here the logo
+            // always keeps an exact 60x60 square, so the ring is the same on
+            // every side.
+            child: InkWell(
+              borderRadius: BorderRadius.circular(18),
               focusColor: Colors.transparent,
               hoverColor: Colors.transparent,
-              dense: false,
-              minVerticalPadding: 5,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: SizedBox(width: 60, height: 60, child: _logoCard(channel, 60, selected: _selectedChannel?.url == channel.url, tv: true)),
-              title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
-              subtitle: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(_epgLabel(channel), maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: _epgForChannel(channel) == null ? Colors.white38 : const Color(0xFFC9BEFF), fontSize: 10, fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 4),
-                  ClipRRect(borderRadius: BorderRadius.circular(3), child: LinearProgressIndicator(
-                    value: _epgProgress(_epgForChannel(channel)), minHeight: 3,
-                    backgroundColor: Colors.white12,
-                    valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
-                  )),
-                  const SizedBox(height: 3),
-                  Text(channel.group, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white54, fontSize: 10)),
-                ],
-              ),
-              trailing: favorite
-                  ? const FavoriteHeart(on: true, size: 19)
-                  : const Icon(Icons.chevron_right_rounded, color: Colors.white38, size: 20),
               onTap: () => _playChannel(channel),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                child: Row(
+                  children: [
+                    SizedBox(width: 60, height: 60, child: _logoCard(channel, 60, selected: _selectedChannel?.url == channel.url, tv: true)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
+                          const SizedBox(height: 2),
+                        Text(_epgLabel(channel), maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: _epgForChannel(channel) == null ? Colors.white38 : const Color(0xFFC9BEFF), fontSize: 10, fontWeight: FontWeight.w500)),
+                        const SizedBox(height: 4),
+                        ClipRRect(borderRadius: BorderRadius.circular(3), child: LinearProgressIndicator(
+                          value: _epgProgress(_epgForChannel(channel)), minHeight: 3,
+                          backgroundColor: Colors.white12,
+                          valueColor: const AlwaysStoppedAnimation<Color>(accentColor),
+                        )),
+                        const SizedBox(height: 3),
+                        Text(channel.group, maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    favorite
+                        ? const FavoriteHeart(on: true, size: 19)
+                        : const Icon(Icons.chevron_right_rounded, color: Colors.white38, size: 20),
+                  ],
+                ),
+              ),
             ),
           );
         }),
@@ -1808,43 +1822,28 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     // repository. That folder is mirrored into the device's local storage by
     // LocalStore; this method only decides which file name belongs to a
     // channel. Playlist tvg-logo and EPG artwork are deliberately not used.
-    String slugFor(String value) {
-      var name = value.toLowerCase().trim();
-      // The logo filenames retain quality suffixes: "Star Plus HD" must map
-      // to star-plus-hd-in.png, while "Big Magic" maps to big-magic-in.png.
-      name = name.replaceAll(RegExp(r'\[(?:in|india)\]|\((?:in|india)\)', caseSensitive: false), ' ');
-      name = name.replaceAll('&', ' and ');
-      name = name.replaceAll(RegExp(r'[^a-z0-9]+'), '-');
-      name = name.replaceAll(RegExp(r'-+'), '-');
-      name = name.replaceAll(RegExp(r'^-|-$'), '');
-      if (name.isEmpty) return '';
-      if (!name.endsWith('-in')) name = '$name-in';
-      return name;
-    }
-
     const base = 'https://raw.githubusercontent.com/Abidananta/Ananta-Stream-ott/main/channel_logos/';
-    final candidates = <String>[];
-    for (final raw in <String>[channel.name, channel.tvgName]) {
-      final slug = slugFor(raw);
-      if (slug.isNotEmpty && !candidates.contains(slug)) candidates.add(slug);
-    }
-    if (candidates.isEmpty) return '';
+    final names = <String>[channel.name, channel.tvgName]
+        .where((n) => n.trim().isNotEmpty)
+        .toList();
+    if (names.isEmpty) return '';
     final store = LocalStore.instance;
-    if (!store.hasLogoListing) {
-      // File list not known yet (first start, offline): same behaviour as
-      // before, first candidate; it is fetched on demand and stored.
-      return '$base${candidates.first}.png';
+    if (store.hasLogoListing) {
+      // Tolerant lookup: png / jpg / jpeg / webp, any case, "-in" and quality
+      // suffixes (HD, FHD, 4K...) optional.
+      final hit = store.matchLogo(names);
+      return hit == null ? '' : '$base$hit';
     }
-    for (final slug in candidates) {
-      if (store.knowsLogo('$slug.png')) return '$base$slug.png';
-    }
-    // Retry without the quality suffix (e.g. "Star Plus HD" -> star-plus-in).
-    for (final slug in candidates) {
-      final plain = slug
-          .replaceFirst(RegExp(r'-(hd|fhd|uhd|sd|4k)-in$'), '-in');
-      if (plain != slug && store.knowsLogo('$plain.png')) return '$base$plain.png';
-    }
-    return '';
+    // File list not known yet (first start, offline): guess the usual
+    // "<name>-in.png"; it is fetched on demand and stored.
+    final tokens = names.first
+        .toLowerCase()
+        .replaceAll('&', ' and ')
+        .split(RegExp(r'[^a-z0-9]+'))
+        .where((t) => t.isNotEmpty && t != 'in' && t != 'india')
+        .toList();
+    if (tokens.isEmpty) return '';
+    return '$base${tokens.join('-')}-in.png';
   }
 
   /// Logo image for a channel: the copy stored on the device when available,
