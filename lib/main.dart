@@ -159,6 +159,9 @@ Map<String, List<EpgProgram>> _epgMapFromJsonTop(dynamic raw) {
   return result;
 }
 
+// Encodes the EPG cache off the UI thread.
+String _encodeJsonIsolate(Map<String, dynamic> data) => jsonEncode(data);
+
 // Decodes the saved EPG cache off the UI thread.
 Map<String, dynamic> _decodeEpgCacheIsolate(String cached) {
   final decoded = jsonDecode(cached);
@@ -256,6 +259,11 @@ String _scrub(String? v) => (v ?? '').replaceAll(_urlPattern, '[url]');
 Future<void> _startApp() async {
   WidgetsFlutterBinding.ensureInitialized();
   ErrorWidget.builder = (details) => const SizedBox.shrink();
+  // Keep decoded images within a modest budget so low-RAM TV boxes do not run
+  // out of memory (which made the app freeze and close after some time).
+  PaintingBinding.instance.imageCache
+    ..maximumSize = 300
+    ..maximumSizeBytes = 64 << 20;
   _startPlaylistPrefetch();
   runApp(const AnantaOttApp());
 }
@@ -1222,7 +1230,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
               dense: false,
               minVerticalPadding: 5,
               contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              leading: SizedBox(width: 60, height: 60, child: _logoCard(channel, 60, selected: _selectedChannel?.url == channel.url)),
+              leading: SizedBox(width: 60, height: 60, child: _logoCard(channel, 60, selected: _selectedChannel?.url == channel.url, tv: true)),
               title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.bold : FontWeight.w500)),
               subtitle: Column(
@@ -1503,13 +1511,18 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     Map<String, String> logosByName,
   ) async {
     try {
-      await LocalStore.instance.writeParsedGuide(jsonEncode({
+      // Wait a little so saving never competes with the first frames after
+      // the guide appears, and encode the (big) JSON in a background isolate.
+      await Future<void>.delayed(const Duration(seconds: 3));
+      final payload = <String, dynamic>{
         'savedAt': _epgSavedAt == 0 ? DateTime.now().millisecondsSinceEpoch : _epgSavedAt,
         'byId': _epgMapToJson(byId),
         'byName': _epgMapToJson(byName),
         'logosById': logosById,
         'logosByName': logosByName,
-      }));
+      };
+      final encoded = await compute(_encodeJsonIsolate, payload);
+      await LocalStore.instance.writeParsedGuide(encoded);
       // Drop the old SharedPreferences copy (it could be several MB).
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('ananta_epg_3day_cache_v1');
@@ -1586,7 +1599,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           }
         }
         final sourcePrograms = parsed['programmes'] as List;
+        var processed = 0;
         for (final raw in sourcePrograms) {
+          // Give the UI thread a breather regularly so the TV never freezes
+          // while a big guide is being merged.
+          if (++processed % 600 == 0) await Future<void>.delayed(const Duration(milliseconds: 2));
+          if (!mounted) return;
           final item = raw as Map;
           final id = item['id'].toString();
           final program = EpgProgram(
@@ -1614,7 +1632,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     final epgNow = DateTime.now().toUtc();
     final keepAfter = epgNow.subtract(const Duration(days: 2));
     final keepUntil = epgNow.add(const Duration(days: 5));
+    var channelsDone = 0;
     for (final entry in candidatesById.entries) {
+      if (++channelsDone % 8 == 0) await Future<void>.delayed(const Duration(milliseconds: 2));
+      if (!mounted) return;
       final programs = entry.value
         .where((p) => p.stop.isAfter(keepAfter) && p.start.isBefore(keepUntil))
         .toList()
@@ -1631,7 +1652,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         }
       }
     }
+    var sortedLists = 0;
     for (final list in byName.values) {
+      if (++sortedLists % 20 == 0) await Future<void>.delayed(const Duration(milliseconds: 2));
       list.sort((a, b) => a.start.compareTo(b.start));
     }
     if (!mounted) return;
@@ -1762,12 +1785,13 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
   /// Round, transparent channel logo for the mobile list. An animated play
   /// icon shows inside the circle until the logo loads, then the logo replaces it.
-  Widget _logoCard(Channel channel, double size, {bool selected = false}) {
+  Widget _logoCard(Channel channel, double size, {bool selected = false, bool tv = false}) {
     return LogoBadge(
       image: _logoImage(channel),
       size: size,
       selected: selected,
       accent: accentColor,
+      tv: tv,
     );
   }
 

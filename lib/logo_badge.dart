@@ -18,6 +18,11 @@ class LogoBadge extends StatefulWidget {
   final bool selected;
   final Color accent;
 
+  /// TV mode: no animation at all while loading - just a calm static play icon
+  /// inside the circle (cheap to draw, no blur, no timers) until the logo is
+  /// ready, then the logo replaces it.
+  final bool tv;
+
   /// Ring colour #85819c, used by every logo ring in the app.
   static const Color kRingColor = Color(0xFF85819C);
 
@@ -27,6 +32,7 @@ class LogoBadge extends StatefulWidget {
     required this.size,
     required this.accent,
     this.selected = false,
+    this.tv = false,
   });
 
   @override
@@ -35,7 +41,7 @@ class LogoBadge extends StatefulWidget {
 
 class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   late final AnimationController _pulse =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat(reverse: true);
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 1400));
   // Spinning ring shown around the circle while the logo is still loading.
   late final AnimationController _spin =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1500));
@@ -57,6 +63,7 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   }
 
   void _resolve() {
+    if (!widget.tv && !_pulse.isAnimating) _pulse.repeat(reverse: true);
     _detach();
     _loaded = null;
     _failed = false;
@@ -65,14 +72,15 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
       _spin.stop();
       return;
     }
-    if (!_spin.isAnimating) _spin.repeat();
+    if (!widget.tv && !_spin.isAnimating) _spin.repeat();
     final stream = provider.resolve(createLocalImageConfiguration(context));
     final listener = ImageStreamListener(
-      (info, _) async {
+      (info, _) {
         final img = info.image;
-        final round = await _hasTransparentCorners(img);
+        // (The old per-logo pixel scan result was never used for drawing and
+        // cost a full RGBA copy of every logo - removed for smoothness.)
         if (!mounted || _stream != stream) return;
-        setState(() => _loaded = ui_Image(img.width, img.height, round));
+        setState(() => _loaded = ui_Image(img.width, img.height, false));
         _pulse.stop();
         _spin.stop();
       },
@@ -125,6 +133,24 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
   Color get _darkAccent => LogoBadge.kRingColor;
   static const Color _ringGrey = LogoBadge.kRingColor;
   static const Color _ringGreySelected = LogoBadge.kRingColor;
+
+  Widget _tvPlaceholder() {
+    final s = widget.size;
+    return Container(
+      key: const ValueKey('ph'),
+      alignment: Alignment.center,
+      color: const Color(0xFF14131C),
+      child: Container(
+        width: s * 0.58,
+        height: s * 0.58,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: LogoBadge.kRingColor.withOpacity(0.35),
+        ),
+        child: Icon(Icons.play_arrow_rounded, color: Colors.white.withOpacity(0.92), size: s * 0.44),
+      ),
+    );
+  }
 
   Widget _placeholder() {
     final s = widget.size;
@@ -195,6 +221,21 @@ class _LogoBadgeState extends State<LogoBadge> with TickerProviderStateMixin {
     // Clean look: a thin solid ring, no gradient, no glow. The logo fills the
     // circle (74 px badge) on a transparent background.
     final ring = s * 0.04;
+    if (widget.tv) {
+      return Container(
+        width: s,
+        height: s,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.transparent,
+          border: Border.all(color: LogoBadge.kRingColor, width: ring),
+        ),
+        child: ClipOval(
+          clipBehavior: Clip.antiAlias,
+          child: showLogo ? _logo() : _tvPlaceholder(),
+        ),
+      );
+    }
     if (!showLogo) {
       // Loading: dark, see-through disc inside a dark grey ring that spins.
       return AnimatedBuilder(

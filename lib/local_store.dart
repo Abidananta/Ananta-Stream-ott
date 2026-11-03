@@ -261,7 +261,7 @@ class LocalStore {
             _localLogos.add(name);
             _localTokens[name] = remote[name] ?? '';
             _failed.remove(name);
-            if (++sinceNotify >= 25) {
+            if (++sinceNotify >= 40) {
               sinceNotify = 0;
               _bump();
             }
@@ -269,7 +269,7 @@ class LocalStore {
         }
       }
 
-      await Future.wait(List.generate(6, (_) => worker()));
+      await Future.wait(List.generate(3, (_) => worker()));
 
       // Remove logos that no longer exist in the repository.
       if (remote.length >= 10) {
