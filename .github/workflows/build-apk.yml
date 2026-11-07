@@ -148,6 +148,7 @@ jobs:
           Image.new('RGBA', (288, 288), (0, 0, 0, 0)).save(res / 'drawable-nodpi/splash_transparent.png')
           ICONPY
           mkdir -p $RES/mipmap-anydpi-v26 $RES/values $RES/xml
+          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<network-security-config>' '    <base-config cleartextTrafficPermitted="true">' '        <trust-anchors>' '            <certificates src="system" />' '        </trust-anchors>' '    </base-config>' '</network-security-config>' > $RES/xml/ananta_network_security.xml
           printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<paths>' '    <cache-path name="cache" path="." />' '    <external-cache-path name="ext_cache" path="." />' '</paths>' > $RES/xml/ananta_file_paths.xml
           printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">' '    <background android:drawable="@color/ic_launcher_background"/>' '    <foreground android:drawable="@drawable/ic_launcher_foreground"/>' '    <monochrome android:drawable="@drawable/ic_launcher_monochrome"/>' '</adaptive-icon>' > $RES/mipmap-anydpi-v26/ic_launcher.xml
           cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml
@@ -168,6 +169,8 @@ jobs:
               el = ET.Element('uses-feature'); el.set(ns + 'name', 'android.hardware.touchscreen'); el.set(ns + 'required', 'false'); root.insert(1, el)
           if not has_tag('uses-permission', 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'):
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.REQUEST_INSTALL_PACKAGES'); root.insert(2, el)
+          if not has_tag('uses-permission', 'name', 'android.permission.ACCESS_NETWORK_STATE'):
+              el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.ACCESS_NETWORK_STATE'); root.insert(1, el)
           if not has_tag('uses-permission', 'name', 'android.permission.POST_NOTIFICATIONS'):
               el = ET.Element('uses-permission'); el.set(ns + 'name', 'android.permission.POST_NOTIFICATIONS'); root.insert(3, el)
           app = root.find('application')
@@ -196,6 +199,8 @@ jobs:
           app.set(ns + 'roundIcon', '@mipmap/ic_launcher_round')
           app.set(ns + 'banner', '@drawable/ananta_tv_banner')
           app.set(ns + 'usesCleartextTraffic', 'true')
+          # Only trust system CAs: capture tools cannot decrypt HTTPS with a user-installed certificate.
+          app.set(ns + 'networkSecurityConfig', '@xml/ananta_network_security')
           activities = list(app.findall('activity'))
           launcher = None
           for activity in activities:
