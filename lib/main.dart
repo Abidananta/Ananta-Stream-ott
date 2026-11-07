@@ -22,10 +22,25 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 
 const String appName = 'Ananta OTT';
 const MethodChannel _pipChannel = MethodChannel('com.ananta.ott/pip');
+const MethodChannel _guardChannel = MethodChannel('com.ananta.ott/guard');
+
+/// Thrown instead of any network request while a packet-capture tool (VPN or
+/// proxy based, e.g. HTTP Canary) is active, so no link crosses the tool.
+class CaptureToolException implements Exception {
+  const CaptureToolException();
+  @override
+  String toString() => 'Network monitoring / VPN tool detected. Turn it off to use Ananta OTT.';
+}
+
+Future<bool> _captureToolActive() async {
+  try {
+    return await _guardChannel.invokeMethod<bool>('isCaptured') ?? false;
+  } catch (_) {
+    return false;
+  }
+}
 const String playlistUrl =
     'https://playlist.stream24.workers.dev/playlist.m3u?key=99ad93972fa4480f9a45d8a37ec9ff11';
-const String ptvStreamUrl =
-    'http://103.185.24.134:3001/ptv/index.m3u8';
 const List<String> epgSourceUrls = [
   'https://avkb.short.gy/tsepg.xml.gz',
   'https://avkb.short.gy/jioepg.xml.gz',
@@ -217,6 +232,7 @@ List<Channel> _parseM3uIsolate(String content) {
 }
 
 Future<List<Channel>> _fetchAndParsePlaylist() async {
+  if (await _captureToolActive()) throw const CaptureToolException();
   final baseUri = Uri.parse(playlistUrl);
   final query = Map<String, String>.from(baseUri.queryParameters);
   query['_refresh'] = DateTime.now().millisecondsSinceEpoch.toString();
@@ -391,12 +407,6 @@ class EpgProgram {
   bool isAiringAt(DateTime time) => !time.isBefore(start) && time.isBefore(stop);
 }
 
-const Channel ptvChannel = Channel(
-  name: 'PTV ',
-  url: ptvStreamUrl,
-  group: 'Sports',
-);
-
 class AnantaOttApp extends StatelessWidget {
   const AnantaOttApp({super.key});
   @override
@@ -424,7 +434,117 @@ class AnantaOttApp extends StatelessWidget {
           ),
         ),
       ),
-      home: AnantaSplashScreen(next: (_) => const AnantaHomePage()),
+      home: AnantaSplashScreen(next: (_) => const _LaunchGate()),
+    );
+  }
+}
+
+/// Shown after the splash. The channel list must load first; without a
+/// connection the app stays here on a plain "can't connect" screen (no
+/// channels, no links, no error details) and continues by itself as soon as
+/// the server can be reached.
+class _LaunchGate extends StatefulWidget {
+  const _LaunchGate();
+  @override
+  State<_LaunchGate> createState() => _LaunchGateState();
+}
+
+class _LaunchGateState extends State<_LaunchGate> {
+  bool _ready = false;
+  bool _failed = false;
+  bool _checking = false;
+  Timer? _retryTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    if (_checking || _ready) return;
+    _checking = true;
+    try {
+      final pending = _prefetchedPlaylist ?? (() {
+        _startPlaylistPrefetch();
+        return _prefetchedPlaylist!;
+      })();
+      await pending;
+      if (!mounted) return;
+      _retryTimer?.cancel();
+      setState(() { _ready = true; _failed = false; });
+    } catch (_) {
+      if (!mounted) return;
+      _prefetchedPlaylist = null;
+      setState(() => _failed = true);
+      _retryTimer?.cancel();
+      _retryTimer = Timer(const Duration(seconds: 5), () {
+        _checking = false;
+        if (mounted) _check();
+      });
+    } finally {
+      if (_ready || !_failed) _checking = false;
+    }
+  }
+
+  void _retryNow() {
+    _retryTimer?.cancel();
+    _checking = false;
+    _prefetchedPlaylist = null;
+    setState(() => _failed = false);
+    _check();
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_ready) return const AnantaHomePage();
+    return Scaffold(
+      backgroundColor: backgroundColor,
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.asset(
+              'assets/ananta_launcher_icon.png',
+              width: 96,
+              height: 96,
+              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+            ),
+            const SizedBox(height: 24),
+            if (!_failed) ...[
+              const SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 3, color: accentColor),
+              ),
+            ] else ...[
+              const Icon(Icons.wifi_off_rounded, size: 40, color: Colors.white54),
+              const SizedBox(height: 14),
+              const Text(
+                "Can't connect to server",
+                style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Check your internet connection',
+                style: TextStyle(color: Colors.white60, fontSize: 14),
+              ),
+              const SizedBox(height: 22),
+              FilledButton(
+                autofocus: true,
+                onPressed: _retryNow,
+                child: const Text('Retry'),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -437,7 +557,7 @@ class AnantaHomePage extends StatefulWidget {
 
 class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
-  List<Channel> _channels = [ptvChannel];
+  List<Channel> _channels = <Channel>[];
   Set<String> _favorites = {};
   AnantaPlayerController? _player;
   AnantaPlayerController? _pendingPlayer;
@@ -491,6 +611,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   String _epgStatus = 'Loading programme guide…';
   Timer? _epgClock;
   Timer? _epgRefreshTimer;
+  Timer? _playlistAutoTimer;
+  bool _silentPlaylistBusy = false;
+  String _playlistSig = '';
+  int _lastSilentPlaylistCheck = 0;
   Timer? _storeNotifyTimer;
   int _epgSavedAt = 0;
   bool _epgInitDone = false;
@@ -551,6 +675,12 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _epgRefreshTimer = Timer.periodic(const Duration(hours: 2), (_) {
       unawaited(_loadEpg());
       unawaited(LocalStore.instance.syncLogos()); // self-throttled to 12 h
+    });
+    // Channel list auto-update: the playlist on GitHub is re-checked quietly
+    // every few minutes (and when the app comes back to the screen). If it
+    // changed, the list updates by itself; the playing channel is not touched.
+    _playlistAutoTimer = Timer.periodic(const Duration(minutes: 3), (_) {
+      unawaited(_silentPlaylistRefresh());
     });
     // Watchdog: reconnect automatically when a live stream errors, ends,
     // freezes (position stops advancing) or buffers for too long.
@@ -2156,14 +2286,15 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       } catch (_) {
         parsed = await _fetchAndParsePlaylist();
       }
-      final updated = <Channel>[ptvChannel];
-      final seen = <String>{ptvChannel.url};
+      final updated = <Channel>[];
+      final seen = <String>{};
       for (final channel in parsed) {
         if (seen.add(channel.url)) {
           updated.add(channel);
         }
       }
       if (!mounted || requestId != _playlistRequestId) return;
+      _playlistSig = _playlistSignature(updated);
       final shouldAutoPlayFirstChannel = _selectedChannel == null;
       final groups = updated.map((c) => c.group).toSet();
       setState(() {
@@ -2176,10 +2307,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         _rebuildEpgChannelIndex();
       });
       // Start the first channel from the loaded playlist automatically on app
-      // launch (skip the built-in PTV utility entry when playlist channels exist).
-      if (shouldAutoPlayFirstChannel && mounted) {
-        final firstPlaylistChannel = updated.length > 1 ? updated[1] : updated.first;
-        unawaited(_playChannel(firstPlaylistChannel));
+      // launch.
+      if (shouldAutoPlayFirstChannel && mounted && updated.isNotEmpty) {
+        unawaited(_playChannel(updated.first));
       }
     } catch (e) {
       debugPrint('Playlist refresh error: $e');
@@ -2187,9 +2317,10 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       setState(() {
         _status = 'Refresh failed; existing channels retained';
       });
+      // Never show the raw error: it can contain the playlist address.
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Playlist refresh failed: $e'),
+          content: const Text("Can't connect to server"),
           action: SnackBarAction(
             label: 'Retry',
             onPressed: _loadPlaylist,
@@ -2200,6 +2331,54 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       if (mounted && requestId == _playlistRequestId) {
         setState(() => _loadingPlaylist = false);
       }
+    }
+  }
+
+  String _playlistSignature(List<Channel> list) {
+    final b = StringBuffer();
+    for (final c in list) {
+      b..write(c.url)..write('|')..write(c.name)..write('|')..write(c.group)
+       ..write('|')..write(c.tvgId)..write('|')..write(c.tvgName)..write('\n');
+    }
+    return b.toString();
+  }
+
+  /// Quiet background re-check of the channel list. No spinner, no messages,
+  /// no interruption of the channel that is playing; the list simply changes
+  /// when the playlist on the server has changed.
+  Future<void> _silentPlaylistRefresh() async {
+    if (!mounted || _silentPlaylistBusy || _loadingPlaylist) return;
+    _silentPlaylistBusy = true;
+    _lastSilentPlaylistCheck = DateTime.now().millisecondsSinceEpoch;
+    try {
+      final parsed = await _fetchAndParsePlaylist();
+      final updated = <Channel>[];
+      final seen = <String>{};
+      for (final channel in parsed) {
+        if (seen.add(channel.url)) updated.add(channel);
+      }
+      final sig = _playlistSignature(updated);
+      if (!mounted || sig == _playlistSig) return;
+      _playlistSig = sig;
+      final groups = updated.map((c) => c.group).toSet();
+      setState(() {
+        _channels = updated;
+        if (_selectedCategory != 'All' && !groups.contains(_selectedCategory)) {
+          _selectedCategory = 'All';
+        }
+        final visibleCount = _visibleChannels.length;
+        if (visibleCount > 0 && _tvFocusedChannelIndex >= visibleCount) {
+          _tvFocusedChannelIndex = visibleCount - 1;
+        }
+        _status = '${updated.length} channels loaded';
+        _logoUrlCache.clear();
+        _rebuildEpgChannelIndex();
+      });
+      unawaited(LocalStore.instance.syncLogos());
+    } catch (e) {
+      debugPrint('Silent playlist refresh failed: $e'); // keep current list
+    } finally {
+      _silentPlaylistBusy = false;
     }
   }
 
@@ -2372,8 +2551,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
       _syncPipAutoEnter();
       _scheduleControlsHide();
     } on TimeoutException {
-      _lastFailure = 'Timed out waiting for video (12 s)' +
-          (controller.diagText.isEmpty ? '\nNo decoder started' : '\n${controller.diagText}');
+      _lastFailure = 'Stream timed out';
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
@@ -2389,17 +2567,17 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         }
       }
     } catch (e) {
-      debugPrint('Playback error for ${channel.url}: $e');
-      final failDetail = ((controller.lastError ?? e.toString()).replaceFirst('Exception: ', '') +
-              (controller.diagText.isEmpty ? '' : '\n${controller.diagText}'));
+      // Raw player errors can contain the stream address, so they are never
+      // shown or logged; only a generic message reaches the screen.
+      const failDetail = 'Stream unavailable';
       _lastFailure = failDetail;
       try { await controller.dispose(); } catch (_) {}
       if (!mounted || requestId != _playRequestId) return;
       _pendingPlayer = null;
       setState(() {
         _playerError = retryAttempt < 6
-            ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…\n$failDetail'
-            : 'Unable to play after 6 retries.\n$failDetail';
+            ? 'Stream interrupted. Retrying (${retryAttempt + 1}/6)…'
+            : 'Unable to play this channel right now.';
         _status = 'Playback failed';
         _connecting = false;
       });
@@ -3115,6 +3293,9 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
 
   // Auto-update when the app comes back after a long time in the background.
   void _refreshStaleData() {
+    if (DateTime.now().millisecondsSinceEpoch - _lastSilentPlaylistCheck > 60000) {
+      unawaited(_silentPlaylistRefresh());
+    }
     if (_epgInitDone && !_epgLoading) {
       final age = DateTime.now().millisecondsSinceEpoch - _epgSavedAt;
       if (_epgSavedAt == 0 || age < 0 || age > const Duration(hours: 2).inMilliseconds) {
@@ -3144,6 +3325,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     _channelInfoTimer?.cancel();
     _epgClock?.cancel();
     _epgRefreshTimer?.cancel();
+    _playlistAutoTimer?.cancel();
     _storeNotifyTimer?.cancel();
     LocalStore.instance.revision.removeListener(_onStoreChanged);
     _playbackHealthTimer?.cancel();

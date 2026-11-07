@@ -90,6 +90,8 @@ class MainActivity : FlutterActivity() {
         window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         window.decorView.setBackgroundColor(Color.TRANSPARENT)
         setupNotices()
+        // Keep the app's traffic off any capture VPN (HTTP Canary etc.).
+        SniffGuard.start(applicationContext)
     }
 
     // Announcements: phones/tablets only (TV is untouched).
@@ -144,6 +146,11 @@ class MainActivity : FlutterActivity() {
         // ExoPlayer (Media3) playback engine, rendered into a Flutter texture.
         exo?.releaseAll()
         exo = AnantaExo(applicationContext, flutterEngine.dartExecutor.binaryMessenger, flutterEngine.renderer)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.ananta.ott/guard")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "isCaptured") result.success(SniffGuard.isCaptured(applicationContext))
+                else result.notImplemented()
+            }
         val noticeChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.ananta.ott/notice")
         // Push received while the app is open: hand it to Flutter for the glass banner.
         AnantaNotice.listener = { n ->

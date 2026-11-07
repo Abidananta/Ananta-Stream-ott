@@ -13,8 +13,6 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 const String appName = 'Ananta OTT';
 const String playlistUrl =
     'https://raw.githubusercontent.com/anantaabid24/Ananta-Ott/refs/heads/main/channels.m3u';
-const String ptvStreamUrl =
-    'http://103.185.24.134:3001/ptv/index.m3u8';
 const List<String> epgSourceUrls = [
   'https://avkb.short.gy/tsepg.xml.gz',
   'https://avkb.short.gy/jioepg.xml.gz',
@@ -150,12 +148,6 @@ class EpgProgram {
   bool isAiringAt(DateTime time) => !time.isBefore(start) && time.isBefore(stop);
 }
 
-const Channel ptvChannel = Channel(
-  name: 'PTV ',
-  url: ptvStreamUrl,
-  group: 'Sports',
-);
-
 class AnantaOttApp extends StatelessWidget {
   const AnantaOttApp({super.key});
   @override
@@ -187,7 +179,7 @@ class AnantaHomePage extends StatefulWidget {
 
 class _AnantaHomePageState extends State<AnantaHomePage> {
   final TextEditingController _searchController = TextEditingController();
-  List<Channel> _channels = [ptvChannel];
+  List<Channel> _channels = <Channel>[];
   Set<String> _favorites = {};
   VideoPlayerController? _player;
   VideoPlayerController? _pendingPlayer;
@@ -1375,8 +1367,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> {
       if (parsed.isEmpty) {
         throw Exception('No valid channels found in the M3U file.');
       }
-      final updated = <Channel>[ptvChannel];
-      final seen = <String>{ptvChannel.url};
+      final updated = <Channel><Channel>[];
+      final seen = <String>{};
       for (final channel in parsed) {
         if (seen.add(channel.url)) {
           updated.add(channel);

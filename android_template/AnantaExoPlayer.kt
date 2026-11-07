@@ -67,6 +67,10 @@ class AnantaExo(
         try {
             when (call.method) {
                 "create" -> {
+                    if (SniffGuard.isCaptured(context)) {
+                        result.error("SNIFFER", SniffGuard.MESSAGE, null)
+                        return
+                    }
                     val url = call.argument<String>("url")
                     if (url.isNullOrEmpty()) {
                         result.error("BAD_URL", "No stream URL", null)
@@ -138,8 +142,15 @@ class AnantaExo(
         private var triedHlsFallback = false
         private var triedTsFallback = false
         private val posTicker = object : Runnable {
+            private var guardTick = 0
             override fun run() {
                 if (released) return
+                // Every ~3 s: if a capture tool was started during playback, stop.
+                if (++guardTick % 6 == 0 && SniffGuard.isCaptured(context)) {
+                    try { player.stop(); player.clearMediaItems() } catch (_: Exception) {}
+                    emit(id, mapOf("type" to "error", "message" to SniffGuard.MESSAGE))
+                    return
+                }
                 emit(id, mapOf("type" to "pos", "ms" to player.currentPosition))
                 main.postDelayed(this, 500)
             }
@@ -303,6 +314,10 @@ class AnantaExo(
         }
 
         private fun startPlayback(finalUrl: String, mime: String?) {
+            if (SniffGuard.isCaptured(context)) {
+                emit(id, mapOf("type" to "error", "message" to SniffGuard.MESSAGE))
+                return
+            }
             lastUrl = finalUrl
             lastMime = mime
             val builder = MediaItem.Builder()
@@ -507,4 +522,118 @@ object LenientTls {
             android.util.Log.w("AnantaTLS", "Lenient TLS not installed: ${e.message}")
         }
     }
+}
+
+
+/**
+ * Anti-sniffing guard. Packet-capture tools such as HTTP Canary work by
+ * starting a local VPN so that every request of the app - including the
+ * .m3u8 links - passes through them. While such a VPN is up this guard binds
+ * the whole app process to the real (non-VPN) network, so the playlist and all
+ * streams keep working but their traffic never enters the capture tool.
+ * A system-wide HTTP proxy cannot be bypassed that way, so with a proxy active
+ * the app still refuses to load anything.
+ */
+object SniffGuard {
+    private const val TAG = "AnantaGuard"
+    // tun0, tap0, ppp0, wg0 ... (not tunl0 / ip6tnl0, which exist on many boxes)
+    private val VPN_IFACE = Regex("^(tun|tap|ppp|pptp|wg)\\d+$")
+    @Volatile private var callbackRegistered = false
+
+    private fun cm(ctx: Context) =
+        ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+
+    /** Call once at start-up: keeps the bypass in step when a VPN comes and goes. */
+    fun start(ctx: Context) {
+        val app = ctx.applicationContext
+        try {
+            if (!callbackRegistered && android.os.Build.VERSION.SDK_INT >= 24) {
+                val manager = cm(app)
+                if (manager != null) {
+                    manager.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+                        override fun onAvailable(network: android.net.Network) { refresh(app) }
+                        override fun onLost(network: android.net.Network) { refresh(app) }
+                        override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) { refresh(app) }
+                    })
+                    callbackRegistered = true
+                }
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w(TAG, "callback not registered: ${e.message}")
+        }
+        refresh(app)
+    }
+
+    /** True when the app's traffic can be seen by a capture tool. */
+    fun isCaptured(ctx: Context): Boolean =
+        try { proxyActive(ctx) || !refresh(ctx) } catch (e: Throwable) {
+            android.util.Log.w(TAG, "check failed: ${e.message}")
+            false
+        }
+
+    /**
+     * Makes this process use the physical network when a VPN is up (and the
+     * normal default when it is not). Returns true when the app's traffic is
+     * NOT going through a VPN afterwards.
+     */
+    @Synchronized
+    private fun refresh(ctx: Context): Boolean {
+        val manager = cm(ctx) ?: return !vpnActive(ctx)
+        if (android.os.Build.VERSION.SDK_INT < 23) return !vpnActive(ctx)
+        if (!vpnActive(ctx)) {
+            try { if (manager.boundNetworkForProcess != null) manager.bindProcessToNetwork(null) } catch (_: Throwable) {}
+            return true
+        }
+        val physical = physicalNetwork(manager) ?: return false
+        return try {
+            manager.bindProcessToNetwork(physical) && manager.boundNetworkForProcess == physical
+        } catch (e: Throwable) {
+            android.util.Log.w(TAG, "bind failed: ${e.message}")
+            false
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun physicalNetwork(manager: android.net.ConnectivityManager): android.net.Network? {
+        var fallback: android.net.Network? = null
+        for (n in manager.allNetworks) {
+            val c = manager.getNetworkCapabilities(n) ?: continue
+            if (c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) continue
+            if (!c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            if (c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return n
+            if (fallback == null) fallback = n
+        }
+        return fallback
+    }
+
+    private fun vpnActive(ctx: Context): Boolean {
+        // 1) Android's own view: any network that uses the VPN transport.
+        try {
+            val manager = cm(ctx)
+            if (manager != null) {
+                @Suppress("DEPRECATION")
+                for (n in manager.allNetworks) {
+                    val c = manager.getNetworkCapabilities(n)
+                    if (c?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true) return true
+                }
+            }
+        } catch (_: Throwable) { /* permission missing etc: fall through */ }
+        // 2) Fallback that needs no permission: a tun/ppp style interface is up.
+        val ifaces = java.net.NetworkInterface.getNetworkInterfaces() ?: return false
+        for (i in ifaces) {
+            val name = i.name?.lowercase() ?: continue
+            if (i.isUp && VPN_IFACE.matches(name)) return true
+        }
+        return false
+    }
+
+    private fun proxyActive(ctx: Context): Boolean {
+        val host = System.getProperty("http.proxyHost") ?: System.getProperty("https.proxyHost")
+        if (!host.isNullOrBlank()) return true
+        @Suppress("DEPRECATION")
+        val dh = android.net.Proxy.getDefaultHost()
+        return !dh.isNullOrBlank()
+    }
+
+    const val MESSAGE = "Network monitoring tool detected. Turn it off to use Ananta OTT."
 }
