@@ -19,6 +19,11 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
+import androidx.media3.exoplayer.drm.DrmSessionManager
+import androidx.media3.exoplayer.drm.ExoMediaDrm
+import androidx.media3.exoplayer.drm.FrameworkMediaDrm
+import androidx.media3.exoplayer.drm.MediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -31,6 +36,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
 import java.net.Socket
+import java.util.UUID
 import java.security.KeyStore
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
@@ -140,6 +146,8 @@ class AnantaExo(
         private val srcUrl: String = url
         private val srcHeaders: Map<String, String> = headers
         private var tickerStarted = false
+        // ClearKey license (JSON) for the stream being played, if its link has one.
+        @Volatile private var clearKeyJson: ByteArray? = null
         // Quality safety net: after a stall the top quality is capped for a while.
         private var abrSelector: DefaultTrackSelector? = null
         private var abrCapReleaseAt = 0L
@@ -194,6 +202,20 @@ class AnantaExo(
             val sourceFactory = DefaultMediaSourceFactory(context, extractors)
                 .setDataSourceFactory(http)
                 .setLoadErrorHandlingPolicy(retry)
+
+            // --- ClearKey DRM: the keys come from the stream link itself
+            // (drmScheme=clearkey&drmLicense=kid:key), so the "license server"
+            // is answered locally - nothing is requested over the network.
+            val clearKeyManager = DefaultDrmSessionManager.Builder()
+                .setUuidAndExoMediaDrmProvider(C.CLEARKEY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
+                .build(object : MediaDrmCallback {
+                    override fun executeProvisionRequest(uuid: UUID, request: ExoMediaDrm.ProvisionRequest): ByteArray = ByteArray(0)
+                    override fun executeKeyRequest(uuid: UUID, request: ExoMediaDrm.KeyRequest): ByteArray =
+                        clearKeyJson ?: ByteArray(0)
+                })
+            sourceFactory.setDrmSessionManagerProvider { item ->
+                if (item.localConfiguration?.drmConfiguration != null) clearKeyManager else DrmSessionManager.DRM_UNSUPPORTED
+            }
 
             // --- Decoders: hardware first, software fallback, FFmpeg audio
             // (class is picked up by reflection when the FFmpeg module is bundled).
@@ -388,10 +410,12 @@ class AnantaExo(
                 emit(id, mapOf("type" to "error", "message" to SniffGuard.MESSAGE))
                 return
             }
-            lastUrl = finalUrl
+            val (playUrl, keyJson) = extractClearKey(finalUrl)
+            clearKeyJson = keyJson
+            lastUrl = playUrl
             lastMime = mime
             val builder = MediaItem.Builder()
-                .setUri(finalUrl)
+                .setUri(playUrl)
                 .setLiveConfiguration(
                     MediaItem.LiveConfiguration.Builder()
                         .setTargetOffsetMs(15_000)
@@ -402,11 +426,52 @@ class AnantaExo(
                         .build()
                 )
             if (mime != null) builder.setMimeType(mime)
+            if (keyJson != null) {
+                builder.setDrmConfiguration(MediaItem.DrmConfiguration.Builder(C.CLEARKEY_UUID).build())
+            }
             player.setMediaItem(builder.build())
             player.prepare()
             if (!tickerStarted) {
                 tickerStarted = true
                 main.postDelayed(posTicker, 500)
+            }
+        }
+
+        /**
+         * Links like  .../index.mpd?drmScheme=clearkey&drmLicense=<kid>:<key>
+         * carry their ClearKey keys in the address. Returns the address without
+         * those two parameters plus the license JSON the DRM engine expects
+         * (null when the link has no ClearKey keys).
+         */
+        private fun extractClearKey(url: String): Pair<String, ByteArray?> {
+            try {
+                val uri = android.net.Uri.parse(url)
+                val names = uri.queryParameterNames
+                val scheme = uri.getQueryParameter("drmScheme") ?: uri.getQueryParameter("drmscheme")
+                val license = uri.getQueryParameter("drmLicense") ?: uri.getQueryParameter("drmlicense")
+                if (scheme == null || license == null || !scheme.equals("clearkey", true)) return Pair(url, null)
+                val hex = Regex("^[0-9a-fA-F]{32}$")
+                val keys = ArrayList<String>()
+                for (pair in license.split(',')) {
+                    val parts = pair.trim().split(':')
+                    if (parts.size != 2 || !hex.matches(parts[0]) || !hex.matches(parts[1])) continue
+                    fun b64(h: String): String {
+                        val bytes = ByteArray(16) { i -> h.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+                        return android.util.Base64.encodeToString(
+                            bytes, android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
+                    }
+                    keys.add("{\"kty\":\"oct\",\"k\":\"${b64(parts[1])}\",\"kid\":\"${b64(parts[0])}\"}")
+                }
+                if (keys.isEmpty()) return Pair(url, null)
+                val clean = uri.buildUpon().clearQuery()
+                for (name in names) {
+                    if (name.equals("drmScheme", true) || name.equals("drmLicense", true)) continue
+                    for (v in uri.getQueryParameters(name)) clean.appendQueryParameter(name, v)
+                }
+                val json = "{\"keys\":[" + keys.joinToString(",") + "],\"type\":\"temporary\"}"
+                return Pair(clean.build().toString(), json.toByteArray(Charsets.UTF_8))
+            } catch (e: Exception) {
+                return Pair(url, null)
             }
         }
 
