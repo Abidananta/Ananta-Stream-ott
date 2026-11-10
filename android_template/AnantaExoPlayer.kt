@@ -20,6 +20,9 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
@@ -137,6 +140,13 @@ class AnantaExo(
         private val srcUrl: String = url
         private val srcHeaders: Map<String, String> = headers
         private var tickerStarted = false
+        // Quality safety net: after a stall the top quality is capped for a while.
+        private var abrSelector: DefaultTrackSelector? = null
+        private var abrCapReleaseAt = 0L
+        private var prevPlayerState = Player.STATE_IDLE
+        // Last picture size given to the texture (kept while only the quality changes).
+        private var surfaceW = 0
+        private var surfaceH = 0
         private var lastUrl: String = ""
         private var lastMime: String? = null
         private var triedHlsFallback = false
@@ -150,6 +160,10 @@ class AnantaExo(
                     try { player.stop(); player.clearMediaItems() } catch (_: Exception) {}
                     emit(id, mapOf("type" to "error", "message" to SniffGuard.MESSAGE))
                     return
+                }
+                if (abrCapReleaseAt != 0L && System.currentTimeMillis() > abrCapReleaseAt) {
+                    abrCapReleaseAt = 0L
+                    abrSelector?.let { it.setParameters(it.buildUponParameters().setMaxVideoBitrate(Int.MAX_VALUE)) }
                 }
                 emit(id, mapOf("type" to "pos", "ms" to player.currentPosition))
                 main.postDelayed(this, 500)
@@ -187,16 +201,52 @@ class AnantaExo(
                 .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
                 .setEnableDecoderFallback(true)
 
-            // --- Buffer like a TV box: 15-50 s ahead, start after 2.5 s.
+            // --- Buffer like a TV box: 30-60 s ahead (a long cushion rides out
+            // short speed dips), start after 3 s, and after a stall refill 10 s
+            // first so it does not stutter again right away.
             val load = DefaultLoadControl.Builder()
-                .setBufferDurationsMs(15_000, 50_000, 2_500, 5_000)
+                .setBufferDurationsMs(30_000, 60_000, 3_000, 10_000)
                 .setTargetBufferBytes(C.LENGTH_UNSET)
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
 
+            // --- Quality follows the real connection speed automatically:
+            //  * a quality is only chosen if it needs 70% of the measured speed
+            //    (30% safety margin, so a normal dip does not cause buffering);
+            //  * it steps DOWN early (buffer under 25 s - live streams only ever
+            //    hold ~10-20 s, so this means "right away") and the buffered
+            //    video is kept, so there is no gap;
+            //  * it steps UP as soon as the buffer is healthy (10 s) and the
+            //    speed really allows the better quality;
+            //  * it never switches to a variant that needs a decoder restart
+            //    (that restart is the visible hiccup);
+            //  * if the picture still stalls once, the top quality is capped to
+            //    60% of the measured speed for 90 s, then released again.
+            val bandwidth = DefaultBandwidthMeter.Builder(context)
+                .setInitialBitrateEstimate(3_000_000L)
+                .setResetOnNetworkTypeChange(false)
+                .setSlidingWindowMaxWeight(3000)
+                .build()
+            val trackFactory = AdaptiveTrackSelection.Factory(
+                10_000,    // minDurationForQualityIncreaseMs
+                25_000,    // maxDurationForQualityDecreaseMs
+                60_000,    // minDurationToRetainAfterDiscardMs (keep what is buffered)
+                0.70f      // bandwidthFraction
+            )
+            val trackSelector = DefaultTrackSelector(context, trackFactory)
+            abrSelector = trackSelector
+            trackSelector.setParameters(
+                trackSelector.buildUponParameters()
+                    .setAllowVideoNonSeamlessAdaptiveness(false)
+                    .setAllowVideoMixedMimeTypeAdaptiveness(false)
+                    .setMaxVideoSize(1920, 1080)
+            )
+
             player = ExoPlayer.Builder(context, renderers)
                 .setMediaSourceFactory(sourceFactory)
                 .setLoadControl(load)
+                .setBandwidthMeter(bandwidth)
+                .setTrackSelector(trackSelector)
                 // Audio focus is NOT taken at creation. A channel that is still
                 // warming up must not steal focus from the one being watched
                 // (that made the old channel pause during a switch). Dart calls
@@ -254,8 +304,16 @@ class AnantaExo(
                         val t = w; w = h; h = t
                     }
                     if (w > 0 && h > 0) {
-                        producer.setSize(w, h)
-                        player.setVideoSurface(producer.getSurface())
+                        // A quality switch changes the resolution but not the shape of
+                        // the picture. Re-creating the texture for it causes a visible
+                        // flicker, so only do it when the aspect ratio really changes.
+                        val sameShape = surfaceW > 0 && surfaceH > 0 &&
+                            Math.abs(w.toFloat() / h - surfaceW.toFloat() / surfaceH) < 0.02f
+                        if (!sameShape) {
+                            surfaceW = w; surfaceH = h
+                            producer.setSize(w, h)
+                            player.setVideoSurface(producer.getSurface())
+                        }
                     }
                     emit(id, mapOf(
                         "type" to "size", "width" to w, "height" to h,
@@ -268,7 +326,19 @@ class AnantaExo(
                     sendState()
                 }
 
-                override fun onPlaybackStateChanged(state: Int) = sendState()
+                override fun onPlaybackStateChanged(state: Int) {
+                    if (state == Player.STATE_BUFFERING && prevPlayerState == Player.STATE_READY && player.playWhenReady) {
+                        // Picture stalled: the current quality is too heavy for the
+                        // connection right now, so hold it lower for a while.
+                        try {
+                            val cap = (bandwidth.bitrateEstimate * 6 / 10).coerceIn(400_000L, Int.MAX_VALUE.toLong()).toInt()
+                            trackSelector.setParameters(trackSelector.buildUponParameters().setMaxVideoBitrate(cap))
+                            abrCapReleaseAt = System.currentTimeMillis() + 90_000
+                        } catch (_: Exception) {}
+                    }
+                    prevPlayerState = state
+                    sendState()
+                }
                 override fun onIsPlayingChanged(isPlaying: Boolean) = sendState()
                 override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) = sendState()
 
@@ -324,9 +394,9 @@ class AnantaExo(
                 .setUri(finalUrl)
                 .setLiveConfiguration(
                     MediaItem.LiveConfiguration.Builder()
-                        .setTargetOffsetMs(8_000)
-                        .setMinOffsetMs(4_000)
-                        .setMaxOffsetMs(30_000)
+                        .setTargetOffsetMs(15_000)
+                        .setMinOffsetMs(10_000)
+                        .setMaxOffsetMs(45_000)
                         .setMinPlaybackSpeed(1.0f)
                         .setMaxPlaybackSpeed(1.0f)
                         .build()
