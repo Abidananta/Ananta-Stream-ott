@@ -441,17 +441,21 @@ jobs:
           if not gradle.exists():
               gradle = root / 'build.gradle'
               kts = False
-          # Explicit lambda parameter names (not "it") - Gradle's Kotlin DSL
-          # fails type inference ("Unresolved reference 'it'") for a nested
-          # matching { } .configureEach { } pair when both use the implicit
-          # parameter.
+          # Gradle's configureEach() takes a "Task.() -> Unit" (receiver-style)
+          # lambda, not a "(Task) -> Unit" one, so the block body must set
+          # "enabled" directly (as the implicit receiver) instead of naming or
+          # using "it" as a parameter - either of those fails to compile here.
           block = (
               '\nsubprojects {\n'
-              '    tasks.matching { task -> task.name.startsWith("lint") }.configureEach { task -> task.enabled = false }\n'
+              '    tasks.matching { it.name.startsWith("lint") }.configureEach {\n'
+              '        enabled = false\n'
+              '    }\n'
               '}\n'
           ) if kts else (
               '\nsubprojects {\n'
-              '    tasks.matching { task -> task.name.startsWith("lint") }.configureEach { task -> task.enabled = false }\n'
+              '    tasks.matching { it.name.startsWith("lint") }.configureEach {\n'
+              '        enabled = false\n'
+              '    }\n'
               '}\n'
           )
           with gradle.open('a') as f:
