@@ -435,11 +435,13 @@ class AnantaExo(
                 .setUri(playUrl)
                 .setLiveConfiguration(
                     MediaItem.LiveConfiguration.Builder()
-                        // DASH (.mpd) live streams get a deeper cushion: they are
-                        // buffered further behind live so they play without stutter.
-                        .setTargetOffsetMs(if (isDash) 22_000 else 15_000)
-                        .setMinOffsetMs(if (isDash) 14_000 else 10_000)
-                        .setMaxOffsetMs(if (isDash) 60_000 else 45_000)
+                        // DASH (.mpd) live streams get a bit more cushion than HLS so
+                        // they play without stutter, but not so much that the first
+                        // join has to catch up a long way behind live (that shows up
+                        // as "takes a while to start").
+                        .setTargetOffsetMs(if (isDash) 16_000 else 15_000)
+                        .setMinOffsetMs(if (isDash) 9_000 else 10_000)
+                        .setMaxOffsetMs(if (isDash) 40_000 else 45_000)
                         .setMinPlaybackSpeed(1.0f)
                         .setMaxPlaybackSpeed(1.0f)
                         .build()
@@ -725,6 +727,11 @@ object SniffGuard {
     // tun0, tap0, ppp0, wg0 ... (not tunl0 / ip6tnl0, which exist on many boxes)
     private val VPN_IFACE = Regex("^(tun|tap|ppp|pptp|wg)\\d+$")
     @Volatile private var callbackRegistered = false
+    // refresh() enumerates every network / network interface, which is cheap
+    // once but was being re-run on the main thread on every single channel
+    // start, adding to the "takes a while to start" delay. The network
+    // callback keeps this flag current, so a channel switch only reads it.
+    @Volatile private var cachedSafe = true
 
     private fun cm(ctx: Context) =
         ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
@@ -737,9 +744,9 @@ object SniffGuard {
                 val manager = cm(app)
                 if (manager != null) {
                     manager.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
-                        override fun onAvailable(network: android.net.Network) { refresh(app) }
-                        override fun onLost(network: android.net.Network) { refresh(app) }
-                        override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) { refresh(app) }
+                        override fun onAvailable(network: android.net.Network) { cachedSafe = refresh(app) }
+                        override fun onLost(network: android.net.Network) { cachedSafe = refresh(app) }
+                        override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) { cachedSafe = refresh(app) }
                     })
                     callbackRegistered = true
                 }
@@ -747,12 +754,12 @@ object SniffGuard {
         } catch (e: Throwable) {
             android.util.Log.w(TAG, "callback not registered: ${e.message}")
         }
-        refresh(app)
+        cachedSafe = refresh(app)
     }
 
-    /** True when the app's traffic can be seen by a capture tool. */
+    /** True when the app's traffic can be seen by a capture tool. Instant - reads the cached state. */
     fun isCaptured(ctx: Context): Boolean =
-        try { proxyActive(ctx) || !refresh(ctx) } catch (e: Throwable) {
+        try { proxyActive(ctx) || !cachedSafe } catch (e: Throwable) {
             android.util.Log.w(TAG, "check failed: ${e.message}")
             false
         }
