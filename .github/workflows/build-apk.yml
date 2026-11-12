@@ -423,6 +423,38 @@ jobs:
           print('::notice::persistent signing configured' if done else '::warning::could not patch Gradle signing config; APK will use the debug key')
           SIGNPY
 
+      - name: Disable broken Android Lint tasks
+        run: |
+          # Android Lint's CommentDetector crashes on this toolchain
+          # (NoSuchMethodError: java.util.List.removeLast - a known bug in the
+          # bundled lint/Kotlin-stdlib combination, unrelated to this app's
+          # code) and that failure aborts ":url_launcher_android:lintVitalAnalyzeRelease",
+          # which a release build runs for every Android library module.
+          # Lint is a code-quality check, not something the APK needs, so it
+          # is switched off for every module instead of worked around per
+          # plugin.
+          python3 - <<'PYLINT'
+          from pathlib import Path
+          root = Path('build_app/android')
+          gradle = root / 'build.gradle.kts'
+          kts = True
+          if not gradle.exists():
+              gradle = root / 'build.gradle'
+              kts = False
+          block = (
+              '\nsubprojects {\n'
+              '    tasks.matching { it.name.startsWith("lint") }.configureEach { it.enabled = false }\n'
+              '}\n'
+          ) if kts else (
+              '\nsubprojects {\n'
+              '    tasks.matching { it.name.startsWith("lint") }.configureEach { enabled = false }\n'
+              '}\n'
+          )
+          with gradle.open('a') as f:
+              f.write(block)
+          print('Lint tasks disabled in', gradle)
+          PYLINT
+
       - name: Resolve dependencies
         working-directory: build_app
         run: flutter pub get -v
