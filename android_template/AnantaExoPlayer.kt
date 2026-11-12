@@ -209,7 +209,17 @@ class AnantaExo(
             val clearKeyManager = DefaultDrmSessionManager.Builder()
                 .setUuidAndExoMediaDrmProvider(C.CLEARKEY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
                 .build(object : MediaDrmCallback {
-                    override fun executeProvisionRequest(uuid: UUID, request: ExoMediaDrm.ProvisionRequest): ByteArray = ByteArray(0)
+                    override fun executeProvisionRequest(uuid: UUID, request: ExoMediaDrm.ProvisionRequest): ByteArray {
+                        // Some devices refuse to run ANY DRM plugin (ClearKey included)
+                        // until the device's DRM keybox is provisioned with Google at
+                        // least once. Without this real network round-trip, MediaDrm
+                        // keeps firing "provisioning required" and the picture never
+                        // decodes (shows as a green/garbled frame). This is the normal,
+                        // one-time Widevine provisioning handshake - no video bytes or
+                        // keys are sent, only the device's own certificate request.
+                        val url = request.defaultUrl + "&signedRequest=" + String(request.data, Charsets.UTF_8)
+                        return httpPost(url, ByteArray(0))
+                    }
                     override fun executeKeyRequest(uuid: UUID, request: ExoMediaDrm.KeyRequest): ByteArray =
                         clearKeyJson ?: ByteArray(0)
                 })
@@ -227,7 +237,12 @@ class AnantaExo(
             // short speed dips), start after 3 s, and after a stall refill 10 s
             // first so it does not stutter again right away.
             val load = DefaultLoadControl.Builder()
-                .setBufferDurationsMs(30_000, 60_000, 3_000, 10_000)
+                .setBufferDurationsMs(
+                    30_000,  // keep at least this much buffered
+                    60_000,  // and fill up to this much
+                    1_000,   // start playing as soon as 1 s is ready (instant start)
+                    8_000    // after a stall, rebuild 8 s first so it does not stutter again
+                )
                 .setTargetBufferBytes(C.LENGTH_UNSET)
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
@@ -244,11 +259,11 @@ class AnantaExo(
             //    (that restart is the visible hiccup);
             //  * if the picture still stalls once, the top quality is capped to
             //    60% of the measured speed for 90 s, then released again.
-            val bandwidth = DefaultBandwidthMeter.Builder(context)
-                .setInitialBitrateEstimate(3_000_000L)
-                .setResetOnNetworkTypeChange(false)
-                .setSlidingWindowMaxWeight(3000)
-                .build()
+            // One speed meter shared by every channel: the speed measured on the
+            // previous channel is the starting point of the next one, so a new
+            // channel starts straight at the quality the connection can carry.
+            // Before anything is measured it assumes ~8 Mbps, i.e. HD/FHD first.
+            val bandwidth = SharedBandwidth.get(context)
             val trackFactory = AdaptiveTrackSelection.Factory(
                 10_000,    // minDurationForQualityIncreaseMs
                 25_000,    // maxDurationForQualityDecreaseMs
@@ -414,13 +429,17 @@ class AnantaExo(
             clearKeyJson = keyJson
             lastUrl = playUrl
             lastMime = mime
+            val isDash = playUrl.substringBefore('?').endsWith(".mpd", true) ||
+                mime == MimeTypes.APPLICATION_MPD
             val builder = MediaItem.Builder()
                 .setUri(playUrl)
                 .setLiveConfiguration(
                     MediaItem.LiveConfiguration.Builder()
-                        .setTargetOffsetMs(15_000)
-                        .setMinOffsetMs(10_000)
-                        .setMaxOffsetMs(45_000)
+                        // DASH (.mpd) live streams get a deeper cushion: they are
+                        // buffered further behind live so they play without stutter.
+                        .setTargetOffsetMs(if (isDash) 22_000 else 15_000)
+                        .setMinOffsetMs(if (isDash) 14_000 else 10_000)
+                        .setMaxOffsetMs(if (isDash) 60_000 else 45_000)
                         .setMinPlaybackSpeed(1.0f)
                         .setMaxPlaybackSpeed(1.0f)
                         .build()
@@ -443,6 +462,23 @@ class AnantaExo(
          * those two parameters plus the license JSON the DRM engine expects
          * (null when the link has no ClearKey keys).
          */
+        private fun httpPost(urlStr: String, body: ByteArray): ByteArray {
+            val url = java.net.URL(urlStr)
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            try {
+                conn.requestMethod = "POST"
+                conn.doOutput = body.isNotEmpty()
+                conn.connectTimeout = 10_000
+                conn.readTimeout = 10_000
+                if (body.isNotEmpty()) conn.outputStream.use { it.write(body) }
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                return stream?.use { it.readBytes() } ?: ByteArray(0)
+            } finally {
+                conn.disconnect()
+            }
+        }
+
         private fun extractClearKey(url: String): Pair<String, ByteArray?> {
             try {
                 val uri = android.net.Uri.parse(url)
@@ -598,6 +634,21 @@ class AnantaExo(
  * an *expired* (or otherwise failing) certificate is accepted. Every other host
  * keeps the normal, strict system certificate check.
  */
+object SharedBandwidth {
+    @Volatile private var meter: DefaultBandwidthMeter? = null
+    @Synchronized
+    fun get(context: Context): DefaultBandwidthMeter {
+        meter?.let { return it }
+        val created = DefaultBandwidthMeter.Builder(context.applicationContext)
+            .setInitialBitrateEstimate(8_000_000L)
+            .setResetOnNetworkTypeChange(false)
+            .setSlidingWindowMaxWeight(3000)
+            .build()
+        meter = created
+        return created
+    }
+}
+
 object LenientTls {
     /** Host suffixes whose certificate problems are tolerated. */
     private val LENIENT_SUFFIXES = listOf("medialive.one")

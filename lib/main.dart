@@ -194,6 +194,23 @@ Map<String, dynamic> _decodeEpgCacheIsolate(String cached) {
 }
 
 // ---- Playlist prefetch (runs while the splash animation plays) ------------
+
+// Kodi style playlists put the ClearKey keys on their own lines:
+//   #KODIPROP:inputstream.adaptive.license_type=org.w3.clearkey
+//   #KODIPROP:inputstream.adaptive.license_key=<kid>:<key>
+// The player reads them from the link (drmScheme / drmLicense), so the keys
+// are attached to the stream address here.
+final RegExp _clearKeyPairs = RegExp(r'^[0-9a-fA-F]{32}:[0-9a-fA-F]{32}(,[0-9a-fA-F]{32}:[0-9a-fA-F]{32})*$');
+
+String _withClearKey(String url, String kodiType, String kodiKey) {
+  final key = kodiKey.trim();
+  final type = kodiType.toLowerCase();
+  if (key.isEmpty || !_clearKeyPairs.hasMatch(key)) return url;
+  if (type.isNotEmpty && !type.contains('clearkey')) return url;
+  if (url.contains('drmLicense=')) return url;
+  return '$url${url.contains('?') ? '&' : '?'}drmScheme=clearkey&drmLicense=$key';
+}
+
 List<Channel> _parseM3uIsolate(String content) {
   String attr(String line, String attribute) {
     final pattern = RegExp('$attribute\\s*=\\s*["\\x27]([^"\\x27]*)', caseSensitive: false);
@@ -205,10 +222,21 @@ List<Channel> _parseM3uIsolate(String content) {
   String logo = '';
   String tvgId = '';
   String tvgName = '';
+  String kodiType = '';
+  String kodiKey = '';
   for (final rawLine in content.split(RegExp(r'\r?\n'))) {
     final line = rawLine.trim();
     if (line.isEmpty) continue;
-    if (line.startsWith('#EXTINF')) {
+    if (line.startsWith('#KODIPROP:')) {
+      final body = line.substring(10);
+      final eq = body.indexOf('=');
+      if (eq > 0) {
+        final k = body.substring(0, eq).trim().toLowerCase();
+        final v = body.substring(eq + 1).trim();
+        if (k == 'inputstream.adaptive.license_type') kodiType = v;
+        if (k == 'inputstream.adaptive.license_key') kodiKey = v;
+      }
+    } else if (line.startsWith('#EXTINF')) {
       final comma = line.lastIndexOf(',');
       name = comma >= 0 ? line.substring(comma + 1).trim() : 'Unknown channel';
       group = attr(line, 'group-title');
@@ -219,13 +247,15 @@ List<Channel> _parseM3uIsolate(String content) {
     } else if (!line.startsWith('#') && name != null) {
       final uri = Uri.tryParse(line);
       if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) {
-        result.add(Channel(name: name, url: line, group: group, logo: logo, tvgId: tvgId, tvgName: tvgName));
+        result.add(Channel(name: name, url: _withClearKey(line, kodiType, kodiKey), group: group, logo: logo, tvgId: tvgId, tvgName: tvgName));
       }
       name = null;
       group = 'Live TV';
       logo = '';
       tvgId = '';
       tvgName = '';
+      kodiType = '';
+      kodiKey = '';
     }
   }
   return result;
@@ -1472,10 +1502,21 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     String logo = '';
     String tvgId = '';
     String tvgName = '';
+    String kodiType = '';
+    String kodiKey = '';
     for (final rawLine in lines) {
       final line = rawLine.trim();
       if (line.isEmpty) continue;
-      if (line.startsWith('#EXTINF')) {
+      if (line.startsWith('#KODIPROP:')) {
+        final body = line.substring(10);
+        final eq = body.indexOf('=');
+        if (eq > 0) {
+          final k = body.substring(0, eq).trim().toLowerCase();
+          final v = body.substring(eq + 1).trim();
+          if (k == 'inputstream.adaptive.license_type') kodiType = v;
+          if (k == 'inputstream.adaptive.license_key') kodiKey = v;
+        }
+      } else if (line.startsWith('#EXTINF')) {
         final comma = line.lastIndexOf(',');
         name = comma >= 0
             ? line.substring(comma + 1).trim()
@@ -1493,7 +1534,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
           result.add(
             Channel(
               name: name,
-              url: line,
+              url: _withClearKey(line, kodiType, kodiKey),
               group: group,
               logo: logo,
               tvgId: tvgId,
@@ -1506,6 +1547,8 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
         logo = '';
         tvgId = '';
         tvgName = '';
+        kodiType = '';
+        kodiKey = '';
       }
     }
     return result;
