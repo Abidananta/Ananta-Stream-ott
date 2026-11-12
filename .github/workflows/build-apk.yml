@@ -441,13 +441,17 @@ jobs:
           if not gradle.exists():
               gradle = root / 'build.gradle'
               kts = False
+          # Explicit lambda parameter names (not "it") - Gradle's Kotlin DSL
+          # fails type inference ("Unresolved reference 'it'") for a nested
+          # matching { } .configureEach { } pair when both use the implicit
+          # parameter.
           block = (
               '\nsubprojects {\n'
-              '    tasks.matching { it.name.startsWith("lint") }.configureEach { it.enabled = false }\n'
+              '    tasks.matching { task -> task.name.startsWith("lint") }.configureEach { task -> task.enabled = false }\n'
               '}\n'
           ) if kts else (
               '\nsubprojects {\n'
-              '    tasks.matching { it.name.startsWith("lint") }.configureEach { enabled = false }\n'
+              '    tasks.matching { task -> task.name.startsWith("lint") }.configureEach { task -> task.enabled = false }\n'
               '}\n'
           )
           with gradle.open('a') as f:
