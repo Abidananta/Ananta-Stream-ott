@@ -126,12 +126,6 @@ class AnantaExo(
     private fun emit(id: Int, data: Map<String, Any?>) {
         val m = HashMap<String, Any?>(data)
         m["id"] = id
-        // Also to logcat (adb logcat -s AnantaPlayer), so a playback problem
-        // such as "plays but no picture" can be diagnosed from the device
-        // without needing to show raw stream details on screen.
-        if (data["type"] == "info") {
-            android.util.Log.d("AnantaPlayer", "#$id ${data["message"]}")
-        }
         main.post { channel.invokeMethod("event", m) }
     }
 
@@ -343,7 +337,6 @@ class AnantaExo(
                 override fun onVideoSizeChanged(size: VideoSize) {
                     var w = size.width
                     var h = size.height
-                    android.util.Log.d("AnantaPlayer", "#$id video size ${w}x$h")
                     if (size.unappliedRotationDegrees == 90 || size.unappliedRotationDegrees == 270) {
                         val t = w; w = h; h = t
                     }
@@ -387,7 +380,6 @@ class AnantaExo(
                 override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) = sendState()
 
                 override fun onPlayerError(error: PlaybackException) {
-                    android.util.Log.w("AnantaPlayer", "#$id player error: ${error.errorCodeName}: ${error.message}", error.cause)
                     // The stream type could not be guessed (short / extension-less
                     // link, odd content-type). Retry once as HLS, then once as DASH.
                     val formatError = error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
@@ -443,13 +435,11 @@ class AnantaExo(
                 .setUri(playUrl)
                 .setLiveConfiguration(
                     MediaItem.LiveConfiguration.Builder()
-                        // DASH (.mpd) live streams get a bit more cushion than HLS so
-                        // they play without stutter, but not so much that the first
-                        // join has to catch up a long way behind live (that shows up
-                        // as "takes a while to start").
-                        .setTargetOffsetMs(if (isDash) 16_000 else 15_000)
-                        .setMinOffsetMs(if (isDash) 9_000 else 10_000)
-                        .setMaxOffsetMs(if (isDash) 40_000 else 45_000)
+                        // DASH (.mpd) live streams get a deeper cushion: they are
+                        // buffered further behind live so they play without stutter.
+                        .setTargetOffsetMs(if (isDash) 22_000 else 15_000)
+                        .setMinOffsetMs(if (isDash) 14_000 else 10_000)
+                        .setMaxOffsetMs(if (isDash) 60_000 else 45_000)
                         .setMinPlaybackSpeed(1.0f)
                         .setMaxPlaybackSpeed(1.0f)
                         .build()
@@ -489,17 +479,7 @@ class AnantaExo(
             }
         }
 
-        private fun extractClearKey(rawUrl: String): Pair<String, ByteArray?> {
-            // Some IPTV playlists tack the DRM info on after a "|" instead of a
-            // normal "?query" (Kodi-style), e.g. .../cenc.mpd|drmScheme=clearkey&
-            // drmLicense=kid:key. Turn that into an ordinary query string first so
-            // the rest of this function can read it the normal way.
-            val pipeAt = rawUrl.indexOf('|')
-            val url = if (pipeAt < 0) rawUrl else {
-                val base = rawUrl.substring(0, pipeAt)
-                val params = rawUrl.substring(pipeAt + 1)
-                base + (if (base.contains('?')) "&" else "?") + params
-            }
+        private fun extractClearKey(url: String): Pair<String, ByteArray?> {
             try {
                 val uri = android.net.Uri.parse(url)
                 val names = uri.queryParameterNames
@@ -745,11 +725,6 @@ object SniffGuard {
     // tun0, tap0, ppp0, wg0 ... (not tunl0 / ip6tnl0, which exist on many boxes)
     private val VPN_IFACE = Regex("^(tun|tap|ppp|pptp|wg)\\d+$")
     @Volatile private var callbackRegistered = false
-    // refresh() enumerates every network / network interface, which is cheap
-    // once but was being re-run on the main thread on every single channel
-    // start, adding to the "takes a while to start" delay. The network
-    // callback keeps this flag current, so a channel switch only reads it.
-    @Volatile private var cachedSafe = true
 
     private fun cm(ctx: Context) =
         ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
@@ -762,9 +737,9 @@ object SniffGuard {
                 val manager = cm(app)
                 if (manager != null) {
                     manager.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
-                        override fun onAvailable(network: android.net.Network) { cachedSafe = refresh(app) }
-                        override fun onLost(network: android.net.Network) { cachedSafe = refresh(app) }
-                        override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) { cachedSafe = refresh(app) }
+                        override fun onAvailable(network: android.net.Network) { refresh(app) }
+                        override fun onLost(network: android.net.Network) { refresh(app) }
+                        override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) { refresh(app) }
                     })
                     callbackRegistered = true
                 }
@@ -772,12 +747,12 @@ object SniffGuard {
         } catch (e: Throwable) {
             android.util.Log.w(TAG, "callback not registered: ${e.message}")
         }
-        cachedSafe = refresh(app)
+        refresh(app)
     }
 
-    /** True when the app's traffic can be seen by a capture tool. Instant - reads the cached state. */
+    /** True when the app's traffic can be seen by a capture tool. */
     fun isCaptured(ctx: Context): Boolean =
-        try { proxyActive(ctx) || !cachedSafe } catch (e: Throwable) {
+        try { proxyActive(ctx) || !refresh(ctx) } catch (e: Throwable) {
             android.util.Log.w(TAG, "check failed: ${e.message}")
             false
         }
