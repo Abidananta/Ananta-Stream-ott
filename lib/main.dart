@@ -2794,6 +2794,11 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
   // Picture-in-Picture. This keeps the same video texture alive, so the last
   // frame stays on screen instead of flashing white/black.
   final GlobalKey _playerKey = GlobalKey(debugLabel: 'ananta-player');
+  // Hidden diagnostics overlay: long-press the video to show/hide it. Shows
+  // only decoder/format/codec info (never the stream address), so it is safe
+  // to leave in for everyone and is handy for on-device troubleshooting
+  // without needing adb/logcat.
+  bool _showDiag = false;
 
   Widget _buildPlayer({required bool fullscreen}) =>
       KeyedSubtree(key: _playerKey, child: _buildPlayerBody(fullscreen: fullscreen));
@@ -2809,6 +2814,7 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: initialized ? _togglePlayerControls : null,
+      onLongPress: () => setState(() => _showDiag = !_showDiag),
       child: _PlayerBox(
         fullscreen: fullscreen,
         color: pipNow ? Colors.transparent : Colors.black,
@@ -2818,6 +2824,30 @@ class _AnantaHomePageState extends State<AnantaHomePage> with WidgetsBindingObse
             // Keep rendering the committed player while a replacement channel
             // initializes. The pending controller is deliberately not used here:
             // it may have no video frames yet and would show a black screen.
+            if (_showDiag && player != null)
+              Positioned(
+                left: 8,
+                top: 8,
+                right: 8,
+                child: IgnorePointer(
+                  child: ValueListenableBuilder<String>(
+                    valueListenable: player.diagNotifier,
+                    builder: (context, text, _) => text.isEmpty
+                        ? const SizedBox.shrink()
+                        : Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.65),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              text,
+                              style: const TextStyle(color: Colors.white, fontSize: 11, fontFamily: 'monospace'),
+                            ),
+                          ),
+                  ),
+                ),
+              ),
             if (initialized)
               Positioned.fill(
                 child: ColoredBox(
